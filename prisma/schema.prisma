@@ -1,0 +1,12 @@
+// Minimal Prisma scaffold for Milestone 0.
+// No ERP business models yet — domain tables arrive via reviewed migrations
+// in later milestones per rule.md.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
