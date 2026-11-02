@@ -1,6 +1,7 @@
-// Minimal Prisma scaffold for Milestone 0.
-// No ERP business models yet — domain tables arrive via reviewed migrations
-// in later milestones per rule.md.
+// Construction ERP schema.
+// Milestone 1: organizational foundation (Company -> HeadOffice -> Project -> Site)
+// plus the minimal append-only AuditLog required for organizational mutations.
+// Business modules arrive via reviewed migrations in later milestones per rule.md.
 
 generator client {
   provider = "prisma-client-js"
@@ -8,5 +9,1187 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+}
+
+enum CompanyStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+// Shared lifecycle for HeadOffice and Site.
+enum OrgNodeStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum ProjectStatus {
+  PLANNED
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+model Company {
+  id        String        @id @default(uuid()) @db.Uuid
+  code      String        @unique
+  name      String
+  legalName String?
+  status    CompanyStatus @default(ACTIVE)
+  version   Int           @default(0)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  headOffices         HeadOffice[]
+  projects            Project[]
+  sites               Site[]
+  auditLogs           AuditLog[]
+  employees           Employee[]
+  roles               Role[]
+  roleAssignments     RoleAssignment[]
+  departments         Department[]
+  operations          Operation[]
+  operationVersions   OperationVersion[]
+  forms               Form[]
+  formVersions        FormVersion[]
+  workflows           Workflow[]
+  workflowVersions    WorkflowVersion[]
+  rules               Rule[]
+  ruleVersions        RuleVersion[]
+  workflowInstances   WorkflowInstance[]
+  workflowTransitions WorkflowTransition[]
+  approvalTasks       ApprovalTask[]
+  approvalDecisions   ApprovalDecision[]
+  formSubmissions     FormSubmission[]
+  submissionRevisions SubmissionRevision[]
+  documents           Document[]
+  documentLinks       DocumentLink[]
+  outboxEvents        OutboxEvent[]
+  notifications       Notification[]
+}
+
+model HeadOffice {
+  id        String        @id @default(uuid()) @db.Uuid
+  companyId String        @db.Uuid
+  code      String
+  name      String
+  isPrimary Boolean       @default(false)
+  status    OrgNodeStatus @default(ACTIVE)
+  version   Int           @default(0)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  projects        Project[]
+  roleAssignments RoleAssignment[]
+  documents       Document[]
+  departments     Department[]
+
+  // Scoped business-code uniqueness within a company.
+  @@unique([companyId, code])
+  // Referenced by Project's composite FK (headOfficeId, companyId); guarantees
+  // a project can only attach to a head office inside the same company.
+  @@unique([id, companyId])
+  // Scoped active-list pattern: WHERE companyId = ? [AND status = ?] ORDER BY id.
+  // Leading equality column first; status/id support filtering and stable order.
+  @@index([companyId, status, id])
+}
+
+model Project {
+  id           String        @id @default(uuid()) @db.Uuid
+  companyId    String        @db.Uuid
+  headOfficeId String        @db.Uuid
+  code         String
+  name         String
+  description  String?
+  timezone     String // IANA name, validated in the service layer
+  status       ProjectStatus @default(PLANNED)
+  startDate    DateTime?     @db.Date
+  endDate      DateTime?     @db.Date
+  version      Int           @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  headOffice      HeadOffice       @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  sites           Site[]
+  roleAssignments RoleAssignment[]
+  departments     Department[]
+  documents       Document[]
+
+  @@unique([companyId, code])
+  // Referenced by Site's composite FK (projectId, companyId).
+  @@unique([id, companyId])
+  // WHERE companyId = ? [AND status = ?] ORDER BY id — company-scoped lists.
+  @@index([companyId, status, id])
+  // WHERE headOfficeId = ? AND companyId = ? [AND status = ?] — projects under an
+  // HO. Leads with headOfficeId (the narrower equality predicate); companyId and
+  // status follow as filters; id gives deterministic order.
+  @@index([headOfficeId, companyId, status, id])
+}
+
+model Site {
+  id              String        @id @default(uuid()) @db.Uuid
+  companyId       String        @db.Uuid
+  projectId       String        @db.Uuid
+  code            String
+  name            String
+  address         String?
+  geoLatitude     Decimal?      @db.Decimal(9, 6)
+  geoLongitude    Decimal?      @db.Decimal(9, 6)
+  geoFenceRadiusM Int?
+  timezone        String? // NULL = inherit project timezone
+  status          OrgNodeStatus @default(ACTIVE)
+  version         Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project         Project          @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  roleAssignments RoleAssignment[]
+  departments     Department[]
+  documents       Document[]
+
+  // Site codes are unique within a project (approved decision).
+  @@unique([projectId, code])
+  // Referenced by RoleAssignment's composite FK (siteId, companyId).
+  @@unique([id, companyId])
+  @@index([projectId, companyId, status, id])
+  @@index([companyId, status, id])
+}
+
+// Minimal append-only audit for organizational mutations.
+// Application-enforced append-only: no update/delete paths exist. Database-level
+// immutability (revoked UPDATE/DELETE privileges) is a hardening decision for a
+// later milestone.
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  eventKey      String   @unique // stable caller/event key for dedup
+  action        String // e.g. ORG_COMPANY_CREATED
+  entityType    String // COMPANY | HEAD_OFFICE | PROJECT | SITE
+  entityId      String   @db.Uuid
+  companyId     String?  @db.Uuid
+  actorId       String // explicit actor context; FK arrives with Employee (M2)
+  actorType     String // USER | SYSTEM | SERVICE
+  correlationId String?
+  occurredAt    DateTime @default(now()) @db.Timestamptz
+  statusBefore  String?
+  statusAfter   String?
+  changedFields Json?
+  metadata      Json?
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  // Entity history: WHERE entityType = ? AND entityId = ? ORDER BY occurredAt.
+  @@index([entityType, entityId, occurredAt])
+  // Company-scoped audit timeline: WHERE companyId = ? AND occurredAt BETWEEN ..
+  @@index([companyId, occurredAt])
+  // Correlation lookups: WHERE correlationId = ?. Low frequency; kept for
+  // request tracing per rule.md audit fields.
+  @@index([correlationId])
+  // Actor activity timeline: WHERE actorId = ? ORDER BY occurredAt.
+  @@index([actorId, occurredAt])
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 2: identity, authentication, and scoped access control.
+// ---------------------------------------------------------------------------
+
+enum PrincipalType {
+  USER
+  SERVICE
+  SYSTEM
+}
+
+enum LoginIdType {
+  EMAIL
+  PHONE
+}
+
+enum PrincipalStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum ScopeType {
+  COMPANY
+  HEAD_OFFICE
+  PROJECT
+  SITE
+}
+
+enum SessionStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+// Authenticatable identity. Password hashes only; SERVICE/SYSTEM principals
+// have no loginId/passwordHash and can never use the human login flow.
+// USER requires loginId + loginIdType + passwordHash; SERVICE/SYSTEM forbid
+// them — enforced by the Principal_credentials_check CHECK constraint in the
+// migration. loginId is normalized (trim + lowercase) before persistence; the
+// Principal_loginId_normalized CHECK keeps the invariant at the DB level.
+model Principal {
+  id           String          @id @default(uuid()) @db.Uuid
+  loginId      String?         @unique // normalized (lowercase) identifier
+  loginIdType  LoginIdType?
+  passwordHash String?
+  type         PrincipalType   @default(USER)
+  status       PrincipalStatus @default(ACTIVE)
+  version      Int             @default(0)
+  createdAt    DateTime        @default(now()) @db.Timestamptz
+  updatedAt    DateTime        @updatedAt @db.Timestamptz
+
+  employees                Employee[]
+  sessions                 AuthSession[]
+  roleAssignments          RoleAssignment[]
+  granted                  RoleAssignment[]     @relation("GrantedBy")
+  publishedOps             OperationVersion[]
+  formVersions             FormVersion[]
+  workflowVersions         WorkflowVersion[]
+  ruleVersions             RuleVersion[]
+  startedWorkflowInstances WorkflowInstance[]
+  workflowTransitions      WorkflowTransition[]
+  approvalTasks            ApprovalTask[]
+  approvalDecisions        ApprovalDecision[]
+  formSubmissions          FormSubmission[]
+  submissionRevisions      SubmissionRevision[]
+  uploadedDocuments        Document[]           @relation("DocumentUploader")
+  reviewedDocuments        Document[]           @relation("DocumentReviewer")
+  linkedDocuments          DocumentLink[]       @relation("DocumentLinker")
+  unlinkedDocuments        DocumentLink[]       @relation("DocumentUnlinker")
+  notifications            Notification[]
+}
+
+// Company-scoped workforce record. Login linkage is optional — most labourers
+// never have a Principal.
+model Employee {
+  id           String         @id @default(uuid()) @db.Uuid
+  companyId    String         @db.Uuid
+  principalId  String?        @db.Uuid
+  employeeCode String
+  displayName  String
+  status       EmployeeStatus @default(ACTIVE)
+  version      Int            @default(0)
+  createdAt    DateTime       @default(now()) @db.Timestamptz
+  updatedAt    DateTime       @updatedAt @db.Timestamptz
+
+  company           Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  principal         Principal?   @relation(fields: [principalId], references: [id], onDelete: Restrict)
+  headedDepartments Department[]
+
+  // Employee code is unique within a company.
+  @@unique([companyId, employeeCode])
+  // At most one Employee link per Principal per Company (approved decision).
+  @@unique([companyId, principalId])
+  // Referenced by Department's composite FK (headEmployeeId, companyId) so a
+  // department head must be an employee of the same company.
+  @@unique([id, companyId])
+  // Principal -> Employee lookup (FK not covered by the composite unique).
+  @@index([principalId])
+  // Scoped active-employee lists: WHERE companyId = ? [AND status = ?].
+  @@index([companyId, status, id])
+}
+
+// Roles are company-scoped; the role key is unique within a company.
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @db.Uuid
+  key         String
+  name        String
+  description String?
+  isSystem    Boolean  @default(false)
+  version     Int      @default(0)
+  createdAt   DateTime @default(now()) @db.Timestamptz
+  updatedAt   DateTime @updatedAt @db.Timestamptz
+
+  company     Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  permissions RolePermission[]
+  assignments RoleAssignment[]
+
+  @@unique([companyId, key])
+  // Referenced by RoleAssignment's composite FK (roleId, companyId) so an
+  // assignment can never point at another company's role.
+  @@unique([id, companyId])
+}
+
+// Stable machine-readable permission keys. Seeded idempotently; unknown rows
+// are never deleted by a seed run.
+model Permission {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @db.Timestamptz
+
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String   @db.Uuid
+  permissionId String   @db.Uuid
+  assignedAt   DateTime @default(now()) @db.Timestamptz
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  // Restrict: deleting a catalogue permission must fail while grants exist,
+  // not silently strip them.
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict)
+
+  @@id([roleId, permissionId])
+  // Reverse lookup: which roles grant a permission key.
+  @@index([permissionId])
+}
+
+// Scoped role grant. Tenant integrity is enforced by the CHECK constraint and
+// composite FKs in the migration: exactly one scope FK is set per row, and the
+// referenced org record must belong to this companyId.
+// Downward inheritance: COMPANY covers descendants, HEAD_OFFICE covers its
+// projects/sites, PROJECT covers its sites, SITE covers only itself.
+model RoleAssignment {
+  id                   String    @id @default(uuid()) @db.Uuid
+  principalId          String    @db.Uuid
+  roleId               String    @db.Uuid
+  companyId            String    @db.Uuid
+  scopeType            ScopeType
+  headOfficeId         String?   @db.Uuid
+  projectId            String?   @db.Uuid
+  siteId               String?   @db.Uuid
+  grantedByPrincipalId String?   @db.Uuid
+  effectiveFrom        DateTime? @db.Timestamptz
+  effectiveTo          DateTime? @db.Timestamptz
+  revokedAt            DateTime? @db.Timestamptz
+  createdAt            DateTime  @default(now()) @db.Timestamptz
+  updatedAt            DateTime  @updatedAt @db.Timestamptz
+
+  principal Principal  @relation(fields: [principalId], references: [id], onDelete: Restrict)
+  // Composite FK: the role must belong to this same company — cross-company
+  // role references are physically uninsertable.
+  role      Role       @relation(fields: [roleId, companyId], references: [id, companyId], onDelete: Restrict)
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  grantedBy Principal? @relation("GrantedBy", fields: [grantedByPrincipalId], references: [id], onDelete: Restrict)
+
+  // Composite FKs keep the scope target inside this company.
+  headOffice HeadOffice? @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  project    Project?    @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site       Site?       @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  // "What roles does principal P hold?" and effective-window evaluation.
+  @@index([principalId, revokedAt])
+  // "Who holds roles covering scope S in company C?"
+  @@index([companyId, scopeType])
+  // Scope-target lookups: only non-NULL rows of each type appear here; also
+  // serve FK joins from the scope tables.
+  @@index([headOfficeId])
+  @@index([projectId])
+  @@index([siteId])
+}
+
+// One row per authenticated session. Revocation/deactivation never deletes
+// rows — status is the truth.
+model AuthSession {
+  id          String        @id @default(uuid()) @db.Uuid
+  principalId String        @db.Uuid
+  familyId    String        @db.Uuid
+  status      SessionStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now()) @db.Timestamptz
+  expiresAt   DateTime      @db.Timestamptz
+  lastUsedAt  DateTime?     @db.Timestamptz
+  ip          String?
+  userAgent   String?
+
+  principal     Principal      @relation(fields: [principalId], references: [id], onDelete: Restrict)
+  refreshTokens RefreshToken[]
+
+  // Active sessions for a principal (logout-all, suspension sweep).
+  @@index([principalId, status])
+  // Replay detection revokes the whole family.
+  @@index([familyId])
+}
+
+// One row per issued refresh token. Only the SHA-256 hash is stored; consumed
+// rows are retained so presenting a rotated-out token is detectable replay.
+model RefreshToken {
+  id           String    @id @default(uuid()) @db.Uuid
+  sessionId    String    @db.Uuid
+  tokenHash    String    @unique // sha256 hex of the opaque token
+  issuedAt     DateTime  @default(now()) @db.Timestamptz
+  expiresAt    DateTime  @db.Timestamptz
+  consumedAt   DateTime? @db.Timestamptz
+  revokedAt    DateTime? @db.Timestamptz
+  replacedById String?   @db.Uuid
+
+  session    AuthSession    @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  // Composite self-FK: a replacement token must exist and belong to the same
+  // session — enforced at the DB level.
+  replacedBy RefreshToken?  @relation("TokenReplacement", fields: [replacedById, sessionId], references: [id, sessionId], onDelete: Restrict)
+  replaces   RefreshToken[] @relation("TokenReplacement")
+
+  // Referenced by the replacedBy composite self-FK (id, sessionId).
+  @@unique([id, sessionId])
+  // Tokens of a session for family checks and rotation history.
+  @@index([sessionId])
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 3: configurable departments (Department Engine).
+// ---------------------------------------------------------------------------
+
+enum DepartmentStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+// Company-owned configurable department, scoped to COMPANY / PROJECT / SITE
+// (HEAD_OFFICE scope is rejected). Scope-column consistency is enforced by the
+// Department_scope_check CHECK constraint in the migration; tenant integrity by
+// the composite FKs below.
+model Department {
+  id               String           @id @default(uuid()) @db.Uuid
+  companyId        String           @db.Uuid
+  scopeType        ScopeType
+  projectId        String?          @db.Uuid
+  siteId           String?          @db.Uuid
+  code             String // normalized, unique within the company
+  name             String
+  capabilityKey    String? // e.g. PROCUREMENT_REVIEW — routing identifier, not a name
+  headEmployeeId   String?          @db.Uuid
+  // Physical location only — never a permission scope. Finance/Admin live at
+  // the primary Head Office while remaining COMPANY-scoped for access.
+  baseHeadOfficeId String?          @db.Uuid
+  status           DepartmentStatus @default(DRAFT)
+  version          Int              @default(0)
+  createdAt        DateTime         @default(now()) @db.Timestamptz
+  updatedAt        DateTime         @updatedAt @db.Timestamptz
+
+  company        Company     @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  // Composite FKs keep the scope target inside this company.
+  project        Project?    @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site           Site?       @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  // Department head must be an Employee of the same company.
+  headEmployee   Employee?   @relation(fields: [headEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  // Base Head Office must belong to the same company (location, not scope).
+  baseHeadOffice HeadOffice? @relation(fields: [baseHeadOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  operations     Operation[]
+
+  // Department codes are unique across the company regardless of scope.
+  @@unique([companyId, code])
+  // Referenced by Operation's composite FK (departmentId, companyId).
+  @@unique([id, companyId])
+  // Company department list: WHERE companyId = ? [AND status = ?] ORDER BY id.
+  @@index([companyId, status, id])
+  // Project-scoped list: WHERE companyId = ? AND projectId = ? [AND status = ?].
+  @@index([companyId, projectId, status, id])
+  // Site-scoped list: WHERE companyId = ? AND siteId = ? [AND status = ?].
+  @@index([companyId, siteId, status, id])
+}
+
+// ---------------------------------------------------------------------------
+// Operation Engine: configurable operation definitions + published versions.
+// ---------------------------------------------------------------------------
+
+enum OperationStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+// Reusable operation definition owned by one Department; it inherits the
+// department's Company/Project/Site scope (no independent scope fields).
+model Operation {
+  id               String          @id @default(uuid()) @db.Uuid
+  companyId        String          @db.Uuid
+  departmentId     String          @db.Uuid
+  key              String // normalized, unique within the department
+  name             String
+  capabilityKey    String? // routing identifier — not a department name
+  description      String?
+  definition       Json? // bounded draft JSON; published snapshots are immutable
+  status           OperationStatus @default(DRAFT)
+  latestRevision   Int             @default(0)
+  currentVersionId String?         @db.Uuid
+  version          Int             @default(0)
+  createdAt        DateTime        @default(now()) @db.Timestamptz
+  updatedAt        DateTime        @updatedAt @db.Timestamptz
+
+  company         Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  department      Department         @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  // currentVersionId has NO Prisma relation — its composite FK
+  // (currentVersionId, id, companyId) → OperationVersion(id, operationId,
+  // companyId) is hand-added in the migration. It guarantees the pinned
+  // version belongs to this operation and company.
+  versions        OperationVersion[] @relation("OperationVersions")
+  forms           Form[]
+  rules           Rule[]
+  formSubmissions FormSubmission[]
+
+  // Operation keys are unique within a department.
+  @@unique([companyId, departmentId, key])
+  // Referenced by OperationVersion's composite FK (operationId, companyId).
+  @@unique([id, companyId])
+  // Operations under a department: WHERE companyId = ? AND departmentId = ? [AND status = ?].
+  @@index([companyId, departmentId, status, id])
+  // Company-wide operation lists: WHERE companyId = ? [AND status = ?].
+  @@index([companyId, status, id])
+}
+
+// Immutable published snapshot of an operation definition. Append-only in
+// application code — no update or delete paths exist.
+model OperationVersion {
+  id                     String   @id @default(uuid()) @db.Uuid
+  companyId              String   @db.Uuid
+  operationId            String   @db.Uuid
+  revision               Int // strictly increasing per operation
+  definition             Json // snapshot of the draft at publish time
+  publishedAt            DateTime @default(now()) @db.Timestamptz
+  publishedByPrincipalId String?  @db.Uuid // null only for SYSTEM/SERVICE actors
+  createdAt              DateTime @default(now()) @db.Timestamptz
+
+  company     Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  operation   Operation          @relation("OperationVersions", fields: [operationId, companyId], references: [id, companyId], onDelete: Restrict)
+  publishedBy Principal?         @relation(fields: [publishedByPrincipalId], references: [id], onDelete: Restrict)
+  workflows   Workflow[]
+  instances   WorkflowInstance[]
+
+  // Version history and monotonic ordering per operation.
+  @@unique([companyId, operationId, revision])
+  // Referenced by Operation's (currentVersionId, id, companyId) composite FK:
+  // guarantees the pinned version belongs to that operation and company.
+  @@unique([id, operationId, companyId])
+}
+
+// ---------------------------------------------------------------------------
+// Form Builder: versioned form descriptors attached to operations.
+// ---------------------------------------------------------------------------
+
+enum FormStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+// Versioned form definition owned by one Operation; inherits the operation's
+// company and department-derived scope. schema holds the validated draft
+// descriptor; published FormVersion rows are immutable snapshots.
+model Form {
+  id               String     @id @default(uuid()) @db.Uuid
+  companyId        String     @db.Uuid
+  operationId      String     @db.Uuid
+  key              String // normalized, unique within the operation
+  name             String
+  description      String?
+  schema           Json? // draft descriptor — validated before persist/publish
+  status           FormStatus @default(DRAFT)
+  latestRevision   Int        @default(0)
+  currentVersionId String?    @db.Uuid
+  version          Int        @default(0)
+  createdAt        DateTime   @default(now()) @db.Timestamptz
+  updatedAt        DateTime   @updatedAt @db.Timestamptz
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  operation       Operation        @relation(fields: [operationId, companyId], references: [id, companyId], onDelete: Restrict)
+  // currentVersionId has NO Prisma relation — the triple FK
+  // (currentVersionId, id, companyId) → FormVersion(id, formId, companyId) is
+  // hand-added in the migration so the pinned version belongs to this form.
+  versions        FormVersion[]    @relation("FormVersions")
+  formSubmissions FormSubmission[]
+
+  // Form keys are unique within an operation.
+  @@unique([companyId, operationId, key])
+  // Referenced by FormVersion's composite FK (formId, companyId).
+  @@unique([id, companyId])
+  // Forms under an operation: WHERE companyId = ? AND operationId = ? [AND status = ?].
+  @@index([companyId, operationId, status, id])
+  // Company-wide form lists: WHERE companyId = ? [AND status = ?].
+  @@index([companyId, status, id])
+}
+
+// Immutable published snapshot of a form descriptor. Append-only in
+// application code — submissions (later) pin a specific FormVersion row.
+model FormVersion {
+  id                     String   @id @default(uuid()) @db.Uuid
+  companyId              String   @db.Uuid
+  formId                 String   @db.Uuid
+  revision               Int // strictly increasing per form
+  schema                 Json // snapshot of the draft descriptor at publish
+  publishedAt            DateTime @default(now()) @db.Timestamptz
+  publishedByPrincipalId String?  @db.Uuid // null only for SYSTEM/SERVICE actors
+  createdAt              DateTime @default(now()) @db.Timestamptz
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  form            Form             @relation("FormVersions", fields: [formId, companyId], references: [id, companyId], onDelete: Restrict)
+  publishedBy     Principal?       @relation(fields: [publishedByPrincipalId], references: [id], onDelete: Restrict)
+  formSubmissions FormSubmission[]
+
+  // Version history and monotonic ordering per form.
+  @@unique([companyId, formId, revision])
+  // Referenced by Form's (currentVersionId, id, companyId) composite FK.
+  @@unique([id, formId, companyId])
+}
+
+// ---------------------------------------------------------------------------
+// Workflow Definition Builder: versioned workflow definitions pinned to a
+// published OperationVersion. Instances/runtime execution come later.
+// ---------------------------------------------------------------------------
+
+enum WorkflowStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+// Versioned workflow definition owned by one OperationVersion (therefore a
+// specific published operation contract). definition holds the validated draft
+// descriptor; WorkflowVersion rows are immutable snapshots.
+model Workflow {
+  id                 String         @id @default(uuid()) @db.Uuid
+  companyId          String         @db.Uuid
+  operationId        String         @db.Uuid
+  operationVersionId String         @db.Uuid
+  key                String // normalized, unique within the operation
+  name               String
+  description        String?
+  definition         Json? // draft descriptor — validated before persist/publish
+  status             WorkflowStatus @default(DRAFT)
+  latestRevision     Int            @default(0)
+  currentVersionId   String?        @db.Uuid
+  version            Int            @default(0)
+  createdAt          DateTime       @default(now()) @db.Timestamptz
+  updatedAt          DateTime       @updatedAt @db.Timestamptz
+
+  company          Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  // Composite FK: the pinned operation version must belong to THIS operation
+  // and company.
+  operationVersion OperationVersion   @relation(fields: [operationVersionId, operationId, companyId], references: [id, operationId, companyId], onDelete: Restrict)
+  // currentVersionId has NO Prisma relation — the triple FK
+  // (currentVersionId, id, companyId) → WorkflowVersion(id, workflowId,
+  // companyId) is hand-added in the migration.
+  versions         WorkflowVersion[]  @relation("WorkflowVersions")
+  instances        WorkflowInstance[]
+
+  // Workflow keys are unique within an operation.
+  @@unique([companyId, operationId, key])
+  // Referenced by WorkflowVersion's composite FK (workflowId, companyId).
+  @@unique([id, companyId])
+  // Workflows under an operation: WHERE companyId = ? AND operationId = ? [AND status = ?].
+  @@index([companyId, operationId, status, id])
+  // Company-wide workflow lists: WHERE companyId = ? [AND status = ?].
+  @@index([companyId, status, id])
+}
+
+// Immutable published snapshot of a workflow definition. Append-only in
+// application code — workflow instances (later) pin a specific revision.
+model WorkflowVersion {
+  id                     String   @id @default(uuid()) @db.Uuid
+  companyId              String   @db.Uuid
+  workflowId             String   @db.Uuid
+  revision               Int // strictly increasing per workflow
+  definition             Json // snapshot of the draft descriptor at publish
+  publishedAt            DateTime @default(now()) @db.Timestamptz
+  publishedByPrincipalId String?  @db.Uuid // null only for SYSTEM/SERVICE actors
+  createdAt              DateTime @default(now()) @db.Timestamptz
+
+  company     Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  workflow    Workflow           @relation("WorkflowVersions", fields: [workflowId, companyId], references: [id, companyId], onDelete: Restrict)
+  publishedBy Principal?         @relation(fields: [publishedByPrincipalId], references: [id], onDelete: Restrict)
+  instances   WorkflowInstance[]
+
+  // Version history and monotonic ordering per workflow.
+  @@unique([companyId, workflowId, revision])
+  // Referenced by Workflow's (currentVersionId, id, companyId) composite FK.
+  @@unique([id, workflowId, companyId])
+}
+
+// ---------------------------------------------------------------------------
+// Rule Engine: versioned declarative rule definitions attached to operations.
+// Evaluation is a pure library; execution side-effects are deferred.
+// ---------------------------------------------------------------------------
+
+enum RuleStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+// Versioned rule definition owned by one Operation; inherits the operation's
+// company and department-derived scope. definition holds the validated draft
+// descriptor; RuleVersion rows are immutable snapshots.
+model Rule {
+  id               String     @id @default(uuid()) @db.Uuid
+  companyId        String     @db.Uuid
+  operationId      String     @db.Uuid
+  key              String // normalized, unique within the operation
+  name             String
+  description      String?
+  definition       Json? // draft descriptor — validated before persist/publish
+  status           RuleStatus @default(DRAFT)
+  latestRevision   Int        @default(0)
+  currentVersionId String?    @db.Uuid
+  version          Int        @default(0)
+  createdAt        DateTime   @default(now()) @db.Timestamptz
+  updatedAt        DateTime   @updatedAt @db.Timestamptz
+
+  company   Company       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  operation Operation     @relation(fields: [operationId, companyId], references: [id, companyId], onDelete: Restrict)
+  // currentVersionId has NO Prisma relation — the triple FK
+  // (currentVersionId, id, companyId) → RuleVersion(id, ruleId, companyId) is
+  // hand-added in the migration.
+  versions  RuleVersion[] @relation("RuleVersions")
+
+  // Rule keys are unique within an operation.
+  @@unique([companyId, operationId, key])
+  // Referenced by RuleVersion's composite FK (ruleId, companyId).
+  @@unique([id, companyId])
+  // Rules under an operation: WHERE companyId = ? AND operationId = ? [AND status = ?].
+  @@index([companyId, operationId, status, id])
+  // Company-wide rule lists: WHERE companyId = ? [AND status = ?].
+  @@index([companyId, status, id])
+}
+
+// Immutable published snapshot of a rule definition. Append-only in
+// application code.
+model RuleVersion {
+  id                     String   @id @default(uuid()) @db.Uuid
+  companyId              String   @db.Uuid
+  ruleId                 String   @db.Uuid
+  revision               Int // strictly increasing per rule
+  definition             Json // snapshot of the draft descriptor at publish
+  publishedAt            DateTime @default(now()) @db.Timestamptz
+  publishedByPrincipalId String?  @db.Uuid // null only for SYSTEM/SERVICE actors
+  createdAt              DateTime @default(now()) @db.Timestamptz
+
+  company     Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  rule        Rule                 @relation("RuleVersions", fields: [ruleId, companyId], references: [id, companyId], onDelete: Restrict)
+  publishedBy Principal?           @relation(fields: [publishedByPrincipalId], references: [id], onDelete: Restrict)
+  transitions WorkflowTransition[]
+
+  // Version history and monotonic ordering per rule.
+  @@unique([companyId, ruleId, revision])
+  // Referenced by Rule's (currentVersionId, id, companyId) composite FK.
+  @@unique([id, ruleId, companyId])
+  // Referenced by WorkflowTransition's composite FK (ruleVersionId, companyId).
+  @@unique([id, companyId])
+}
+
+// ---------------------------------------------------------------------------
+// Workflow instances: runtime execution pinned to immutable WorkflowVersion
+// and OperationVersion snapshots. Transition rows are the auditable history.
+// ---------------------------------------------------------------------------
+
+// Shared transaction states (rule.md §8) — the same allowlist enforced on
+// workflow descriptors.
+enum WorkflowState {
+  DRAFT
+  SUBMITTED
+  IN_REVIEW
+  RETURNED
+  APPROVED
+  REJECTED
+  IN_PROGRESS
+  PARTIALLY_FULFILLED
+  COMPLETED
+  CANCELLED
+  CLOSED
+}
+
+// A running workflow instance. The pinned WorkflowVersion snapshot is the law
+// for its transitions — definition republish/archive does not mutate it.
+model WorkflowInstance {
+  id                   String        @id @default(uuid()) @db.Uuid
+  companyId            String        @db.Uuid
+  operationId          String        @db.Uuid
+  workflowId           String        @db.Uuid
+  workflowVersionId    String        @db.Uuid
+  operationVersionId   String        @db.Uuid
+  state                WorkflowState
+  // Optional business-record BACK-REFERENCE only (no polymorphic FK possible —
+  // referential integrity is application-level; business modules keep the
+  // authoritative workflowInstanceId FK on their tables). Both columns must be
+  // set together — enforced by CHECK in the migration.
+  businessEntityType   String?
+  businessEntityId     String?       @db.Uuid
+  context              Json? // bounded server-constructed evaluation context
+  version              Int           @default(0)
+  startedByPrincipalId String?       @db.Uuid
+  startedAt            DateTime      @default(now()) @db.Timestamptz
+  closedAt             DateTime?     @db.Timestamptz
+  createdAt            DateTime      @default(now()) @db.Timestamptz
+  updatedAt            DateTime      @updatedAt @db.Timestamptz
+
+  company          Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  workflow         Workflow             @relation(fields: [workflowId, companyId], references: [id, companyId], onDelete: Restrict)
+  workflowVersion  WorkflowVersion      @relation(fields: [workflowVersionId, workflowId, companyId], references: [id, workflowId, companyId], onDelete: Restrict)
+  operationVersion OperationVersion     @relation(fields: [operationVersionId, operationId, companyId], references: [id, operationId, companyId], onDelete: Restrict)
+  startedBy        Principal?           @relation(fields: [startedByPrincipalId], references: [id], onDelete: Restrict)
+  transitions      WorkflowTransition[]
+  approvalTasks    ApprovalTask[]
+  formSubmissions  FormSubmission[]
+  documentLinks    DocumentLink[]
+
+  // Referenced by WorkflowTransition's composite FK.
+  @@unique([id, companyId])
+  // Instances of a workflow (+state): WHERE companyId = ? AND workflowId = ? [AND state = ?].
+  @@index([companyId, workflowId, state, id])
+  // Instances under an operation (+state).
+  @@index([companyId, operationId, state, id])
+  // Company-wide instance lists (+state).
+  @@index([companyId, state, id])
+  // Business-record back-reference lookup (non-unique — one instance per
+  // record is not a proven requirement yet).
+  @@index([companyId, businessEntityType, businessEntityId])
+}
+
+// Append-only transition history — every successful state move with actor,
+// reason, prior/next state, step, pinned rule version, and idempotency data.
+model WorkflowTransition {
+  id                 String        @id @default(uuid()) @db.Uuid
+  companyId          String        @db.Uuid
+  workflowInstanceId String        @db.Uuid
+  fromState          WorkflowState
+  toState            WorkflowState
+  action             String
+  stepKey            String
+  actorPrincipalId   String?       @db.Uuid
+  actorType          String
+  reason             String?
+  ruleVersionId      String?       @db.Uuid
+  ruleOutcome        String?
+  idempotencyKey     String?
+  requestFingerprint String? // canonical command fingerprint for replay checks
+  eventKey           String        @unique @db.Uuid
+  occurredAt         DateTime      @default(now()) @db.Timestamptz
+
+  company     Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  instance    WorkflowInstance @relation(fields: [workflowInstanceId, companyId], references: [id, companyId], onDelete: Restrict)
+  actor       Principal?       @relation(fields: [actorPrincipalId], references: [id], onDelete: Restrict)
+  ruleVersion RuleVersion?     @relation(fields: [ruleVersionId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  // Idempotent replay: same key per instance must carry the same fingerprint.
+  @@unique([workflowInstanceId, idempotencyKey])
+  // Transition history: WHERE companyId = ? AND workflowInstanceId = ?
+  // ORDER BY occurredAt.
+  @@index([companyId, workflowInstanceId, occurredAt, id])
+}
+
+// ---------------------------------------------------------------------------
+// Approval Engine: single-approver tasks opened when an instance enters an
+// approval stage. Decision rows are append-only outcome history.
+// ---------------------------------------------------------------------------
+
+enum ApprovalTaskStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  RETURNED
+  CANCELLED
+}
+
+enum ApprovalOutcome {
+  APPROVED
+  REJECTED
+  RETURNED
+}
+
+// One pending task per approval stage entry. Opened automatically when the
+// instance arrives at a state that is the `from` of an APPROVAL-kind step
+// group (a stage), and decided by exactly one authorized approver.
+model ApprovalTask {
+  id                   String             @id @default(uuid()) @db.Uuid
+  companyId            String             @db.Uuid
+  workflowInstanceId   String             @db.Uuid
+  stageKey             String // normalized key linking the stage's pinned steps
+  fromState            WorkflowState
+  assigneeType         String // copied from the pinned step at open time
+  assigneeValue        String?
+  selfApprove          Boolean            @default(false)
+  status               ApprovalTaskStatus @default(PENDING)
+  decidedByPrincipalId String?            @db.Uuid
+  decidedAt            DateTime?          @db.Timestamptz
+  decisionAction       String? // APPROVE | REJECT | RETURN applied
+  decisionReason       String?
+  version              Int                @default(0)
+  createdAt            DateTime           @default(now()) @db.Timestamptz
+  updatedAt            DateTime           @updatedAt @db.Timestamptz
+
+  company   Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  instance  WorkflowInstance   @relation(fields: [workflowInstanceId, companyId], references: [id, companyId], onDelete: Restrict)
+  decidedBy Principal?         @relation(fields: [decidedByPrincipalId], references: [id], onDelete: Restrict)
+  decisions ApprovalDecision[]
+
+  // Referenced by ApprovalDecision's composite FK.
+  @@unique([id, companyId])
+  // Task list per instance (+status): WHERE companyId = ? AND workflowInstanceId = ? [AND status = ?].
+  @@index([companyId, workflowInstanceId, status, id])
+  // Company-wide task lists (+status).
+  @@index([companyId, status, id])
+  // "My pending tasks" per assignee spec.
+  @@index([companyId, assigneeType, assigneeValue, status])
+}
+
+// Append-only decision outcome. Exactly one row per decided task.
+model ApprovalDecision {
+  id                 String          @id @default(uuid()) @db.Uuid
+  companyId          String          @db.Uuid
+  approvalTaskId     String          @db.Uuid
+  outcome            ApprovalOutcome
+  action             String // APPROVE | REJECT | RETURN — the pinned action applied
+  actorPrincipalId   String?         @db.Uuid
+  actorType          String
+  reason             String?
+  idempotencyKey     String?
+  requestFingerprint String? // sha256 of the semantic command
+  eventKey           String          @unique @db.Uuid
+  decidedAt          DateTime        @default(now()) @db.Timestamptz
+
+  company Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  task    ApprovalTask @relation(fields: [approvalTaskId, companyId], references: [id, companyId], onDelete: Restrict)
+  actor   Principal?   @relation(fields: [actorPrincipalId], references: [id], onDelete: Restrict)
+
+  // One decision per idempotency key per task.
+  @@unique([approvalTaskId, idempotencyKey])
+  // Decision history for a task.
+  @@index([companyId, approvalTaskId, decidedAt, id])
+}
+
+// ---------------------------------------------------------------------------
+// Form Submission Engine: workflow-linked submissions. The envelope is
+// mutable (draft staging + status); every submit appends an immutable
+// SubmissionRevision — the ONLY source guard evaluation may read.
+// ---------------------------------------------------------------------------
+
+enum SubmissionStatus {
+  DRAFT
+  SUBMITTED
+  RETURNED
+}
+
+model FormSubmission {
+  id                     String           @id @default(uuid()) @db.Uuid
+  companyId              String           @db.Uuid
+  operationId            String           @db.Uuid
+  workflowInstanceId     String           @db.Uuid
+  formId                 String           @db.Uuid
+  formVersionId          String           @db.Uuid
+  status                 SubmissionStatus @default(DRAFT)
+  draftValues            Json? // staging only — guards never read this
+  latestRevision         Int              @default(0)
+  currentRevisionId      String?          @db.Uuid
+  submittedByPrincipalId String?          @db.Uuid
+  submittedAt            DateTime?        @db.Timestamptz
+  returnedReason         String?
+  version                Int              @default(0)
+  createdAt              DateTime         @default(now()) @db.Timestamptz
+  updatedAt              DateTime         @updatedAt @db.Timestamptz
+
+  company       Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  operation     Operation            @relation(fields: [operationId, companyId], references: [id, companyId], onDelete: Restrict)
+  instance      WorkflowInstance     @relation(fields: [workflowInstanceId, companyId], references: [id, companyId], onDelete: Restrict)
+  form          Form                 @relation(fields: [formId, companyId], references: [id, companyId], onDelete: Restrict)
+  formVersion   FormVersion          @relation(fields: [formVersionId, formId, companyId], references: [id, formId, companyId], onDelete: Restrict)
+  submittedBy   Principal?           @relation(fields: [submittedByPrincipalId], references: [id], onDelete: Restrict)
+  // currentRevisionId has NO Prisma relation — the triple FK
+  // (currentRevisionId, id, companyId) → SubmissionRevision(id, submissionId, companyId)
+  // is hand-added in the migration so the pointer can't leave this submission.
+  revisions     SubmissionRevision[] @relation("SubmissionRevisions")
+  documentLinks DocumentLink[]
+
+  // One submission per form-version per instance — the guard-lookup key.
+  @@unique([companyId, workflowInstanceId, formVersionId])
+  // Referenced by SubmissionRevision's composite FK.
+  @@unique([id, companyId])
+  // Submissions under an operation: WHERE companyId = ? AND operationId = ? [AND status = ?].
+  @@index([companyId, operationId, status, id])
+  // An instance's submissions (+status): approval-RETURN coupling and instance views.
+  @@index([companyId, workflowInstanceId, status])
+}
+
+// Immutable snapshot of one accepted submission. Append-only in application
+// code — resubmission appends the next revision and moves the pointer.
+model SubmissionRevision {
+  id                     String   @id @default(uuid()) @db.Uuid
+  companyId              String   @db.Uuid
+  submissionId           String   @db.Uuid
+  revision               Int // strictly increasing per submission
+  values                 Json // validated at submit; ≤64KiB, JSON-safe
+  submittedAt            DateTime @default(now()) @db.Timestamptz
+  submittedByPrincipalId String?  @db.Uuid
+  idempotencyKey         String?
+  requestFingerprint     String?
+  eventKey               String   @unique @db.Uuid
+
+  company     Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  submission  FormSubmission @relation("SubmissionRevisions", fields: [submissionId, companyId], references: [id, companyId], onDelete: Restrict)
+  submittedBy Principal?     @relation(fields: [submittedByPrincipalId], references: [id], onDelete: Restrict)
+
+  // Revision history and monotonic ordering per submission.
+  @@unique([companyId, submissionId, revision])
+  // Referenced by FormSubmission's (currentRevisionId, id, companyId) FK.
+  @@unique([id, submissionId, companyId])
+  // One accepted submission command per idempotency key.
+  @@unique([submissionId, idempotencyKey])
+}
+
+// ---------------------------------------------------------------------------
+// Document Service: private file objects + constrained entity links.
+// storageKey is server-generated; the row is authority for every object.
+// Links are append-friendly (unlinkedAt soft-unlink preserves history).
+// ---------------------------------------------------------------------------
+
+enum DocumentStatus {
+  UPLOADING
+  QUARANTINED
+  AVAILABLE
+  REJECTED
+  ARCHIVED
+}
+
+model Document {
+  id                    String         @id @default(uuid()) @db.Uuid
+  companyId             String         @db.Uuid
+  storageKey            String
+  originalFileName      String // sanitized display name — never a path
+  declaredContentType   String?
+  contentType           String? // server-sniffed
+  sizeBytes             Int?
+  sha256                String?
+  status                DocumentStatus @default(UPLOADING)
+  rejectReason          String?
+  uploadedByPrincipalId String?        @db.Uuid
+  uploadedAt            DateTime       @default(now()) @db.Timestamptz
+  reviewedByPrincipalId String?        @db.Uuid
+  reviewedAt            DateTime?      @db.Timestamptz
+  // Upload scope — captured at upload, immutable; mirrors RoleAssignment.
+  // The matching column is enforced non-null by migration CHECK.
+  scopeType             ScopeType      @default(COMPANY)
+  headOfficeId          String?        @db.Uuid
+  projectId             String?        @db.Uuid
+  siteId                String?        @db.Uuid
+  version               Int            @default(0)
+  createdAt             DateTime       @default(now()) @db.Timestamptz
+  updatedAt             DateTime       @updatedAt @db.Timestamptz
+
+  company    Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  uploadedBy Principal?     @relation("DocumentUploader", fields: [uploadedByPrincipalId], references: [id], onDelete: Restrict)
+  reviewedBy Principal?     @relation("DocumentReviewer", fields: [reviewedByPrincipalId], references: [id], onDelete: Restrict)
+  // Composite FKs keep the scope target inside this company.
+  headOffice HeadOffice?    @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  project    Project?       @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site       Site?          @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  links      DocumentLink[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, storageKey])
+  // "My uploads", quarantine/review queue, scoped review.
+  @@index([companyId, uploadedByPrincipalId, uploadedAt, id])
+  @@index([companyId, status, uploadedAt, id])
+  @@index([companyId, scopeType])
+}
+
+// Constrained polymorphism: entityType is derived, exactly one concrete FK
+// is set (migration check constraint), each composite-FK'd to company.
+model DocumentLink {
+  id                    String    @id @default(uuid()) @db.Uuid
+  companyId             String    @db.Uuid
+  documentId            String    @db.Uuid
+  entityType            String // FORM_SUBMISSION | WORKFLOW_INSTANCE
+  formSubmissionId      String?   @db.Uuid
+  workflowInstanceId    String?   @db.Uuid
+  fieldKey              String? // FILE/IMAGE field on the pinned FormVersion
+  linkedByPrincipalId   String?   @db.Uuid
+  linkedAt              DateTime  @default(now()) @db.Timestamptz
+  unlinkedAt            DateTime? @db.Timestamptz
+  unlinkedByPrincipalId String?   @db.Uuid
+  version               Int       @default(0)
+  createdAt             DateTime  @default(now()) @db.Timestamptz
+  updatedAt             DateTime  @updatedAt @db.Timestamptz
+
+  company        Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  document       Document          @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
+  formSubmission FormSubmission?   @relation(fields: [formSubmissionId, companyId], references: [id, companyId], onDelete: Restrict)
+  instance       WorkflowInstance? @relation(fields: [workflowInstanceId, companyId], references: [id, companyId], onDelete: Restrict)
+  linkedBy       Principal?        @relation("DocumentLinker", fields: [linkedByPrincipalId], references: [id], onDelete: Restrict)
+  unlinkedBy     Principal?        @relation("DocumentUnlinker", fields: [unlinkedByPrincipalId], references: [id], onDelete: Restrict)
+
+  @@unique([id, companyId])
+  @@index([companyId, documentId, unlinkedAt])
+  @@index([companyId, formSubmissionId, unlinkedAt])
+  @@index([companyId, workflowInstanceId, unlinkedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications: transactional outbox + durable inbox.
+// OutboxEvent is written in the SAME tx as the business change (emit-side);
+// the relay turns it into durable Notification rows, then publishes.
+// ---------------------------------------------------------------------------
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  DONE
+  DEAD
+}
+
+model OutboxEvent {
+  id            String       @id @default(uuid()) @db.Uuid
+  companyId     String       @db.Uuid
+  eventType     String // WORKFLOW_TRANSITIONED | APPROVAL_TASK_OPENED | APPROVAL_TASK_DECIDED | DOCUMENT_APPROVED | DOCUMENT_REJECTED
+  aggregateType String
+  aggregateId   String       @db.Uuid
+  payload       Json // safe fields only — ids, statuses, recipient principal ids
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  leaseUntil    DateTime?    @db.Timestamptz
+  nextAttemptAt DateTime     @default(now()) @db.Timestamptz
+  lastError     String?
+  processedAt   DateTime?    @db.Timestamptz
+  eventKey      String // unique per occurrence — e.g. evt:{aggregate}:{type}:{occurrence}
+  createdAt     DateTime     @default(now()) @db.Timestamptz
+  updatedAt     DateTime     @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, eventKey])
+  // Relay poll: pending events due now; lease-expiry sweep.
+  @@index([status, nextAttemptAt, id])
+  @@index([status, leaseUntil])
+}
+
+model Notification {
+  id                   String    @id @default(uuid()) @db.Uuid
+  companyId            String    @db.Uuid
+  recipientPrincipalId String    @db.Uuid
+  eventType            String
+  title                String
+  body                 String?
+  resourceType         String
+  resourceId           String    @db.Uuid
+  eventKey             String // source outbox event key
+  readAt               DateTime? @db.Timestamptz
+  publishedAt          DateTime? @db.Timestamptz // null = durable but not yet pushed
+  version              Int       @default(0)
+  createdAt            DateTime  @default(now()) @db.Timestamptz
+  updatedAt            DateTime  @updatedAt @db.Timestamptz
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  recipient Principal @relation(fields: [recipientPrincipalId], references: [id], onDelete: Restrict)
+
+  // Dedupe = company + recipient + occurrence.
+  @@unique([companyId, recipientPrincipalId, eventKey])
+  // Inbox + cursor paging: WHERE recipient=? AND companyId=? ORDER BY createdAt,id.
+  @@index([recipientPrincipalId, companyId, createdAt, id])
+  @@index([companyId, publishedAt])
 }

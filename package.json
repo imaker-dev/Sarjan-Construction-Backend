@@ -20,28 +20,51 @@
     "db:generate": "prisma generate",
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
-    "db:seed": "echo \"No seed defined yet. Add prisma/seed.ts when a milestone requires it.\" && exit 0"
+    "db:seed": "tsx prisma/seed.ts",
+    "db:bootstrap": "tsx prisma/bootstrap.ts",
+    "db:reconcile": "tsx prisma/reconcile-owner-permissions.ts"
   },
   "dependencies": {
+    "@fastify/jwt": "^10.2.5",
+    "@fastify/rate-limit": "^11.2.1",
     "@fastify/type-provider-typebox": "^6.0.0",
-    "@prisma/client": "^6.16.0",
+    "@fastify/websocket": "^11.3.4",
+    "@node-rs/argon2": "^2.2.2",
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
     "@sinclair/typebox": "^0.34.0",
     "bullmq": "^5.58.0",
     "dotenv": "^16.6.0",
     "fastify": "^5.6.0",
     "fastify-plugin": "^5.0.0",
-    "ioredis": "^5.8.0"
+    "ioredis": "^5.8.0",
+    "pg": "^8.23.1"
+  },
+  "overrides": {
+    "eslint": {
+      "minimatch": "11.0.1"
+    },
+    "@eslint/config-array": {
+      "minimatch": "11.0.1"
+    },
+    "@eslint/eslintrc": {
+      "minimatch": "11.0.1"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.1"
+    }
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^10.0.0",
     "prettier": "^3.6.0",
-    "prisma": "^6.16.0",
+    "prisma": "^7.10.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
-    "typescript-eslint": "^8.0.0",
-    "vitest": "^3.2.0"
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^4.1.12"
   }
 }

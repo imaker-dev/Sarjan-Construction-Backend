@@ -18,6 +18,15 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "eslint.config.js"],
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts",
+    "eslint.config.js",
+    "prisma.config.ts",
+    "prisma/bootstrap.ts",
+    "prisma/reconcile-owner-permissions.ts",
+    "prisma/seed.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }

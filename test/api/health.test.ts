@@ -11,6 +11,7 @@ const testEnv: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/testdb',
   REDIS_HOST: 'localhost',
   REDIS_PORT: '6379',
+  JWT_SECRET: 'test-secret-test-secret-test-secret-1234',
 };
 
 describe('GET /api/v1/health', () => {

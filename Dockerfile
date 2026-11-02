@@ -11,7 +11,7 @@ WORKDIR /app
 # not connect to a database. Not persisted to the runtime stage.
 ENV DATABASE_URL=postgresql://placeholder:placeholder@localhost:5432/placeholder
 COPY --from=deps /app/node_modules ./node_modules
-COPY package.json tsconfig.json tsconfig.build.json ./
+COPY package.json tsconfig.json tsconfig.build.json prisma.config.ts ./
 COPY prisma ./prisma
 COPY src ./src
 RUN npx prisma generate && npm run build
