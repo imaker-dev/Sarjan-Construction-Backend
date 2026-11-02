@@ -42,7 +42,12 @@ async function makeApp(opts: { allow?: boolean; actorId?: string } = {}) {
   } as unknown as AccessControlService;
   const app = await buildApp({
     env: testEnv,
-    services: { authService, accessControl, employeeService: service },
+    services: {
+      authService,
+      accessControl,
+      employeeService: service,
+      platformCompanyId: null,
+    },
   });
   return { app, store };
 }

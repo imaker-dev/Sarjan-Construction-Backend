@@ -6,7 +6,12 @@ import { SYSTEM_PRINCIPAL_ID } from './bootstrap.js';
  * isSystem COMPANY_OWNER roles. Idempotent — re-runs add nothing and write
  * no audit rows. Runs inside the caller's transaction.
  */
-export const RECONCILE_KEYS = ['EMPLOYEE_READ', 'EMPLOYEE_MANAGE'] as const;
+export const RECONCILE_KEYS = [
+  'EMPLOYEE_READ',
+  'EMPLOYEE_MANAGE',
+  'COMPLIANCE_READ',
+  'COMPLIANCE_MANAGE',
+] as const;
 
 export interface ReconcileTx {
   principal: {

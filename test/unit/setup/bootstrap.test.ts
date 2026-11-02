@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
-  bootstrapOrganization,
+  bootstrapPlatform,
   SYSTEM_PRINCIPAL_ID,
-  OWNER_ROLE_KEY,
+  PLATFORM_COMPANY_CODE,
+  PLATFORM_ADMIN_ROLE_KEY,
+  TENANT_OWNER_PERMISSIONS,
+  PLATFORM_ADMIN_PERMISSIONS,
   type BootstrapTx,
 } from '../../../src/modules/setup/bootstrap.js';
-import { AppError } from '../../../src/common/errors/app-error.js';
 
 interface Row extends Record<string, unknown> {
   id: string;
@@ -13,8 +15,6 @@ interface Row extends Record<string, unknown> {
 
 interface BootStore {
   companies: Row[];
-  headOffices: Row[];
-  departments: Row[];
   principals: Row[];
   employees: Row[];
   roles: Row[];
@@ -29,8 +29,6 @@ type Bucket = keyof BootStore;
 function makeTx(): { tx: BootstrapTx; store: BootStore } {
   const store: BootStore = {
     companies: [],
-    headOffices: [],
-    departments: [],
     principals: [],
     employees: [],
     roles: [],
@@ -48,12 +46,16 @@ function makeTx(): { tx: BootstrapTx; store: BootStore } {
   };
   const tx: BootstrapTx = {
     company: {
-      findFirst: async () =>
-        (store.companies[0] as { id: string; code: string } | undefined) ?? null,
+      findFirst: async (args) => {
+        const match = store.companies.find((c) =>
+          args !== undefined && 'isPlatform' in args.where
+            ? c.isPlatform === args.where.isPlatform
+            : true,
+        );
+        return (match as { id: string; code: string; isPlatform: boolean } | undefined) ?? null;
+      },
       create: push('companies'),
     },
-    headOffice: { create: push('headOffices') },
-    department: { create: push('departments') },
     principal: {
       findFirst: async ({ where }) => store.principals.find((p) => p.id === where.id) ?? null,
       create: push('principals'),
@@ -76,70 +78,62 @@ function makeTx(): { tx: BootstrapTx; store: BootStore } {
   return { tx, store };
 }
 
-const input = {
-  companyCode: 'ACME',
-  companyName: 'Acme Construction',
-  ownerLoginId: 'owner@acme.test',
-  ownerPassword: 'correct-horse-battery-staple',
-};
+const input = { adminLoginId: 'ops@platform.test', adminPassword: 'correct-horse-battery-staple' };
 
-describe('bootstrapOrganization', () => {
-  it('creates company, primary HO, depts, owner, employee, owner role in one flow', async () => {
+describe('permission allowlists', () => {
+  it('owner/platform keysets are explicit — no prefix auto-grants', () => {
+    // Exact sets — a future catalogue key is never silently granted.
+    expect(PLATFORM_ADMIN_PERMISSIONS).toEqual([
+      'PLATFORM_COMPANY_CREATE',
+      'PLATFORM_COMPANY_READ',
+    ]);
+    expect(TENANT_OWNER_PERMISSIONS).toContain('COMPLIANCE_READ');
+    expect(TENANT_OWNER_PERMISSIONS).toContain('COMPLIANCE_MANAGE');
+    expect(TENANT_OWNER_PERMISSIONS).toContain('EMPLOYEE_MANAGE');
+    // No platform key reaches a tenant owner, no tenant key a platform admin.
+    expect(TENANT_OWNER_PERMISSIONS.some((k) => k.startsWith('PLATFORM_'))).toBe(false);
+    expect(PLATFORM_ADMIN_PERMISSIONS.some((k) => !k.startsWith('PLATFORM_'))).toBe(false);
+  });
+});
+
+describe('bootstrapPlatform', () => {
+  it('creates the sentinel platform company + PLATFORM_ADMIN, no tenant structure', async () => {
     const { tx, store } = makeTx();
-    const r = await bootstrapOrganization(tx, input);
+    const r = await bootstrapPlatform(tx, input);
     expect(r.status).toBe('CREATED');
-    expect(store.companies).toHaveLength(1);
-    expect(store.headOffices[0]?.isPrimary).toBe(true);
-    expect(store.departments.map((d) => d.code).sort()).toEqual(['ADMIN', 'FINANCE']);
-    expect(store.departments.every((d) => d.baseHeadOfficeId === store.headOffices[0]?.id)).toBe(
-      true,
-    );
-    expect(store.departments.every((d) => d.scopeType === 'COMPANY')).toBe(true);
-    const owner = store.principals.find((p) => p.loginId === 'owner@acme.test');
-    expect(owner?.type).toBe('USER');
-    expect(owner?.passwordHash).toBeTypeOf('string');
-    expect(String(owner?.passwordHash)).not.toContain(input.ownerPassword);
-    expect(store.employees[0]?.principalId).toBe(owner?.id);
-    expect(store.roles[0]?.key).toBe(OWNER_ROLE_KEY);
-    expect(store.roleAssignments[0]?.scopeType).toBe('COMPANY');
-    // least-privilege: only ORG_* + DEPARTMENT_* keys granted
+    const platform = store.companies[0];
+    expect(platform?.isPlatform).toBe(true);
+    expect(platform?.code).toBe(PLATFORM_COMPANY_CODE);
+    // No tenant HeadOffices/departments — those live in customer companies.
+    const admin = store.principals.find((p) => p.loginId === 'ops@platform.test');
+    expect(admin?.type).toBe('USER');
+    expect(String(admin?.passwordHash)).not.toContain(input.adminPassword);
+    expect(store.roles[0]?.key).toBe(PLATFORM_ADMIN_ROLE_KEY);
     const permKeys = store.rolePermissions.map(
       (rp) => store.permissions.find((p) => p.id === rp.permissionId)?.key,
     );
     expect(permKeys.length).toBeGreaterThan(0);
-    expect(
-      permKeys.every(
-        (k) =>
-          String(k).startsWith('ORG_') ||
-          String(k).startsWith('DEPARTMENT_') ||
-          String(k).startsWith('EMPLOYEE_'),
-      ),
-    ).toBe(true);
-    // audit uses the explicit SYSTEM principal
+    expect(permKeys.every((k) => String(k).startsWith('PLATFORM_'))).toBe(true);
     const audit = store.auditLog[0];
     const system = store.principals.find((p) => p.id === SYSTEM_PRINCIPAL_ID);
-    expect(audit?.action).toBe('SYSTEM_BOOTSTRAP_COMPLETED');
+    expect(audit?.action).toBe('PLATFORM_BOOTSTRAP_COMPLETED');
     expect(audit?.actorId).toBe(system?.id);
     expect(audit?.actorType).toBe('SYSTEM');
   });
 
-  it('is idempotent: a second run reports ALREADY_COMPLETE without duplicating', async () => {
+  it('preserves existing customer companies and reports ALREADY_COMPLETE on rerun', async () => {
     const { tx, store } = makeTx();
-    await bootstrapOrganization(tx, input);
+    store.companies.push({ id: 'cust', code: 'ACME', isPlatform: false });
+    await bootstrapPlatform(tx, input); // creates platform alongside customer
+    expect(store.companies).toHaveLength(2);
+    expect(store.companies.find((c) => c.id === 'cust')?.code).toBe('ACME');
     const counts = Object.fromEntries(
       Object.entries(store).map(([k, v]) => [k, (v as Row[]).length]),
     );
-    const r = await bootstrapOrganization(tx, input);
+    const r = await bootstrapPlatform(tx, input);
     expect(r.status).toBe('ALREADY_COMPLETE');
     for (const [k, v] of Object.entries(store) as [Bucket, Row[]][]) {
       expect(v.length).toBe(counts[k]);
     }
-  });
-
-  it('refuses when an unrelated company exists', async () => {
-    const { tx, store } = makeTx();
-    store.companies.push({ id: 'other', code: 'OTHER' });
-    await expect(bootstrapOrganization(tx, input)).rejects.toThrow(AppError);
-    expect(store.departments).toHaveLength(0);
   });
 });

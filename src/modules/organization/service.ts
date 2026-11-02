@@ -30,7 +30,7 @@ import {
   normalizeName,
 } from './validation.js';
 
-function auditEntry(
+export function auditEntry(
   actor: ActorContext,
   base: Omit<AuditRecord, 'eventKey' | 'actorId' | 'actorType' | 'correlationId'>,
 ): AuditRecord {
@@ -43,7 +43,7 @@ function auditEntry(
   };
 }
 
-function changedFields(
+export function changedFields(
   patch: Record<string, unknown>,
   existing: Record<string, unknown>,
 ): Record<string, { before: unknown; after: unknown }> | undefined {
@@ -51,6 +51,11 @@ function changedFields(
   for (const [key, after] of Object.entries(patch)) {
     if (after === undefined) continue;
     const before = existing[key];
+    // Sensitive identifiers are redacted in audit before/after snapshots.
+    if (['pan', 'cin', 'llpin', 'regNumber', 'identifier'].includes(key)) {
+      if (before !== after) diff[key] = { before: null, after: '***REDACTED***' };
+      continue;
+    }
     if (before !== after) diff[key] = { before: before ?? null, after };
   }
   return Object.keys(diff).length > 0 ? diff : undefined;
@@ -100,6 +105,42 @@ export class OrganizationService {
     if (patch.legalName !== undefined) {
       const trimmed = patch.legalName?.trim();
       data.legalName = trimmed !== undefined && trimmed !== '' ? trimmed : null;
+    }
+    // Profile passthrough — format-checked at the route; PAN/CIN masked in audit.
+    const PROFILE_KEYS = [
+      'entityType',
+      'tradeName',
+      'formedOn',
+      'pan',
+      'cin',
+      'llpin',
+      'regNumber',
+      'website',
+      'description',
+      'regAddressLine1',
+      'regAddressLine2',
+      'regLocality',
+      'regCity',
+      'regDistrict',
+      'regStateUt',
+      'regPin',
+      'regCountry',
+      'corrAddressLine1',
+      'corrAddressLine2',
+      'corrLocality',
+      'corrCity',
+      'corrDistrict',
+      'corrStateUt',
+      'corrPin',
+      'corrCountry',
+      'contactName',
+      'contactDesignation',
+      'contactEmail',
+      'contactPhone',
+    ] as const;
+    for (const key of PROFILE_KEYS) {
+      const v = (patch as Record<string, unknown>)[key];
+      if (v !== undefined) data[key] = typeof v === 'string' && v.trim() === '' ? null : v;
     }
 
     return this.uow.run(async ({ companies, audit }) => {

@@ -72,19 +72,19 @@ function makeTx(): { tx: ReconcileTx; store: RecStore } {
 }
 
 describe('reconcileOwnerPermissions', () => {
-  it('adds only the two employee grants to COMPANY_OWNER system roles', async () => {
+  it('adds only the employee+compliance grants to COMPANY_OWNER system roles', async () => {
     const { tx, store } = makeTx();
     store.roles.push({ id: 'r-owner', key: 'COMPANY_OWNER', isSystem: true, companyId: 'c1' });
     store.roles.push({ id: 'r-other', key: 'SITE_MANAGER', isSystem: true, companyId: 'c1' });
     store.roles.push({ id: 'r-custom', key: 'COMPANY_OWNER', isSystem: false, companyId: 'c1' });
     const changed = await reconcileOwnerPermissions(tx);
-    expect(changed).toBe(2);
+    expect(changed).toBe(RECONCILE_KEYS.length);
     const permIds = new Map(store.permissions.map((p) => [p.id, p.key]));
     for (const rp of store.rolePermissions) {
       expect(rp.roleId).toBe('r-owner');
       expect(RECONCILE_KEYS).toContain(permIds.get(rp.permissionId as string));
     }
-    expect(store.auditLog).toHaveLength(2);
+    expect(store.auditLog).toHaveLength(RECONCILE_KEYS.length);
     expect(
       store.auditLog.every((a) => a.actorId === SYSTEM_PRINCIPAL_ID && a.actorType === 'SYSTEM'),
     ).toBe(true);

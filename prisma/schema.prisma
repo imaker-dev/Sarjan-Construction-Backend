@@ -33,14 +33,47 @@ enum ProjectStatus {
 }
 
 model Company {
-  id        String        @id @default(uuid()) @db.Uuid
-  code      String        @unique
-  name      String
-  legalName String?
-  status    CompanyStatus @default(ACTIVE)
-  version   Int           @default(0)
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  id                 String             @id @default(uuid()) @db.Uuid
+  code               String             @unique
+  name               String
+  legalName          String?
+  // Durable marker for the single sentinel platform company — at most one row
+  // (partial unique index Company_one_platform).
+  isPlatform         Boolean            @default(false)
+  // Profile + compliance identity (all optional beyond code/name).
+  entityType         CompanyEntityType?
+  tradeName          String?
+  formedOn           DateTime?          @db.Date
+  pan                String?
+  cin                String?
+  llpin              String?
+  regNumber          String?
+  website            String?
+  description        String?
+  regAddressLine1    String?
+  regAddressLine2    String?
+  regLocality        String?
+  regCity            String?
+  regDistrict        String?
+  regStateUt         String?
+  regPin             String?
+  regCountry         String?            @default("IN")
+  corrAddressLine1   String?
+  corrAddressLine2   String?
+  corrLocality       String?
+  corrCity           String?
+  corrDistrict       String?
+  corrStateUt        String?
+  corrPin            String?
+  corrCountry        String?
+  contactName        String?
+  contactDesignation String?
+  contactEmail       String?
+  contactPhone       String?
+  status             CompanyStatus      @default(ACTIVE)
+  version            Int                @default(0)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   headOffices         HeadOffice[]
   projects            Project[]
@@ -68,6 +101,7 @@ model Company {
   documentLinks       DocumentLink[]
   outboxEvents        OutboxEvent[]
   notifications       Notification[]
+  complianceRecords   ComplianceRecord[]
 }
 
 model HeadOffice {
@@ -264,6 +298,7 @@ model Principal {
   approvalDecisions        ApprovalDecision[]
   formSubmissions          FormSubmission[]
   submissionRevisions      SubmissionRevision[]
+  claimTokens              ClaimToken[]
   uploadedDocuments        Document[]           @relation("DocumentUploader")
   reviewedDocuments        Document[]           @relation("DocumentReviewer")
   linkedDocuments          DocumentLink[]       @relation("DocumentLinker")
@@ -1082,14 +1117,15 @@ model Document {
   createdAt             DateTime       @default(now()) @db.Timestamptz
   updatedAt             DateTime       @updatedAt @db.Timestamptz
 
-  company    Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  uploadedBy Principal?     @relation("DocumentUploader", fields: [uploadedByPrincipalId], references: [id], onDelete: Restrict)
-  reviewedBy Principal?     @relation("DocumentReviewer", fields: [reviewedByPrincipalId], references: [id], onDelete: Restrict)
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  uploadedBy        Principal?         @relation("DocumentUploader", fields: [uploadedByPrincipalId], references: [id], onDelete: Restrict)
+  reviewedBy        Principal?         @relation("DocumentReviewer", fields: [reviewedByPrincipalId], references: [id], onDelete: Restrict)
   // Composite FKs keep the scope target inside this company.
-  headOffice HeadOffice?    @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
-  project    Project?       @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  site       Site?          @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  links      DocumentLink[]
+  headOffice        HeadOffice?        @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  project           Project?           @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site              Site?              @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  links             DocumentLink[]
+  complianceRecords ComplianceRecord[]
 
   @@unique([id, companyId])
   @@unique([companyId, storageKey])
@@ -1192,4 +1228,86 @@ model Notification {
   // Inbox + cursor paging: WHERE recipient=? AND companyId=? ORDER BY createdAt,id.
   @@index([recipientPrincipalId, companyId, createdAt, id])
   @@index([companyId, publishedAt])
+}
+
+// Single-use account claim code — stores only a SHA-256 hash of the raw code.
+// The raw code is returned once to the issuer and never persisted.
+// Lifecycle: consumedAt IS NULL = active; consumedAt is set BOTH when the
+// code is claimed and when it is invalidated by reissue (a "closed" code —
+// either way it can never be used again). Active count per principal is
+// capped at one by ClaimToken_one_active_per_principal.
+model ClaimToken {
+  id          String    @id @default(uuid()) @db.Uuid
+  principalId String    @db.Uuid
+  tokenHash   String    @unique
+  expiresAt   DateTime  @db.Timestamptz
+  consumedAt  DateTime? @db.Timestamptz
+  createdAt   DateTime  @default(now()) @db.Timestamptz
+
+  principal Principal @relation(fields: [principalId], references: [id], onDelete: Restrict)
+
+  @@index([principalId, consumedAt])
+}
+
+enum CompanyEntityType {
+  PRIVATE_LIMITED
+  PUBLIC_LIMITED
+  LLP
+  PARTNERSHIP
+  PROPRIETORSHIP
+  OTHER
+}
+
+enum ComplianceCategory {
+  GST
+  TAN
+  UDYAM_MSME
+  EPFO
+  ESIC
+  BOCW
+  LABOUR_LICENCE
+  CONTRACTOR_ENLISTMENT
+  ISO_CERT
+  TECHNICAL_LICENCE
+  INSURANCE
+  OTHER
+}
+
+enum ComplianceRecordStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  ARCHIVED
+}
+
+// Company-scoped compliance record — GST registrations, licences, certs,
+// insurance. Optional/applicability-dependent; never legal requirements.
+// Attachments reference Document ids (same-company, AVAILABLE at link time).
+model ComplianceRecord {
+  id               String                 @id @default(uuid()) @db.Uuid
+  companyId        String                 @db.Uuid
+  category         ComplianceCategory
+  customLabel      String? // required when category = OTHER
+  identifier       String // GSTIN / licence / policy number — masked in audit
+  jurisdiction     String? // state/UT or issuing jurisdiction
+  issuingAuthority String?
+  scopeType        ScopeType              @default(COMPANY)
+  issueDate        DateTime?              @db.Date
+  expiryDate       DateTime?              @db.Date
+  status           ComplianceRecordStatus @default(DRAFT)
+  verifiedAt       DateTime?              @db.Timestamptz
+  verifiedBy       String?                @db.Uuid
+  documentId       String?                @db.Uuid
+  version          Int                    @default(0)
+  createdAt        DateTime               @default(now()) @db.Timestamptz
+  updatedAt        DateTime               @updatedAt @db.Timestamptz
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  document Document? @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  // Duplicate identifier prevention within a company per category.
+  @@unique([companyId, category, identifier])
+  @@unique([id, companyId])
+  @@index([companyId, status, category])
 }

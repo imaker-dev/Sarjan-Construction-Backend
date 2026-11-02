@@ -57,8 +57,8 @@ export function departmentRoutes(service: DepartmentService) {
     const auth = (key?: string) => ({
       preHandler:
         key === undefined
-          ? [app.authenticate]
-          : [app.authenticate, app.requirePermission(key, atCompany)],
+          ? [app.authenticate, app.tenantCompanyGuard]
+          : [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, atCompany)],
     });
 
     // Writes: create is checked at the declared scope inside the service too;

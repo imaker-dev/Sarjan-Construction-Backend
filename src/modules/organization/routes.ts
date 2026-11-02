@@ -22,6 +22,41 @@ const StatusBody = Type.Object({
 const UpdateCompany = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   legalName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  entityType: Type.Optional(
+    Type.Union(
+      ['PRIVATE_LIMITED', 'PUBLIC_LIMITED', 'LLP', 'PARTNERSHIP', 'PROPRIETORSHIP', 'OTHER'].map(
+        (v) => Type.Literal(v),
+      ),
+    ),
+  ),
+  tradeName: Type.Optional(Type.String({ maxLength: 200 })),
+  formedOn: Type.Optional(Type.String({ format: 'date' })),
+  pan: Type.Optional(Type.String({ pattern: '^[A-Z]{5}[0-9]{4}[A-Z]$', maxLength: 10 })),
+  cin: Type.Optional(Type.String({ minLength: 21, maxLength: 21 })),
+  llpin: Type.Optional(Type.String({ minLength: 7, maxLength: 7 })),
+  regNumber: Type.Optional(Type.String({ maxLength: 40 })),
+  website: Type.Optional(Type.String({ maxLength: 200 })),
+  description: Type.Optional(Type.String({ maxLength: 2000 })),
+  regAddressLine1: Type.Optional(Type.String({ maxLength: 200 })),
+  regAddressLine2: Type.Optional(Type.String({ maxLength: 200 })),
+  regLocality: Type.Optional(Type.String({ maxLength: 120 })),
+  regCity: Type.Optional(Type.String({ maxLength: 80 })),
+  regDistrict: Type.Optional(Type.String({ maxLength: 80 })),
+  regStateUt: Type.Optional(Type.String({ maxLength: 80 })),
+  regPin: Type.Optional(Type.String({ maxLength: 10 })),
+  regCountry: Type.Optional(Type.String({ maxLength: 2 })),
+  corrAddressLine1: Type.Optional(Type.String({ maxLength: 200 })),
+  corrAddressLine2: Type.Optional(Type.String({ maxLength: 200 })),
+  corrLocality: Type.Optional(Type.String({ maxLength: 120 })),
+  corrCity: Type.Optional(Type.String({ maxLength: 80 })),
+  corrDistrict: Type.Optional(Type.String({ maxLength: 80 })),
+  corrStateUt: Type.Optional(Type.String({ maxLength: 80 })),
+  corrPin: Type.Optional(Type.String({ maxLength: 10 })),
+  corrCountry: Type.Optional(Type.String({ maxLength: 2 })),
+  contactName: Type.Optional(Type.String({ maxLength: 120 })),
+  contactDesignation: Type.Optional(Type.String({ maxLength: 120 })),
+  contactEmail: Type.Optional(Type.String({ format: 'email', maxLength: 320 })),
+  contactPhone: Type.Optional(Type.String({ maxLength: 20 })),
   expectedVersion: Type.Optional(Type.Integer()),
 });
 const CreateProject = Type.Object({
@@ -99,7 +134,7 @@ const actorOf = (request: FastifyRequest): ActorContext => ({
 export function organizationRoutes(service: OrganizationService) {
   return async function routes(app: FastifyInstance) {
     const perm = (key: string, scope: (r: FastifyRequest) => ScopeTarget) => ({
-      preHandler: [app.authenticate, app.requirePermission(key, scope)],
+      preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, scope)],
     });
 
     // -------------------------------------------------------------- company

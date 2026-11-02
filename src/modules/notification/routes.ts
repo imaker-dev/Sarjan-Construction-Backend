@@ -38,6 +38,7 @@ export function notificationRoutes(deps: NotificationRoutesDeps) {
       { schema: { body: TicketBody, response: { 200: TicketResponse } } },
       async (request) => {
         await app.authenticate(request);
+        await app.tenantCompanyGuard(request);
         const { companyId } = request.body as { companyId: string };
         const principal = request.principal as { actorId: string; sessionId: string };
         return deps.service.issueTicket(
@@ -49,6 +50,7 @@ export function notificationRoutes(deps: NotificationRoutesDeps) {
 
     app.get('/notifications', { schema: { querystring: ListQuery } }, async (request) => {
       await app.authenticate(request);
+      await app.tenantCompanyGuard(request);
       const q = request.query as {
         cursor?: string;
         unreadOnly?: boolean;
@@ -69,6 +71,7 @@ export function notificationRoutes(deps: NotificationRoutesDeps) {
 
     app.post('/notifications/:id/read', async (request) => {
       await app.authenticate(request);
+      await app.tenantCompanyGuard(request);
       const { id } = request.params as { id: string };
       const companyId = request.headers['x-company-id'];
       if (typeof companyId !== 'string' || companyId.length === 0) {

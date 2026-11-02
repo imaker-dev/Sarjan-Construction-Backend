@@ -48,6 +48,7 @@ export class NotificationWorker {
   async close(): Promise<void> {
     if (this.worker !== null) await this.worker.close();
     if (this.queue !== null) await this.queue.close();
+    this.connection.disconnect(); // the dedicated duplicate — never leaks
     this.worker = null;
     this.queue = null;
     this.started = false;

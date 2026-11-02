@@ -1,10 +1,13 @@
-// One-time operator bootstrap — run manually: `npm run db:bootstrap`.
-// Credentials come from env only (BOOTSTRAP_OWNER_*), never CLI args, and are
-// never printed. Idempotent: a completed bootstrap reports ALREADY_COMPLETE.
+// One-time operator bootstrap — initialize the platform: sentinel platform
+// company + PLATFORM_ADMIN role + first Platform Admin. Run manually:
+//   npm run db:bootstrap
+// Credentials come from env only (BOOTSTRAP_ADMIN_*), never CLI args, never
+// logged. Idempotent: an existing platform company reports ALREADY_COMPLETE.
+// Existing customer companies are preserved untouched.
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
-import { bootstrapOrganization } from '../src/modules/setup/bootstrap.js';
+import { bootstrapPlatform } from '../src/modules/setup/bootstrap.js';
 
 const required = (key: string): string => {
   const v = process.env[key];
@@ -17,17 +20,15 @@ const required = (key: string): string => {
 
 const DATABASE_URL = required('DATABASE_URL');
 const input = {
-  companyCode: required('BOOTSTRAP_COMPANY_CODE').toUpperCase().trim(),
-  companyName: required('BOOTSTRAP_COMPANY_NAME').trim(),
-  ownerLoginId: required('BOOTSTRAP_OWNER_LOGIN_ID').toLowerCase().trim(),
-  ownerPassword: required('BOOTSTRAP_OWNER_PASSWORD'),
+  adminLoginId: required('BOOTSTRAP_ADMIN_LOGIN_ID').toLowerCase().trim(),
+  adminPassword: required('BOOTSTRAP_ADMIN_PASSWORD'),
 };
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 
 prisma
-  .$transaction((tx) => bootstrapOrganization(tx, input))
+  .$transaction((tx) => bootstrapPlatform(tx, input))
   .then((r) => {
     console.log(`bootstrap ${r.status} — company ${r.companyId}`);
   })

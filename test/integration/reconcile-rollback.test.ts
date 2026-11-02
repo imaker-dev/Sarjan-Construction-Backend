@@ -4,31 +4,39 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 import { reconcileOwnerPermissions, RECONCILE_KEYS } from '../../src/modules/setup/reconcile.js';
 import { SYSTEM_PRINCIPAL_ID } from '../../src/modules/setup/bootstrap.js';
+import { resolveTestDbUrl } from './test-db-url.js';
 
-// Real-PostgreSQL rollback proof. Runs ONLY against a dedicated disposable
-// database supplied via TEST_DATABASE_URL — skipped otherwise, never against
-// dev/staging/prod URLs.
-const url = process.env.TEST_DATABASE_URL;
-const run = !url?.includes('erp_test') ? it.skip : it;
+// Real-PostgreSQL rollback proof. Runs ONLY against the dedicated disposable
+// target (loopback:55432/erp_test) — exact URL parse, fail closed otherwise.
+const url = resolveTestDbUrl(process.env.TEST_DATABASE_URL);
+const run = url === null ? it.skip : it;
 
 let prisma: PrismaClient | undefined;
 let pool: pg.Pool;
+const fixtureIds: { companyId?: string; roleId?: string } = {};
 
 beforeAll(async () => {
-  if (url === undefined) return;
+  if (url === null) return;
   pool = new pg.Pool({ connectionString: url });
   prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 });
 
 afterAll(async () => {
-  if (prisma !== undefined) {
-    // clean only this test's fixtures
-    await prisma.rolePermission.deleteMany({});
-    await prisma.role.deleteMany({ where: { key: 'COMPANY_OWNER' } });
+  if (
+    prisma !== undefined &&
+    fixtureIds.companyId !== undefined &&
+    fixtureIds.roleId !== undefined
+  ) {
+    // clean only this test's fixtures — other integration files share the DB
+    await prisma.rolePermission.deleteMany({ where: { roleId: fixtureIds.roleId } });
+    await prisma.role.deleteMany({ where: { id: fixtureIds.roleId } });
     await prisma.permission.deleteMany({ where: { key: { in: [...RECONCILE_KEYS] } } });
-    await prisma.company.deleteMany({});
+    await prisma.company.deleteMany({ where: { id: fixtureIds.companyId } });
     await prisma.principal.deleteMany({ where: { id: SYSTEM_PRINCIPAL_ID } });
     await prisma.auditLog.deleteMany({ where: { action: 'SYSTEM_PERMISSION_RECONCILED' } });
+    await prisma.$disconnect();
+    await pool.end();
+  } else if (prisma !== undefined) {
     await prisma.$disconnect();
     await pool.end();
   }
@@ -36,6 +44,7 @@ afterAll(async () => {
 
 describe('reconcileOwnerPermissions rollback (real PostgreSQL)', () => {
   run('a post-write failure rolls back grants and audit together', async () => {
+    if (prisma === undefined) throw new Error('unreachable: guard passed but client missing');
     // Fixtures: SYSTEM actor + company + COMPANY_OWNER system role.
     const system = await prisma.principal.create({
       data: { id: SYSTEM_PRINCIPAL_ID, type: 'SYSTEM', status: 'ACTIVE' },
@@ -44,6 +53,9 @@ describe('reconcileOwnerPermissions rollback (real PostgreSQL)', () => {
     const role = await prisma.role.create({
       data: { companyId: company.id, key: 'COMPANY_OWNER', name: 'Owner', isSystem: true },
     });
+    fixtureIds.companyId = company.id;
+    fixtureIds.roleId = role.id;
+    const auditCountBefore = await prisma.auditLog.count();
     expect(system.id).toBeTruthy();
 
     await expect(
@@ -59,9 +71,9 @@ describe('reconcileOwnerPermissions rollback (real PostgreSQL)', () => {
       }),
     ).rejects.toThrow('force-rollback');
 
-    // Outside the tx: nothing persisted.
+    // Outside the tx: grants + audit rolled back. (Permission rows are global
+    // catalogue data legitimately created by other test files — not asserted.)
     expect(await prisma.rolePermission.count({ where: { roleId: role.id } })).toBe(0);
-    expect(await prisma.auditLog.count()).toBe(0);
-    expect(await prisma.permission.count({ where: { key: { in: [...RECONCILE_KEYS] } } })).toBe(0);
+    expect(await prisma.auditLog.count()).toBe(auditCountBefore);
   });
 });

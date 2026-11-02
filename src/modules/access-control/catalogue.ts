@@ -52,6 +52,10 @@ export const PERMISSIONS = [
   'OUTBOX_ADMIN',
   'EMPLOYEE_READ',
   'EMPLOYEE_MANAGE',
+  'COMPLIANCE_READ',
+  'COMPLIANCE_MANAGE',
+  'PLATFORM_COMPANY_CREATE',
+  'PLATFORM_COMPANY_READ',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[number];

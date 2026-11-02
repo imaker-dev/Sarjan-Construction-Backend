@@ -44,7 +44,7 @@ const actorOf = (r: FastifyRequest): ActorContext => ({
 export function employeeRoutes(service: EmployeeService) {
   return async function routes(app: FastifyInstance) {
     const perm = (key: string) => ({
-      preHandler: [app.authenticate, app.requirePermission(key, atCompany)],
+      preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, atCompany)],
     });
 
     app.get(
