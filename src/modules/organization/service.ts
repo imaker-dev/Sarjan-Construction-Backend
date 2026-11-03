@@ -251,6 +251,27 @@ export class OrganizationService {
     to: string,
     expectedVersion?: number,
   ) {
+    // Pre-check: a primary HO referenced by ACTIVE projects cannot leave
+    // ACTIVE (the transition guard re-verifies isPrimary inside the tx; this
+    // adds the project-dependency rule — small TOCTOU window, documented).
+    if (to !== 'ACTIVE') {
+      await this.uow.run(async (repos) => {
+        const ho = await repos.headOffices.findById(companyId, id);
+        if (!ho) throw new OrgEntityNotFoundError('HEAD_OFFICE');
+        if (ho.isPrimary) {
+          const active = await repos.projects.list(companyId, {
+            headOfficeId: id,
+            status: 'ACTIVE',
+          });
+          if (active.length > 0) {
+            throw new OrgValidationError(
+              'isPrimary',
+              'primary head office is referenced by active projects',
+            );
+          }
+        }
+      });
+    }
     return this.transition(
       actor,
       'HEAD_OFFICE',
@@ -260,9 +281,13 @@ export class OrganizationService {
       expectedVersion,
       companyId,
       (existing) => {
-        // The last primary Head Office cannot be archived.
-        if (to === 'ARCHIVED' && (existing as { isPrimary?: boolean }).isPrimary === true) {
-          throw new OrgValidationError('isPrimary', 'cannot archive the primary head office');
+        // The last primary Head Office cannot be archived or suspended while
+        // it hosts projects — the shared-HO invariant requires a working HO.
+        if (to !== 'ACTIVE' && (existing as { isPrimary?: boolean }).isPrimary === true) {
+          throw new OrgValidationError(
+            'isPrimary',
+            'primary head office is referenced by projects and cannot leave ACTIVE',
+          );
         }
       },
     );
@@ -287,6 +312,10 @@ export class OrganizationService {
       // Validate parent inside the requested company scope before mutating.
       const headOffice = await headOffices.findById(companyId, headOfficeId);
       if (!headOffice) throw new OrgEntityNotFoundError('HEAD_OFFICE');
+      // One shared HO invariant: projects bind to the company's PRIMARY HO only.
+      if (!headOffice.isPrimary) {
+        throw new OrgValidationError('headOfficeId', 'must be the company primary head office');
+      }
       const project = await projects.create(companyId, headOfficeId, {
         code,
         name,

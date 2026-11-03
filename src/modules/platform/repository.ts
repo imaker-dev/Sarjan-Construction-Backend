@@ -62,7 +62,12 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
     },
     roles: { create: (data) => tx.role.create({ data: data as never }) },
     permissions: {
-      upsert: (key) => tx.permission.upsert({ where: { key }, update: {}, create: { key } }),
+      upsert: async (key) => {
+        // INSERT ON CONFLICT is atomic — no aborted-tx risk under concurrent
+        // inserts of the same global Permission key (unlike findUnique+insert).
+        await tx.$queryRaw`INSERT INTO "Permission" (id, key) VALUES (gen_random_uuid(), ${key}) ON CONFLICT (key) DO NOTHING`;
+        return tx.permission.findUniqueOrThrow({ where: { key } });
+      },
     },
     rolePermissions: {
       create: (roleId, permissionId) =>

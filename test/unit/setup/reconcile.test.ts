@@ -32,11 +32,31 @@ function makeTx(): { tx: ReconcileTx; store: RecStore } {
     principal: {
       findFirst: async ({ where }) => store.principals.find((p) => p.id === where.id) ?? null,
     },
+    company: {
+      findMany: async ({ where }) =>
+        store.roles
+          .filter((r) => Boolean(r.companyId) && !where.isPlatform)
+          .reduce<{ id: string }[]>((acc, r) => {
+            const cid = r.companyId as string;
+            if (!acc.some((c) => c.id === cid)) acc.push({ id: cid });
+            return acc;
+          }, []),
+    },
     role: {
       findMany: async ({ where }) =>
         store.roles
           .filter((r) => r.key === where.key && r.isSystem === where.isSystem)
           .map((r) => ({ id: r.id, companyId: r.companyId as string })),
+      findFirst: async ({ where }) =>
+        store.roles.find(
+          (r) =>
+            r.companyId === where.companyId && r.key === where.key && r.isSystem === where.isSystem,
+        ) ?? null,
+      create: async ({ data }) => {
+        const row = { id: id(), ...data, isSystem: true };
+        store.roles.push(row);
+        return row;
+      },
     },
     permission: {
       upsert: async ({ where, create }) => {

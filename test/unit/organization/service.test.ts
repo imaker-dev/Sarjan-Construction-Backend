@@ -82,7 +82,11 @@ describe('status transitions', () => {
 
   it('rejects direct PLANNED -> COMPLETED for projects', async () => {
     const company = await service.createCompany(actor, { code: 'c1', name: 'Co' });
-    const ho = await service.createHeadOffice(actor, company.id, { code: 'ho', name: 'HO' });
+    const ho = await service.createHeadOffice(actor, company.id, {
+      code: 'ho',
+      name: 'HO',
+      isPrimary: true,
+    });
     const project = await service.createProject(actor, company.id, ho.id, {
       code: 'p1',
       name: 'P1',
@@ -151,7 +155,11 @@ describe('tenant isolation', () => {
   it('rejects a site under a project from another company', async () => {
     const a = await service.createCompany(actor, { code: 'ca', name: 'A' });
     const b = await service.createCompany(actor, { code: 'cb', name: 'B' });
-    const ho = await service.createHeadOffice(actor, a.id, { code: 'ho', name: 'HO' });
+    const ho = await service.createHeadOffice(actor, a.id, {
+      code: 'ho',
+      name: 'HO',
+      isPrimary: true,
+    });
     const project = await service.createProject(actor, a.id, ho.id, {
       code: 'p1',
       name: 'P',

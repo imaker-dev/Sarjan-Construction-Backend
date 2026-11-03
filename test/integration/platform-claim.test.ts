@@ -24,8 +24,10 @@ beforeAll(async () => {
   prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
   svc = new PlatformService(new PrismaPlatformUnitOfWork(prisma));
   // Real platform-admin principal — FK'd by RoleAssignment.grantedByPrincipalId.
-  const padm = await prisma.principal.create({
-    data: {
+  const padm = await prisma.principal.upsert({
+    where: { loginId: 'padm@test.local' },
+    update: {},
+    create: {
       loginId: 'padm@test.local',
       loginIdType: 'EMAIL',
       type: 'USER',
@@ -38,14 +40,40 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (prisma !== undefined && pool !== undefined) {
-    await prisma.claimToken.deleteMany({});
-    await prisma.roleAssignment.deleteMany({});
-    await prisma.rolePermission.deleteMany({});
-    await prisma.role.deleteMany({});
-    await prisma.employee.deleteMany({});
-    await prisma.principal.deleteMany({});
-    await prisma.auditLog.deleteMany({});
-    await prisma.company.deleteMany({});
+    // Fixture-scoped teardown — other integration files share this DB.
+    const fixtureCompanies = await prisma.company.findMany({
+      where: { code: { in: ['KEEP', 'ROLL', 'RACE', 'ACME', 'PLAT2', 'PLATFORM'] } },
+      select: { id: true },
+    });
+    const cids = fixtureCompanies.map((c) => c.id);
+    await prisma.claimToken.deleteMany({
+      where: {
+        OR: [
+          { principal: { employees: { some: { companyId: { in: cids } } } } },
+          { principal: { roleAssignments: { some: { companyId: { in: cids } } } } },
+        ],
+      },
+    });
+    await prisma.roleAssignment.deleteMany({ where: { companyId: { in: cids } } });
+    await prisma.rolePermission.deleteMany({ where: { role: { companyId: { in: cids } } } });
+    await prisma.role.deleteMany({ where: { companyId: { in: cids } } });
+    await prisma.employee.deleteMany({ where: { companyId: { in: cids } } });
+    await prisma.auditLog.deleteMany({ where: { companyId: { in: cids } } });
+    const fixtureLogins = [
+      'padm@test.local',
+      'padm2@test.local',
+      'admin@acme.test',
+      'r@r.test',
+      'race@r.test',
+      'ops@p.test',
+      'ops2@p.test',
+    ];
+    await prisma.claimToken.deleteMany({
+      where: { principal: { loginId: { in: fixtureLogins } } },
+    });
+    await prisma.principal.deleteMany({ where: { loginId: { in: fixtureLogins } } });
+
+    await prisma.company.deleteMany({ where: { id: { in: cids } } });
     await prisma.$disconnect();
     await pool.end();
   }
@@ -122,7 +150,7 @@ describe('platform company creation + claim (real PostgreSQL)', () => {
 
   run('duplicate company code conflicts cleanly; tx rollback leaves nothing', async () => {
     if (prisma === undefined) throw new Error('unreachable');
-    const auditsBefore = await prisma.auditLog.count();
+    const auditsBefore = await prisma.auditLog.count({ where: { actorId: platformAdmin.actorId } });
     await expect(
       prisma.$transaction(async (tx) => {
         const s = new PlatformService(new PrismaPlatformUnitOfWork(tx as unknown as PrismaClient));
@@ -136,7 +164,9 @@ describe('platform company creation + claim (real PostgreSQL)', () => {
       }),
     ).rejects.toThrow('force-rollback');
     expect(await prisma.company.count({ where: { code: 'ROLL' } })).toBe(0);
-    expect(await prisma.auditLog.count()).toBe(auditsBefore);
+    expect(await prisma.auditLog.count({ where: { actorId: platformAdmin.actorId } })).toBe(
+      auditsBefore,
+    );
   });
 
   run('concurrent reissues: one wins, loser gets 409, one active code', async () => {
@@ -147,7 +177,7 @@ describe('platform company creation + claim (real PostgreSQL)', () => {
       adminLoginId: 'race@r.test',
       adminDisplayName: 'Race',
     });
-    const auditsBefore = await prisma.auditLog.count();
+    const auditsBefore = await prisma.auditLog.count({ where: { actorId: platformAdmin.actorId } });
     // Two simultaneous reissues on the same admin.
     const results = await Promise.allSettled([
       svc.reissueClaim(platformAdmin, r.companyId, r.adminPrincipalId),
@@ -171,7 +201,9 @@ describe('platform company creation + claim (real PostgreSQL)', () => {
       where: { action: 'CLAIM_TOKEN_REISSUED' },
     });
     expect(reissueAudits).toBe(ok.length);
-    expect((await prisma.auditLog.count()) - auditsBefore).toBe(ok.length);
+    expect(
+      (await prisma.auditLog.count({ where: { actorId: platformAdmin.actorId } })) - auditsBefore,
+    ).toBe(ok.length);
   });
 
   run('bootstrap creates platform company once; platform marker unique', async () => {

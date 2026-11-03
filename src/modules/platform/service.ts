@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { passwordService } from '../identity/password.js';
 import { OWNER_ROLE_KEY, TENANT_OWNER_PERMISSIONS } from '../setup/bootstrap.js';
+import { HO_ADMIN_PERMISSIONS } from '../setup/role-templates.js';
 import { OrgEntityNotFoundError, OrgValidationError } from '../organization/errors.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
@@ -80,6 +81,19 @@ export class PlatformService {
       for (const key of TENANT_OWNER_PERMISSIONS) {
         const permission = await repos.permissions.upsert(key);
         await repos.rolePermissions.create(role.id, permission.id);
+      }
+
+      // HO_ADMIN system role — fixed template keyset, HEAD_OFFICE scope only.
+      const hoRole = await repos.roles.create({
+        companyId: company.id,
+        key: 'HO_ADMIN',
+        name: 'HO Admin',
+        isSystem: true,
+        description: 'Shared Head Office administrator — cross-project access',
+      });
+      for (const key of HO_ADMIN_PERMISSIONS) {
+        const permission = await repos.permissions.upsert(key);
+        await repos.rolePermissions.create(hoRole.id, permission.id);
       }
 
       // Pending admin: suspended until claim completes; placeholder hash is a

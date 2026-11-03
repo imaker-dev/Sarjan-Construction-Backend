@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { EmployeeService } from './service.js';
+import type { EmployeeAccessService } from './access.js';
 import type { ScopeTarget } from '../access-control/service.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ActorContext } from '../organization/types.js';
@@ -14,6 +15,15 @@ const CreateEmployee = Type.Object({
 const UpdateEmployee = Type.Object({
   displayName: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   expectedVersion: Type.Integer(),
+});
+const InviteBody = Type.Object({
+  loginId: Type.String({ minLength: 3, maxLength: 320 }),
+  loginIdType: Type.Literal('EMAIL'),
+});
+const AssignmentBody = Type.Object({
+  roleKey: Type.String({ maxLength: 60 }),
+  scopeType: Type.Union([Type.Literal('COMPANY'), Type.Literal('HEAD_OFFICE')]),
+  scopeId: Type.Optional(Type.String({ format: 'uuid' })),
 });
 const StatusBody = Type.Object({
   to: Type.Union([Type.Literal('ACTIVE'), Type.Literal('INACTIVE')]),
@@ -41,7 +51,7 @@ const actorOf = (r: FastifyRequest): ActorContext => ({
   actorType: 'USER',
 });
 
-export function employeeRoutes(service: EmployeeService) {
+export function employeeRoutes(service: EmployeeService, accessService?: EmployeeAccessService) {
   return async function routes(app: FastifyInstance) {
     const perm = (key: string) => ({
       preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, atCompany)],
@@ -95,5 +105,51 @@ export function employeeRoutes(service: EmployeeService) {
           (req.body as { expectedVersion?: number }).expectedVersion,
         ),
     );
+
+    // Phase 1 — account invite + whitelisted role assignments (Company Owner).
+    if (accessService !== undefined) {
+      app.post(
+        '/employees/:id/invite',
+        { schema: { body: InviteBody }, ...perm('EMPLOYEE_INVITE') },
+        async (req) => {
+          const { loginId, loginIdType } = req.body as {
+            loginId: string;
+            loginIdType?: string;
+          };
+          return accessService.invite(
+            actorOf(req),
+            companyIdOf(req),
+            (req.params as { id: string }).id,
+            loginId,
+            loginIdType,
+          );
+        },
+      );
+      app.post('/employees/:id/invite/resend', { ...perm('EMPLOYEE_INVITE') }, async (req) =>
+        accessService.resend(actorOf(req), companyIdOf(req), (req.params as { id: string }).id),
+      );
+      app.get('/employees/:id/assignments', { ...perm('ROLE_ASSIGNMENT_READ') }, async (req) =>
+        accessService.listAssignments(companyIdOf(req), (req.params as { id: string }).id),
+      );
+      app.post(
+        '/employees/:id/assignments',
+        { schema: { body: AssignmentBody }, ...perm('ACCESS_ROLE_ASSIGN') },
+        async (req) =>
+          accessService.grant(actorOf(req), companyIdOf(req), {
+            employeeId: (req.params as { id: string }).id,
+            ...(req.body as { roleKey: string; scopeType: string; scopeId?: string }),
+          }),
+      );
+      app.delete(
+        '/employees/:id/assignments/:assignmentId',
+        { ...perm('ACCESS_ROLE_REVOKE') },
+        async (req) =>
+          accessService.revoke(
+            actorOf(req),
+            companyIdOf(req),
+            (req.params as { assignmentId: string }).assignmentId,
+          ),
+      );
+    }
   };
 }

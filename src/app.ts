@@ -30,6 +30,7 @@ import { PrismaDepartmentUnitOfWork } from './modules/department/repository.js';
 import { PrismaEmployeeUnitOfWork } from './modules/employee/repository.js';
 import { EmployeeService } from './modules/employee/service.js';
 import { employeeRoutes } from './modules/employee/routes.js';
+import { EmployeeAccessService } from './modules/employee/access.js';
 import { PlatformService } from './modules/platform/service.js';
 import { platformRoutes } from './modules/platform/routes.js';
 import { PrismaPlatformUnitOfWork } from './modules/platform/repository.js';
@@ -120,6 +121,29 @@ const OPERATION_DOCS: Record<
     summary: 'Activate/deactivate employee (atomic offboarding)',
     permission: 'EMPLOYEE_MANAGE',
   },
+  'POST /employees/:id/invite': {
+    summary: 'Invite profile-only employee — creates suspended account + one-time claim code',
+    description:
+      'Code returned once, never logged/stored raw; the employee claims via /auth/claim.',
+    permission: 'EMPLOYEE_INVITE',
+  },
+  'POST /employees/:id/invite/resend': {
+    summary: 'Reissue employee claim code (invalidates prior)',
+    permission: 'EMPLOYEE_INVITE',
+  },
+  'GET /employees/:id/assignments': {
+    summary: 'List active role assignments of an employee',
+    permission: 'ROLE_ASSIGNMENT_READ',
+  },
+  'POST /employees/:id/assignments': {
+    summary:
+      'Grant a whitelisted tenant role (COMPANY_OWNER@COMPANY, HO_ADMIN@HEAD_OFFICE primary)',
+    permission: 'ACCESS_ROLE_ASSIGN',
+  },
+  'DELETE /employees/:id/assignments/:assignmentId': {
+    summary: 'Revoke a role assignment',
+    permission: 'ACCESS_ROLE_REVOKE',
+  },
   'GET /compliance-records': {
     summary: 'List company compliance records',
     permission: 'COMPLIANCE_READ',
@@ -174,6 +198,7 @@ export interface BuildAppOptions {
     accessControl?: AccessControlService;
     notificationService?: NotificationService;
     employeeService?: EmployeeService;
+    employeeAccessService?: EmployeeAccessService;
     complianceService?: ComplianceService;
     platformService?: PlatformService;
     // Test hook: inject the sentinel platform-company id (null = none).
@@ -519,6 +544,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           assertPermission: (pid: string, key: string, target: ScopeTarget) =>
             accessControl.assertPermission(pid, key, target),
         }),
+      services.employeeAccessService ?? new EmployeeAccessService(app.prisma),
     ),
     { prefix: '/api/v1' },
   );
