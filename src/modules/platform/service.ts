@@ -9,8 +9,7 @@ import type { PlatformUnitOfWork } from './repository.js';
 
 /**
  * Platform Admin surface: create customer Company + first Company Admin,
- * issue/reissue one-time claim codes, and consume them. The Platform Admin
- * never creates tenant structure — only the Company and its owner.
+ * issue/reissue one-time claim codes, verify them, and complete onboarding.
  */
 
 export const PLATFORM_COMPANY_CREATE = 'PLATFORM_COMPANY_CREATE';
@@ -30,16 +29,32 @@ const auditEntry = (
 
 const hashToken = (raw: string): string => createHash('sha256').update(raw).digest('hex');
 
+export interface OnboardInput {
+  password: string;
+  loginId?: string;
+  displayName?: string;
+  company?: Record<string, unknown>;
+  headOffice?: {
+    code: string;
+    name: string;
+    isPrimary?: boolean;
+  };
+}
+
 export interface CreateCompanyResult {
   companyId: string;
   companyCode: string;
   adminPrincipalId: string;
   claimCode: string; // raw — returned once, never stored or logged
+  claimUrl: string;
   claimExpiresAt: Date;
 }
 
 export class PlatformService {
-  constructor(private readonly uow: PlatformUnitOfWork) {}
+  constructor(
+    private readonly uow: PlatformUnitOfWork,
+    private readonly appBaseUrl = 'http://localhost:3000',
+  ) {}
 
   /** Create a customer Company + pending first admin + claim code. One tx. */
   async createCompanyWithAdmin(
@@ -141,11 +156,13 @@ export class PlatformService {
           },
         }),
       );
+      const claimUrl = `${this.appBaseUrl.replace(/\/+$/, '')}/onboard?token=${raw}`;
       return {
         companyId: company.id,
         companyCode: code,
         adminPrincipalId: admin.id,
         claimCode: raw,
+        claimUrl,
         claimExpiresAt: expiresAt,
       };
     });
@@ -153,6 +170,36 @@ export class PlatformService {
 
   listCompanies() {
     return this.uow.run(({ companies }) => companies.list());
+  }
+
+  /**
+   * Verify an unconsumed, unexpired claim code before starting onboarding.
+   */
+  async verifyClaim(rawToken: string): Promise<{
+    valid: true;
+    companyId: string;
+    companyCode: string;
+    companyName: string;
+    adminLoginId: string;
+    adminDisplayName: string;
+    expiresAt: Date;
+  }> {
+    const tokenHash = hashToken(rawToken);
+    return this.uow.run(async (repos) => {
+      const active = await repos.claimTokens.findActive(tokenHash, new Date());
+      if (!active) {
+        throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
+      }
+      return {
+        valid: true,
+        companyId: active.companyId,
+        companyCode: active.companyCode,
+        companyName: active.companyName,
+        adminLoginId: active.adminLoginId,
+        adminDisplayName: active.adminDisplayName,
+        expiresAt: active.expiresAt,
+      };
+    });
   }
 
   /** Consume a claim code: set the admin's real password + activate. One tx.
@@ -191,6 +238,115 @@ export class PlatformService {
     });
   }
 
+  /**
+   * Complete the full onboarding in a single atomic transaction:
+   * Consume claim token + set password + activate admin + update company profile + create primary HeadOffice.
+   */
+  async consumeClaimAndOnboard(
+    rawToken: string,
+    input: OnboardInput,
+  ): Promise<{
+    status: 'ONBOARDED';
+    companyId: string;
+    companyCode: string;
+    headOfficeId?: string;
+  }> {
+    if (input.password.length < 12) {
+      throw new OrgValidationError('password', 'at least 12 characters');
+    }
+    if (input.headOffice?.code) {
+      const hoCode = input.headOffice.code.trim().toUpperCase();
+      if (!/^[A-Z0-9][A-Z0-9_-]{0,39}$/.test(hoCode)) {
+        throw new OrgValidationError('headOffice.code', '1–40 chars: A-Z 0-9 - _');
+      }
+    }
+    const tokenHash = hashToken(rawToken);
+    return this.uow.run(async (repos) => {
+      const active = await repos.claimTokens.findActive(tokenHash, new Date());
+      if (!active) {
+        throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
+      }
+      const token = await repos.claimTokens.consume(tokenHash, new Date());
+      if (token === null) {
+        throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
+      }
+      const passwordHash = await passwordService.hash(input.password);
+      const principalUpdate: Record<string, unknown> = {
+        passwordHash,
+        status: 'ACTIVE',
+      };
+      if (input.loginId) {
+        principalUpdate.loginId = input.loginId.toLowerCase().trim();
+      }
+      const activated = await repos.principals.activateIfSuspended(
+        token.principalId,
+        principalUpdate,
+      );
+      if (!activated) {
+        throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
+      }
+
+      if (input.displayName) {
+        await repos.employees.updateByPrincipalId(token.principalId, {
+          displayName: input.displayName.trim(),
+        });
+      }
+
+      if (input.company && Object.keys(input.company).length > 0) {
+        await repos.companies.update(active.companyId, input.company);
+      }
+
+      let headOfficeId: string | undefined;
+      if (input.headOffice) {
+        const ho = await repos.headOffices.create({
+          companyId: active.companyId,
+          code: input.headOffice.code.trim().toUpperCase(),
+          name: input.headOffice.name.trim(),
+          isPrimary: input.headOffice.isPrimary ?? true,
+          status: 'ACTIVE',
+        });
+        headOfficeId = ho.id;
+      }
+
+      await repos.audit.record(
+        auditEntry(
+          { actorId: token.principalId, actorType: 'USER' },
+          {
+            action: 'ACCOUNT_CLAIM_COMPLETED',
+            entityType: 'PRINCIPAL',
+            entityId: token.principalId,
+            companyId: active.companyId,
+            statusBefore: 'SUSPENDED',
+            statusAfter: 'ACTIVE',
+          },
+        ),
+      );
+
+      await repos.audit.record(
+        auditEntry(
+          { actorId: token.principalId, actorType: 'USER' },
+          {
+            action: 'COMPANY_ONBOARDING_COMPLETED',
+            entityType: 'COMPANY',
+            entityId: active.companyId,
+            companyId: active.companyId,
+            changedFields: {
+              headOfficeCreated: { before: null, after: headOfficeId ?? null },
+              onboarded: { before: false, after: true },
+            },
+          },
+        ),
+      );
+
+      return {
+        status: 'ONBOARDED',
+        companyId: active.companyId,
+        companyCode: active.companyCode,
+        ...(headOfficeId !== undefined ? { headOfficeId } : {}),
+      };
+    });
+  }
+
   /** Reissue: invalidate all unconsumed codes for the admin, mint a new one. */
   async reissueClaim(actor: ActorContext, companyId: string, adminPrincipalId: string) {
     return this.uow.run(async (repos) => {
@@ -216,7 +372,12 @@ export class PlatformService {
           },
         }),
       );
-      return { claimCode: raw, claimExpiresAt: expiresAt };
+      const claimUrl = `${this.appBaseUrl.replace(/\/+$/, '')}/onboard?token=${raw}`;
+      return {
+        claimCode: raw,
+        claimUrl,
+        claimExpiresAt: expiresAt,
+      };
     });
   }
 }

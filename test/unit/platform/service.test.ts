@@ -13,6 +13,7 @@ interface Row extends Record<string, unknown> {
 
 interface Store {
   companies: Row[];
+  headOffices: Row[];
   principals: Row[];
   employees: Row[];
   roles: Row[];
@@ -43,6 +44,19 @@ function makeUow(store: Store): PlatformUnitOfWork {
         store.companies.push(row);
         return row as unknown as Company;
       },
+      update: async (cid, data) => {
+        const c = store.companies.find((x) => x.id === cid);
+        if (!c) throw new Error('company not found');
+        Object.assign(c, data);
+        return c as unknown as Company;
+      },
+    },
+    headOffices: {
+      create: async (data) => {
+        const row = { id: id(), status: 'ACTIVE', ...data };
+        store.headOffices.push(row);
+        return row as unknown as { id: string; code: string; name: string };
+      },
     },
     principals: {
       create: async (data) => {
@@ -69,6 +83,16 @@ function makeUow(store: Store): PlatformUnitOfWork {
         const row = { id: id(), ...data };
         store.employees.push(row);
         return row;
+      },
+      updateByPrincipalId: async (principalId, data) => {
+        let count = 0;
+        for (const e of store.employees) {
+          if (e.principalId === principalId) {
+            Object.assign(e, data);
+            count++;
+          }
+        }
+        return count;
       },
     },
     roles: {
@@ -125,6 +149,30 @@ function makeUow(store: Store): PlatformUnitOfWork {
         }
         return count;
       },
+      findActive: async (tokenHash, now) => {
+        const t = store.claimTokens.find(
+          (c) => c.tokenHash === tokenHash && c.consumedAt === null && (c.expiresAt as Date) > now,
+        );
+        if (!t) return null;
+        const p = store.principals.find((x) => x.id === t.principalId);
+        const emp = store.employees.find((x) => x.principalId === t.principalId);
+        const comp = store.companies.find((x) => x.id === emp?.companyId);
+        const loginId = typeof p?.loginId === 'string' ? p.loginId : '';
+        const displayName = typeof emp?.displayName === 'string' ? emp.displayName : '';
+        const companyId = typeof comp?.id === 'string' ? comp.id : '';
+        const companyCode = typeof comp?.code === 'string' ? comp.code : '';
+        const companyName = typeof comp?.name === 'string' ? comp.name : '';
+        return {
+          id: t.id,
+          principalId: t.principalId as string,
+          expiresAt: t.expiresAt as Date,
+          adminLoginId: loginId,
+          adminDisplayName: displayName,
+          companyId,
+          companyCode,
+          companyName,
+        };
+      },
     },
     audit: {
       record: async (entry) => {
@@ -150,6 +198,7 @@ let svc: PlatformService;
 beforeEach(() => {
   store = {
     companies: [],
+    headOffices: [],
     principals: [],
     employees: [],
     roles: [],
@@ -159,11 +208,11 @@ beforeEach(() => {
     claimTokens: [],
     auditLog: [],
   };
-  svc = new PlatformService(makeUow(store));
+  svc = new PlatformService(makeUow(store), 'https://app.sarjan.local');
 });
 
 describe('createCompanyWithAdmin', () => {
-  it('creates company, owner role, pending admin, employee, claim in one flow', async () => {
+  it('creates company, owner role, pending admin, employee, claim and returns claimUrl', async () => {
     const r = await svc.createCompanyWithAdmin(actor, {
       companyCode: 'acme',
       companyName: 'Acme Infra',
@@ -171,6 +220,7 @@ describe('createCompanyWithAdmin', () => {
       adminDisplayName: 'Acme Admin',
     });
     expect(r.companyCode).toBe('ACME');
+    expect(r.claimUrl).toBe(`https://app.sarjan.local/onboard?token=${r.claimCode}`);
     expect(store.companies[0]?.isPlatform).toBe(false);
     expect(store.roles[0]?.key).toBe('COMPANY_OWNER');
     const permKeys = store.rolePermissions.map(
@@ -194,6 +244,78 @@ describe('createCompanyWithAdmin', () => {
     // raw code never in audit/DB
     expect(JSON.stringify(store.auditLog)).not.toContain(r.claimCode);
     expect(JSON.stringify(store.claimTokens)).not.toContain(r.claimCode);
+  });
+});
+
+describe('claim verification and onboarding flow', () => {
+  it('verifyClaim returns company and admin info for valid token and rejects invalid token', async () => {
+    const created = await svc.createCompanyWithAdmin(actor, {
+      companyCode: 'ACME',
+      companyName: 'Acme Infra',
+      adminLoginId: 'admin@acme.test',
+      adminDisplayName: 'Acme Admin',
+    });
+
+    const info = await svc.verifyClaim(created.claimCode);
+    expect(info.valid).toBe(true);
+    expect(info.companyCode).toBe('ACME');
+    expect(info.companyName).toBe('Acme Infra');
+    expect(info.adminLoginId).toBe('admin@acme.test');
+    expect(info.adminDisplayName).toBe('Acme Admin');
+
+    await expect(svc.verifyClaim('non-existent-code')).rejects.toThrow();
+  });
+
+  it('consumeClaimAndOnboard completes onboarding with company details and head office', async () => {
+    const created = await svc.createCompanyWithAdmin(actor, {
+      companyCode: 'ACME',
+      companyName: 'Acme Infra',
+      adminLoginId: 'admin@acme.test',
+      adminDisplayName: 'Acme Admin',
+    });
+
+    const result = await svc.consumeClaimAndOnboard(created.claimCode, {
+      password: 'MyStrongPassword1234!',
+      displayName: 'Rajesh Patel',
+      company: {
+        legalName: 'Acme Infrastructure Private Limited',
+        pan: 'ABCDE1234F',
+        regCity: 'Ahmedabad',
+      },
+      headOffice: {
+        code: 'HQ',
+        name: 'Corporate Head Office',
+        isPrimary: true,
+      },
+    });
+
+    expect(result.status).toBe('ONBOARDED');
+    expect(result.companyId).toBe(created.companyId);
+    expect(result.headOfficeId).toBeTruthy();
+
+    // Verify company profile was updated
+    const company = store.companies.find((c) => c.id === created.companyId);
+    expect(company?.legalName).toBe('Acme Infrastructure Private Limited');
+    expect(company?.pan).toBe('ABCDE1234F');
+
+    // Verify primary HeadOffice was created
+    const ho = store.headOffices.find((h) => h.id === result.headOfficeId);
+    expect(ho?.code).toBe('HQ');
+    expect(ho?.name).toBe('Corporate Head Office');
+    expect(ho?.isPrimary).toBe(true);
+
+    // Verify Admin Principal is ACTIVE with new password and updated employee display name
+    const admin = store.principals.find((p) => p.id === created.adminPrincipalId);
+    expect(admin?.status).toBe('ACTIVE');
+    const emp = store.employees.find((e) => e.principalId === created.adminPrincipalId);
+    expect(emp?.displayName).toBe('Rajesh Patel');
+
+    // Replay with consumed code fails
+    await expect(
+      svc.consumeClaimAndOnboard(created.claimCode, {
+        password: 'AnotherPassword1234!',
+      }),
+    ).rejects.toThrow();
   });
 });
 

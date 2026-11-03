@@ -5,6 +5,17 @@ import type { AuditRecord } from '../organization/types.js';
 
 type Tx = Prisma.TransactionClient;
 
+export interface ActiveClaimInfo {
+  id: string;
+  principalId: string;
+  expiresAt: Date;
+  adminLoginId: string;
+  adminDisplayName: string;
+  companyId: string;
+  companyCode: string;
+  companyName: string;
+}
+
 export interface PlatformRepos {
   companies: {
     findById(companyId: string, id: string): Promise<Company | null>;
@@ -12,6 +23,10 @@ export interface PlatformRepos {
     findByCode(code: string): Promise<Company | null>;
     list(): Promise<Company[]>;
     create(data: Record<string, unknown>): Promise<Company>;
+    update(id: string, data: Record<string, unknown>): Promise<Company>;
+  };
+  headOffices: {
+    create(data: Record<string, unknown>): Promise<{ id: string; code: string; name: string }>;
   };
   principals: {
     create(data: Record<string, unknown>): Promise<{ id: string }>;
@@ -20,7 +35,10 @@ export interface PlatformRepos {
     activateIfSuspended(id: string, data: Record<string, unknown>): Promise<boolean>;
     findByLoginId(loginId: string): Promise<{ id: string } | null>;
   };
-  employees: { create(data: Record<string, unknown>): Promise<{ id: string }> };
+  employees: {
+    create(data: Record<string, unknown>): Promise<{ id: string }>;
+    updateByPrincipalId(principalId: string, data: Record<string, unknown>): Promise<number>;
+  };
   roles: { create(data: Record<string, unknown>): Promise<{ id: string }> };
   permissions: {
     upsert(key: string): Promise<{ id: string }>;
@@ -33,6 +51,7 @@ export interface PlatformRepos {
     consume(tokenHash: string, now: Date): Promise<{ id: string; principalId: string } | null>;
     /** Invalidate all unconsumed tokens for a principal (reissue). */
     revokeActive(principalId: string, at: Date): Promise<number>;
+    findActive(tokenHash: string, now: Date): Promise<ActiveClaimInfo | null>;
   };
   audit: AuditRepository;
 }
@@ -49,6 +68,10 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
       findByCode: (code) => tx.company.findFirst({ where: { code } }),
       list: () => tx.company.findMany({ where: { isPlatform: false }, orderBy: { id: 'asc' } }),
       create: (data) => tx.company.create({ data: data as never }),
+      update: (id, data) => tx.company.update({ where: { id }, data: data as never }),
+    },
+    headOffices: {
+      create: (data) => tx.headOffice.create({ data: data as never }),
     },
     principals: {
       create: (data) => tx.principal.create({ data: data as never }),
@@ -59,6 +82,8 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
     },
     employees: {
       create: (data) => tx.employee.create({ data: data as never }),
+      updateByPrincipalId: async (principalId, data) =>
+        (await tx.employee.updateMany({ where: { principalId }, data: data as never })).count,
     },
     roles: { create: (data) => tx.role.create({ data: data as never }) },
     permissions: {
@@ -113,6 +138,34 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
           data: { consumedAt: at },
         });
         return res.count;
+      },
+      findActive: async (tokenHash, now) => {
+        const token = await tx.claimToken.findFirst({
+          where: { tokenHash, consumedAt: null, expiresAt: { gt: now } },
+          include: {
+            principal: {
+              include: {
+                employees: {
+                  include: {
+                    company: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+        if (!token) return null;
+        const emp = token.principal.employees[0];
+        return {
+          id: token.id,
+          principalId: token.principalId,
+          expiresAt: token.expiresAt,
+          adminLoginId: token.principal.loginId ?? '',
+          adminDisplayName: emp?.displayName ?? '',
+          companyId: emp?.company.id ?? '',
+          companyCode: emp?.company.code ?? '',
+          companyName: emp?.company.name ?? '',
+        };
       },
     },
     audit: {

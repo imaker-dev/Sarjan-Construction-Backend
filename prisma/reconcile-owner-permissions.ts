@@ -2,6 +2,7 @@
 //   npm run db:reconcile
 // Adds only the two EMPLOYEE_* grants to COMPANY_OWNER system roles.
 // Never removes or broadens other grants; audits only real changes.
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';

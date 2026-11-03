@@ -62,7 +62,15 @@ const OPERATION_DOCS: Record<
   'POST /auth/logout': { summary: 'Invalidate the current session', permission: 'authenticated' },
   'POST /auth/claim': {
     summary: 'Consume a one-time claim code and set password',
-    description: 'Unauthenticated; rate-limited. Code is single-use and short-lived.',
+  },
+  'GET /auth/claim/verify': {
+    summary: 'Verify claim code validity and return company info',
+    description: 'Unauthenticated; rate-limited.',
+  },
+  'POST /auth/claim/onboard': {
+    summary: 'Onboard Company',
+    description:
+      'Unauthenticated; rate-limited. Sets password, updates company, and creates HeadOffice.',
   },
   'GET /org/company': { summary: 'Read own company profile', permission: 'ORG_COMPANY_READ' },
   'PATCH /org/company': {
@@ -335,6 +343,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           'POST /auth/login',
           'POST /auth/refresh',
           'POST /auth/claim',
+          'GET /auth/claim/verify',
+          'POST /auth/claim/onboard',
         ]);
         const TENANT_TAGS: [string, string][] = [
           ['/org/', 'org'],
@@ -554,7 +564,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   );
   await app.register(
     platformRoutes(
-      services.platformService ?? new PlatformService(new PrismaPlatformUnitOfWork(app.prisma)),
+      services.platformService ??
+        new PlatformService(new PrismaPlatformUnitOfWork(app.prisma), app.config.APP_BASE_URL),
       platformResolver,
     ),
     { prefix: '/api/v1' },

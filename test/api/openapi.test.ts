@@ -139,6 +139,8 @@ describe('openapi document', () => {
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/refresh',
       'POST /api/v1/auth/claim',
+      'GET /api/v1/auth/claim/verify',
+      'POST /api/v1/auth/claim/onboard',
     ]);
     const isTenant = (p: string) =>
       /^\/api\/v1\/(org|departments|employees|compliance-records|notifications)\b/.test(p);
@@ -196,6 +198,8 @@ describe('openapi document', () => {
       'POST /api/v1/auth/refresh',
       'POST /api/v1/auth/logout',
       'POST /api/v1/auth/claim',
+      'GET /api/v1/auth/claim/verify',
+      'POST /api/v1/auth/claim/onboard',
       'GET /api/v1/org/company',
       'PATCH /api/v1/org/company',
       'GET /api/v1/org/head-offices',

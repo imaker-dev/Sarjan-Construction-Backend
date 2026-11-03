@@ -26,6 +26,7 @@ export interface AppConfig {
   // 'auto' starts the relay worker in production only; 'on'/'off' override.
   NOTIFICATIONS_WORKER: 'auto' | 'on' | 'off';
   SWAGGER_UI: boolean;
+  APP_BASE_URL: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -88,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // Swagger UI: developer tool only — off in production unless explicitly
     // enabled; on by default in dev/test. Set SWAGGER_UI=false to force off.
     SWAGGER_UI: env.SWAGGER_UI !== undefined ? env.SWAGGER_UI === 'true' : nodeEnv !== 'production',
+    APP_BASE_URL: str('APP_BASE_URL', 'http://localhost:3000'),
   };
 
   // Document storage: optional in dev; when set it must be an absolute path

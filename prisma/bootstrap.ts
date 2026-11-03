@@ -4,6 +4,7 @@
 // Credentials come from env only (BOOTSTRAP_ADMIN_*), never CLI args, never
 // logged. Idempotent: an existing platform company reports ALREADY_COMPLETE.
 // Existing customer companies are preserved untouched.
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
