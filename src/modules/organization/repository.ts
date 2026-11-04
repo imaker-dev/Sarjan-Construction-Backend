@@ -98,6 +98,9 @@ export interface OrgRepos {
   projects: ProjectRepository;
   sites: SiteRepository;
   audit: AuditRepository;
+  departments: {
+    countByCategory(companyId: string, scopeType: string, categories: string[]): Promise<number>;
+  };
 }
 
 export interface OrgUnitOfWork {
@@ -252,6 +255,16 @@ export function makeOrgRepos(tx: Tx): OrgRepos {
           (args) => tx.site.updateMany(args),
           () => tx.site.findFirst({ where: { id, companyId } }),
         ),
+    },
+    departments: {
+      countByCategory: (companyId, scopeType, categories) =>
+        tx.department.count({
+          where: {
+            companyId,
+            scopeType: scopeType as never,
+            category: { in: categories as never },
+          },
+        }),
     },
     audit: {
       record: async (entry) => {

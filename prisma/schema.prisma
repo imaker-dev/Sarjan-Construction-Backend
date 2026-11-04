@@ -75,45 +75,58 @@ model Company {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
-  headOffices         HeadOffice[]
-  projects            Project[]
-  sites               Site[]
-  auditLogs           AuditLog[]
-  employees           Employee[]
-  roles               Role[]
-  roleAssignments     RoleAssignment[]
-  departments         Department[]
-  operations          Operation[]
-  operationVersions   OperationVersion[]
-  forms               Form[]
-  formVersions        FormVersion[]
-  workflows           Workflow[]
-  workflowVersions    WorkflowVersion[]
-  rules               Rule[]
-  ruleVersions        RuleVersion[]
-  workflowInstances   WorkflowInstance[]
-  workflowTransitions WorkflowTransition[]
-  approvalTasks       ApprovalTask[]
-  approvalDecisions   ApprovalDecision[]
-  formSubmissions     FormSubmission[]
-  submissionRevisions SubmissionRevision[]
-  documents           Document[]
-  documentLinks       DocumentLink[]
-  outboxEvents        OutboxEvent[]
-  notifications       Notification[]
-  complianceRecords   ComplianceRecord[]
+  headOffices           HeadOffice[]
+  projects              Project[]
+  sites                 Site[]
+  auditLogs             AuditLog[]
+  employees             Employee[]
+  departmentMemberships DepartmentMembership[]
+  roles                 Role[]
+  roleAssignments       RoleAssignment[]
+  departments           Department[]
+  operations            Operation[]
+  operationVersions     OperationVersion[]
+  forms                 Form[]
+  formVersions          FormVersion[]
+  workflows             Workflow[]
+  workflowVersions      WorkflowVersion[]
+  rules                 Rule[]
+  ruleVersions          RuleVersion[]
+  workflowInstances     WorkflowInstance[]
+  workflowTransitions   WorkflowTransition[]
+  approvalTasks         ApprovalTask[]
+  approvalDecisions     ApprovalDecision[]
+  formSubmissions       FormSubmission[]
+  submissionRevisions   SubmissionRevision[]
+  documents             Document[]
+  documentLinks         DocumentLink[]
+  outboxEvents          OutboxEvent[]
+  notifications         Notification[]
+  complianceRecords     ComplianceRecord[]
 }
 
 model HeadOffice {
-  id        String        @id @default(uuid()) @db.Uuid
-  companyId String        @db.Uuid
-  code      String
-  name      String
-  isPrimary Boolean       @default(false)
-  status    OrgNodeStatus @default(ACTIVE)
-  version   Int           @default(0)
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  id           String        @id @default(uuid()) @db.Uuid
+  companyId    String        @db.Uuid
+  code         String
+  name         String
+  legalName    String?
+  addressLine1 String?
+  addressLine2 String?
+  locality     String?
+  city         String?
+  district     String?
+  state        String?
+  pinCode      String?
+  country      String?
+  contactName  String?
+  contactPhone String?
+  contactEmail String?
+  isPrimary    Boolean       @default(false)
+  status       OrgNodeStatus @default(ACTIVE)
+  version      Int           @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 
   company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
   projects        Project[]
@@ -132,19 +145,26 @@ model HeadOffice {
 }
 
 model Project {
-  id           String        @id @default(uuid()) @db.Uuid
-  companyId    String        @db.Uuid
-  headOfficeId String        @db.Uuid
-  code         String
-  name         String
-  description  String?
-  timezone     String // IANA name, validated in the service layer
-  status       ProjectStatus @default(PLANNED)
-  startDate    DateTime?     @db.Date
-  endDate      DateTime?     @db.Date
-  version      Int           @default(0)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id               String        @id @default(uuid()) @db.Uuid
+  companyId        String        @db.Uuid
+  headOfficeId     String        @db.Uuid
+  code             String
+  name             String
+  description      String?
+  projectType      ProjectType   @default(OTHER)
+  clientName       String?
+  contractRef      String?
+  locationCity     String?
+  locationDistrict String?
+  locationState    String?
+  locationPin      String?
+  timezone         String // IANA name, validated in the service layer
+  status           ProjectStatus @default(PLANNED)
+  startDate        DateTime?     @db.Date
+  endDate          DateTime?     @db.Date
+  version          Int           @default(0)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
   headOffice      HeadOffice       @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
@@ -171,6 +191,14 @@ model Site {
   code            String
   name            String
   address         String?
+  addressLine1    String?
+  addressLine2    String?
+  locality        String?
+  city            String?
+  district        String?
+  state           String?
+  pinCode         String?
+  country         String?
   geoLatitude     Decimal?      @db.Decimal(9, 6)
   geoLongitude    Decimal?      @db.Decimal(9, 6)
   geoFenceRadiusM Int?
@@ -254,6 +282,17 @@ enum EmployeeStatus {
   ARCHIVED
 }
 
+// Employment arrangement — operational category, NOT a lifecycle state.
+// PROBATION is intentionally absent (it is lifecycle, not arrangement).
+enum EmploymentEngagementType {
+  DIRECT_EMPLOYEE
+  CONTRACTOR_WORKER
+  DAILY_WAGE
+  APPRENTICE
+  CONSULTANT
+  OTHER
+}
+
 enum ScopeType {
   COMPANY
   HEAD_OFFICE
@@ -314,14 +353,25 @@ model Employee {
   principalId  String?        @db.Uuid
   employeeCode String
   displayName  String
+  // Nullable for additive migration safety on legacy rows; required by the
+  // create API. Not a lifecycle state — status carries lifecycle.
+  engagementType        EmploymentEngagementType?
+  designation           String?
+  tradeCategory         String?
+  joiningDate           DateTime?                @db.Date
+  contactPhone          String?
+  contactEmail          String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
   status       EmployeeStatus @default(ACTIVE)
   version      Int            @default(0)
   createdAt    DateTime       @default(now()) @db.Timestamptz
   updatedAt    DateTime       @updatedAt @db.Timestamptz
 
-  company           Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  principal         Principal?   @relation(fields: [principalId], references: [id], onDelete: Restrict)
+  company           Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  principal         Principal?             @relation(fields: [principalId], references: [id], onDelete: Restrict)
   headedDepartments Department[]
+  memberships       DepartmentMembership[]
 
   // Employee code is unique within a company.
   @@unique([companyId, employeeCode])
@@ -485,40 +535,68 @@ enum DepartmentStatus {
   ARCHIVED
 }
 
+enum DepartmentCategory {
+  FINANCE
+  ADMINISTRATION
+  HR
+  PROCUREMENT
+  STORE
+  MACHINERY
+  SAFETY
+  QUALITY
+  SITE_ENGINEERING
+  KITCHEN
+  OPERATIONS
+  CUSTOM
+}
+
+enum ProjectType {
+  RESIDENTIAL
+  COMMERCIAL
+  INDUSTRIAL
+  INFRASTRUCTURE
+  OTHER
+}
+
 // Company-owned configurable department, scoped to COMPANY / PROJECT / SITE
 // (HEAD_OFFICE scope is rejected). Scope-column consistency is enforced by the
 // Department_scope_check CHECK constraint in the migration; tenant integrity by
 // the composite FKs below.
 model Department {
-  id               String           @id @default(uuid()) @db.Uuid
-  companyId        String           @db.Uuid
+  id               String             @id @default(uuid()) @db.Uuid
+  companyId        String             @db.Uuid
   scopeType        ScopeType
-  projectId        String?          @db.Uuid
-  siteId           String?          @db.Uuid
+  projectId        String?            @db.Uuid
+  siteId           String?            @db.Uuid
   code             String // normalized, unique within the company
   name             String
-  capabilityKey    String? // e.g. PROCUREMENT_REVIEW — routing identifier, not a name
-  headEmployeeId   String?          @db.Uuid
+  capabilityKey    String? // INTERNAL routing id — derived by the service, not user-entered
+  category         DepartmentCategory @default(CUSTOM)
+  categoryLabel    String? // required when category=CUSTOM
+  headEmployeeId   String?            @db.Uuid
   // Physical location only — never a permission scope. Finance/Admin live at
   // the primary Head Office while remaining COMPANY-scoped for access.
-  baseHeadOfficeId String?          @db.Uuid
-  status           DepartmentStatus @default(DRAFT)
-  version          Int              @default(0)
-  createdAt        DateTime         @default(now()) @db.Timestamptz
-  updatedAt        DateTime         @updatedAt @db.Timestamptz
+  baseHeadOfficeId String?            @db.Uuid
+  status           DepartmentStatus   @default(DRAFT)
+  version          Int                @default(0)
+  createdAt        DateTime           @default(now()) @db.Timestamptz
+  updatedAt        DateTime           @updatedAt @db.Timestamptz
 
-  company        Company     @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  company        Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
   // Composite FKs keep the scope target inside this company.
-  project        Project?    @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  site           Site?       @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  project        Project?               @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site           Site?                  @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
   // Department head must be an Employee of the same company.
-  headEmployee   Employee?   @relation(fields: [headEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  headEmployee   Employee?              @relation(fields: [headEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
   // Base Head Office must belong to the same company (location, not scope).
-  baseHeadOffice HeadOffice? @relation(fields: [baseHeadOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  baseHeadOffice HeadOffice?            @relation(fields: [baseHeadOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
   operations     Operation[]
+  memberships    DepartmentMembership[]
 
-  // Department codes are unique across the company regardless of scope.
-  @@unique([companyId, code])
+  // Scoped code uniqueness — company-wide rows are unambiguous; the same code
+  // may repeat inside distinct project/site scopes (partial indexes in SQL).
+  // Project-model keeps @([companyId,code]); Department's per-scope
+  // constraint lives in migration SQL (Prisma cannot express partials).
   // Referenced by Operation's composite FK (departmentId, companyId).
   @@unique([id, companyId])
   // Company department list: WHERE companyId = ? [AND status = ?] ORDER BY id.
@@ -1310,4 +1388,31 @@ model ComplianceRecord {
   @@unique([companyId, category, identifier])
   @@unique([id, companyId])
   @@index([companyId, status, category])
+}
+
+// Effective-dated organizational placement of an Employee in a Department.
+// Placement only — it NEVER grants API permission; role assignments do that.
+// A row is ACTIVE iff endedAt IS NULL (single source of truth, no status col).
+model DepartmentMembership {
+  id           String    @id @default(uuid()) @db.Uuid
+  companyId    String    @db.Uuid
+  employeeId   String    @db.Uuid
+  departmentId String    @db.Uuid
+  isPrimary    Boolean   @default(false)
+  startedAt    DateTime  @default(now()) @db.Timestamptz
+  endedAt      DateTime? @db.Timestamptz
+  version      Int       @default(0)
+  createdAt    DateTime  @default(now()) @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @db.Timestamptz
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee   Employee   @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  department Department @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  // Partial unique indexes (in migration SQL):
+  //   one ACTIVE membership per (employee, department): WHERE "endedAt" IS NULL
+  //   one ACTIVE PRIMARY per (employee, company):    WHERE "endedAt" IS NULL AND "isPrimary"
+  @@unique([id, companyId])
+  @@index([companyId, employeeId, endedAt])
+  @@index([companyId, departmentId, endedAt])
 }

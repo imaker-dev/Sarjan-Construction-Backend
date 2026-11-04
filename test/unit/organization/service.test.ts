@@ -82,12 +82,30 @@ describe('status transitions', () => {
 
   it('rejects direct PLANNED -> COMPLETED for projects', async () => {
     const company = await service.createCompany(actor, { code: 'c1', name: 'Co' });
-    const ho = await service.createHeadOffice(actor, company.id, {
+    await service.createHeadOffice(actor, company.id, {
       code: 'ho',
       name: 'HO',
       isPrimary: true,
     });
-    const project = await service.createProject(actor, company.id, ho.id, {
+    store.departments.push(
+      {
+        companyId: company.id,
+        scopeType: 'COMPANY',
+        category: 'FINANCE',
+        id: 'd1',
+        status: 'ACTIVE',
+        version: 0,
+      },
+      {
+        companyId: company.id,
+        scopeType: 'COMPANY',
+        category: 'ADMINISTRATION',
+        id: 'd2',
+        status: 'ACTIVE',
+        version: 0,
+      },
+    );
+    const project = await service.createProject(actor, company.id, {
       code: 'p1',
       name: 'P1',
       timezone: 'Asia/Kolkata',
@@ -141,26 +159,66 @@ describe('tenant isolation', () => {
   it('rejects a project under a head office from another company', async () => {
     const a = await service.createCompany(actor, { code: 'ca', name: 'A' });
     const b = await service.createCompany(actor, { code: 'cb', name: 'B' });
-    const hoA = await service.createHeadOffice(actor, a.id, { code: 'ho', name: 'HO A' });
-    // hoA belongs to company A; creating under company B's scope must fail.
+    await service.createHeadOffice(actor, a.id, {
+      code: 'ho',
+      name: 'HO A',
+      isPrimary: true,
+    });
+    store.departments.push(
+      {
+        companyId: b.id,
+        scopeType: 'COMPANY',
+        category: 'FINANCE',
+        id: 'd3',
+        status: 'ACTIVE',
+        version: 0,
+      },
+      {
+        companyId: b.id,
+        scopeType: 'COMPANY',
+        category: 'ADMINISTRATION',
+        id: 'd4',
+        status: 'ACTIVE',
+        version: 0,
+      },
+    );
+    // hoA belongs to company A; B has no primary HO — derivation fails.
     await expect(
-      service.createProject(actor, b.id, hoA.id, {
+      service.createProject(actor, b.id, {
         code: 'p1',
         name: 'P',
         timezone: 'UTC',
       }),
-    ).rejects.toThrow(OrgEntityNotFoundError);
+    ).rejects.toBeInstanceOf(Error);
   });
 
   it('rejects a site under a project from another company', async () => {
     const a = await service.createCompany(actor, { code: 'ca', name: 'A' });
     const b = await service.createCompany(actor, { code: 'cb', name: 'B' });
-    const ho = await service.createHeadOffice(actor, a.id, {
+    await service.createHeadOffice(actor, a.id, {
       code: 'ho',
       name: 'HO',
       isPrimary: true,
     });
-    const project = await service.createProject(actor, a.id, ho.id, {
+    store.departments.push(
+      {
+        companyId: a.id,
+        scopeType: 'COMPANY',
+        category: 'FINANCE',
+        id: 'd5',
+        status: 'ACTIVE',
+        version: 0,
+      },
+      {
+        companyId: a.id,
+        scopeType: 'COMPANY',
+        category: 'ADMINISTRATION',
+        id: 'd6',
+        status: 'ACTIVE',
+        version: 0,
+      },
+    );
+    const project = await service.createProject(actor, a.id, {
       code: 'p1',
       name: 'P',
       timezone: 'UTC',

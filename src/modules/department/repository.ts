@@ -6,7 +6,7 @@ import type {
   PrismaClient,
   ScopeType,
 } from '@prisma/client';
-import type { Prisma } from '@prisma/client';
+import type { DepartmentCategory, Prisma } from '@prisma/client';
 import { mapOrgWriteError } from '../organization/errors.js';
 import {
   makeOrgRepos,
@@ -34,6 +34,8 @@ export interface DepartmentRepository {
       siteId?: string;
       code: string;
       name: string;
+      category?: DepartmentCategory;
+      categoryLabel?: string;
       capabilityKey?: string;
       headEmployeeId?: string;
       baseHeadOfficeId?: string;

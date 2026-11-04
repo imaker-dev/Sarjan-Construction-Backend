@@ -34,11 +34,19 @@ const adminHolder = () =>
 
 describe('create/list/update', () => {
   it('creates ACTIVE profile-only employee; duplicate code rejected', async () => {
-    const e = await svc.create(actor, 'c1', { employeeCode: 'e-01', displayName: 'Ram' });
+    const e = await svc.create(actor, 'c1', {
+      employeeCode: 'e-01',
+      displayName: 'Ram',
+      engagementType: 'DIRECT_EMPLOYEE',
+    });
     expect(e.status).toBe('ACTIVE');
     expect(e.principalId).toBeNull();
     await expect(
-      svc.create(actor, 'c1', { employeeCode: 'E-01', displayName: 'Dup' }),
+      svc.create(actor, 'c1', {
+        employeeCode: 'E-01',
+        displayName: 'Dup',
+        engagementType: 'DIRECT_EMPLOYEE',
+      }),
     ).rejects.toThrow(DuplicateCodeError);
   });
 
@@ -61,7 +69,11 @@ describe('create/list/update', () => {
   });
 
   it('update enforces stale version; cross-company ids not found', async () => {
-    const e = await svc.create(actor, 'c1', { employeeCode: 'E1', displayName: 'A' });
+    const e = await svc.create(actor, 'c1', {
+      employeeCode: 'E1',
+      displayName: 'A',
+      engagementType: 'DIRECT_EMPLOYEE',
+    });
     await expect(svc.update(actor, 'c1', e.id, { displayName: 'B' }, 99)).rejects.toThrow();
     await expect(svc.update(actor, 'c2', e.id, { displayName: 'B' })).rejects.toThrow(
       OrgEntityNotFoundError,

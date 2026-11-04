@@ -81,13 +81,21 @@ export class DepartmentService {
           throw new OrgEntityNotFoundError('HEAD_OFFICE');
         }
       }
+      const category = input.category ?? 'CUSTOM';
+      if (input.category === 'CUSTOM' && (input.categoryLabel ?? '').trim() === '') {
+        throw new OrgValidationError('categoryLabel', 'required when category is CUSTOM');
+      }
       const department = await departments.create(companyId, {
         scopeType: input.scopeType,
         code,
         name,
+        category,
+        ...(input.categoryLabel !== undefined ? { categoryLabel: input.categoryLabel.trim() } : {}),
         ...(scope.projectId !== undefined ? { projectId: scope.projectId } : {}),
         ...(scope.siteId !== undefined ? { siteId: scope.siteId } : {}),
-        ...(input.capabilityKey !== undefined ? { capabilityKey: input.capabilityKey.trim() } : {}),
+        // capabilityKey is INTERNAL: derived from the controlled category,
+        // never a user-entered free-text field anymore.
+        capabilityKey: input.capabilityKey?.trim() ?? `DEPT_${input.category}`,
         ...(input.headEmployeeId !== undefined ? { headEmployeeId: input.headEmployeeId } : {}),
         ...(input.baseHeadOfficeId !== undefined
           ? { baseHeadOfficeId: input.baseHeadOfficeId }

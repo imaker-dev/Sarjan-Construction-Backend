@@ -96,7 +96,18 @@ export class EmployeeService {
   async create(
     actor: ActorContext,
     companyId: string,
-    input: { employeeCode: string; displayName: string },
+    input: {
+      employeeCode: string;
+      displayName: string;
+      engagementType: string;
+      designation?: string;
+      tradeCategory?: string;
+      joiningDate?: Date;
+      contactPhone?: string;
+      contactEmail?: string;
+      emergencyContactName?: string;
+      emergencyContactPhone?: string;
+    },
   ): Promise<Employee> {
     await this.authorizer.assertPermission(
       actor.actorId,
@@ -105,8 +116,33 @@ export class EmployeeService {
     );
     const employeeCode = normalizeCode(input.employeeCode);
     const displayName = normalizeName(input.displayName);
+    // Emergency contact is a pair — both or neither.
+    if (
+      (input.emergencyContactName === undefined) !==
+      (input.emergencyContactPhone === undefined)
+    ) {
+      throw new OrgValidationError(
+        'emergencyContact',
+        'emergency contact name and phone must be provided together',
+      );
+    }
     return this.uow.run(async ({ employees, audit }) => {
-      const employee = await employees.create(companyId, { employeeCode, displayName });
+      const employee = await employees.create(companyId, {
+        employeeCode,
+        displayName,
+        engagementType: input.engagementType,
+        ...(input.designation !== undefined ? { designation: input.designation } : {}),
+        ...(input.tradeCategory !== undefined ? { tradeCategory: input.tradeCategory } : {}),
+        ...(input.joiningDate !== undefined ? { joiningDate: input.joiningDate } : {}),
+        ...(input.contactPhone !== undefined ? { contactPhone: input.contactPhone } : {}),
+        ...(input.contactEmail !== undefined ? { contactEmail: input.contactEmail } : {}),
+        ...(input.emergencyContactName !== undefined
+          ? { emergencyContactName: input.emergencyContactName }
+          : {}),
+        ...(input.emergencyContactPhone !== undefined
+          ? { emergencyContactPhone: input.emergencyContactPhone }
+          : {}),
+      });
       await audit.record(
         auditEntry(actor, {
           action: 'EMPLOYEE_CREATED',
@@ -128,11 +164,54 @@ export class EmployeeService {
     actor: ActorContext,
     companyId: string,
     id: string,
-    patch: { displayName?: string },
+    patch: {
+      displayName?: string;
+      engagementType?: string | null;
+      designation?: string | null;
+      tradeCategory?: string | null;
+      joiningDate?: Date | null;
+      contactPhone?: string | null;
+      contactEmail?: string | null;
+      emergencyContactName?: string | null;
+      emergencyContactPhone?: string | null;
+    },
     expectedVersion?: number,
   ): Promise<Employee> {
+    // Emergency contact must remain a pair — both fields or neither.
+    if (
+      patch.emergencyContactName !== undefined &&
+      patch.emergencyContactPhone !== undefined &&
+      (patch.emergencyContactName === null) !== (patch.emergencyContactPhone === null)
+    ) {
+      throw new OrgValidationError(
+        'emergencyContact',
+        'emergency contact name and phone must be provided together',
+      );
+    }
+    if (
+      patch.emergencyContactName !== undefined &&
+      patch.emergencyContactPhone === undefined &&
+      patch.emergencyContactName !== null
+    ) {
+      throw new OrgValidationError(
+        'emergencyContact',
+        'emergency contact name and phone must be provided together',
+      );
+    }
     const data: Record<string, unknown> = {};
     if (patch.displayName !== undefined) data.displayName = normalizeName(patch.displayName);
+    for (const f of [
+      'engagementType',
+      'designation',
+      'tradeCategory',
+      'joiningDate',
+      'contactPhone',
+      'contactEmail',
+      'emergencyContactName',
+      'emergencyContactPhone',
+    ] as const) {
+      if (patch[f] !== undefined) data[f] = patch[f];
+    }
     return this.uow.run(async ({ employees, audit }) => {
       const existing = await employees.findById(companyId, id);
       if (!existing) throw new OrgEntityNotFoundError('EMPLOYEE');
@@ -218,6 +297,21 @@ export class EmployeeService {
             );
           }
         }
+        // End all active department memberships in the same tx.
+        const ended = await employees.endActiveMemberships(companyId, id);
+        for (const m of ended) {
+          await audit.record(
+            auditEntry(actor, {
+              action: 'MEMBERSHIP_ENDED',
+              entityType: 'DEPARTMENT_MEMBERSHIP',
+              entityId: m.id,
+              companyId,
+              statusBefore: 'ACTIVE',
+              statusAfter: 'ENDED',
+              changedFields: { endedAt: { before: null, after: 'employee deactivated' } },
+            }),
+          );
+        }
         const cleared = await employees.clearHeadReferences(companyId, id);
         for (const dept of cleared) {
           await audit.record(
@@ -243,6 +337,164 @@ export class EmployeeService {
         }),
       );
       return updated;
+    });
+  }
+
+  async getById(actor: ActorContext, companyId: string, id: string): Promise<Employee> {
+    await this.authorizer.assertPermission(
+      actor.actorId,
+      'EMPLOYEE_READ',
+      companyTarget(companyId),
+    );
+    const employee = await this.uow.run(({ employees }) => employees.findById(companyId, id));
+    if (!employee) throw new OrgEntityNotFoundError('EMPLOYEE');
+    return employee;
+  }
+
+  // ------------------------------------------------------------ Memberships
+  // Placement only — membership never satisfies any permission check.
+
+  async listMemberships(companyId: string, employeeId: string) {
+    return this.uow.run(({ employees, memberships }) =>
+      employees.findById(companyId, employeeId).then(async (employee) => {
+        if (!employee) throw new OrgEntityNotFoundError('EMPLOYEE');
+        return memberships.list(companyId, employeeId);
+      }),
+    );
+  }
+
+  async addMembership(
+    actor: ActorContext,
+    companyId: string,
+    employeeId: string,
+    input: { departmentId: string; isPrimary?: boolean; startedAt?: Date },
+  ): Promise<import('@prisma/client').DepartmentMembership> {
+    await this.authorizer.assertPermission(
+      actor.actorId,
+      EMPLOYEE_MANAGE,
+      companyTarget(companyId),
+    );
+    return this.uow.run(async ({ employees, departments, memberships, audit }) => {
+      const employee = await employees.findById(companyId, employeeId);
+      if (!employee) throw new OrgEntityNotFoundError('EMPLOYEE');
+      if (employee.status !== 'ACTIVE') {
+        throw new OrgValidationError('employeeId', 'employee must be active');
+      }
+      const dept = await departments.findById(companyId, input.departmentId);
+      if (!dept) throw new OrgEntityNotFoundError('DEPARTMENT');
+      if (dept.status !== 'ACTIVE') {
+        throw new OrgValidationError('departmentId', 'department must be active');
+      }
+      if (input.isPrimary === true) {
+        await memberships.demoteOthers(
+          companyId,
+          employeeId,
+          '00000000-0000-0000-0000-000000000000',
+        );
+      }
+      const membership = await memberships.create({
+        companyId,
+        employeeId,
+        departmentId: input.departmentId,
+        isPrimary: input.isPrimary ?? false,
+        ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
+      });
+      await audit.record(
+        auditEntry(actor, {
+          action: 'MEMBERSHIP_CREATED',
+          entityType: 'DEPARTMENT_MEMBERSHIP',
+          entityId: membership.id,
+          companyId,
+          statusAfter: 'ACTIVE',
+          changedFields: {
+            departmentId: { before: null, after: input.departmentId },
+            isPrimary: { before: null, after: membership.isPrimary },
+          },
+        }),
+      );
+      return membership;
+    });
+  }
+
+  async updateMembership(
+    actor: ActorContext,
+    companyId: string,
+    employeeId: string,
+    membershipId: string,
+    input: { isPrimary: boolean },
+    expectedVersion: number,
+  ) {
+    await this.authorizer.assertPermission(
+      actor.actorId,
+      EMPLOYEE_MANAGE,
+      companyTarget(companyId),
+    );
+    return this.uow.run(async ({ memberships, audit }) => {
+      const existing = await memberships.findById(companyId, employeeId, membershipId);
+      if (!existing) throw new OrgEntityNotFoundError('DEPARTMENT_MEMBERSHIP');
+      if (existing.endedAt !== null) {
+        throw new OrgValidationError('membership', 'cannot change an ended membership');
+      }
+      if (input.isPrimary) {
+        await memberships.demoteOthers(companyId, employeeId, membershipId);
+      }
+      const result = await memberships.setPrimary(
+        companyId,
+        employeeId,
+        membershipId,
+        expectedVersion,
+      );
+      if ((result as { count: number }).count === 0) {
+        throw new OrgValidationError('expectedVersion', 'stale version');
+      }
+      const updated = await memberships.findById(companyId, employeeId, membershipId);
+      await audit.record(
+        auditEntry(actor, {
+          action: 'MEMBERSHIP_PRIMARY_SET',
+          entityType: 'DEPARTMENT_MEMBERSHIP',
+          entityId: membershipId,
+          companyId,
+          changedFields: { isPrimary: { before: existing.isPrimary, after: true } },
+        }),
+      );
+      return updated;
+    });
+  }
+
+  async endMembership(
+    actor: ActorContext,
+    companyId: string,
+    employeeId: string,
+    membershipId: string,
+    expectedVersion: number,
+  ) {
+    await this.authorizer.assertPermission(
+      actor.actorId,
+      EMPLOYEE_MANAGE,
+      companyTarget(companyId),
+    );
+    return this.uow.run(async ({ memberships, audit }) => {
+      const existing = await memberships.findById(companyId, employeeId, membershipId);
+      if (!existing) throw new OrgEntityNotFoundError('DEPARTMENT_MEMBERSHIP');
+      if (existing.endedAt !== null) {
+        throw new OrgValidationError('membership', 'membership already ended');
+      }
+      const result = await memberships.end(companyId, employeeId, membershipId, expectedVersion);
+      if ((result as { count: number }).count === 0) {
+        throw new OrgValidationError('expectedVersion', 'stale version');
+      }
+      await audit.record(
+        auditEntry(actor, {
+          action: 'MEMBERSHIP_ENDED',
+          entityType: 'DEPARTMENT_MEMBERSHIP',
+          entityId: membershipId,
+          companyId,
+          statusBefore: 'ACTIVE',
+          statusAfter: 'ENDED',
+          changedFields: { endedAt: { before: null, after: 'ended by admin' } },
+        }),
+      );
+      return memberships.findById(companyId, employeeId, membershipId);
     });
   }
 }

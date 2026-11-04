@@ -5,14 +5,32 @@ import type { ScopeTarget } from '../access-control/service.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ActorContext } from './types.js';
 
+export const AddressOpt = {
+  legalName: Type.Optional(Type.String({ maxLength: 200 })),
+  addressLine1: Type.Optional(Type.String({ maxLength: 120 })),
+  addressLine2: Type.Optional(Type.String({ maxLength: 120 })),
+  locality: Type.Optional(Type.String({ maxLength: 80 })),
+  city: Type.Optional(Type.String({ maxLength: 80 })),
+  district: Type.Optional(Type.String({ maxLength: 80 })),
+  state: Type.Optional(Type.String({ maxLength: 80 })),
+  pinCode: Type.Optional(Type.String({ maxLength: 10 })),
+  country: Type.Optional(Type.String({ maxLength: 80 })),
+  contactName: Type.Optional(Type.String({ maxLength: 120 })),
+  contactPhone: Type.Optional(Type.String({ maxLength: 20 })),
+  contactEmail: Type.Optional(Type.String({ format: 'email' })),
+};
 const CreateHeadOffice = Type.Object({
   code: Type.String({ minLength: 1, maxLength: 40 }),
   name: Type.String({ minLength: 1, maxLength: 200 }),
   isPrimary: Type.Optional(Type.Boolean()),
+  ...AddressOpt,
 });
 const UpdateHeadOffice = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   isPrimary: Type.Optional(Type.Boolean()),
+  ...Object.fromEntries(
+    Object.entries(AddressOpt).map(([k, v]) => [k, Type.Optional(Type.Union([v, Type.Null()]))]),
+  ),
   expectedVersion: Type.Optional(Type.Integer()),
 });
 const StatusBody = Type.Object({
@@ -60,9 +78,25 @@ const UpdateCompany = Type.Object({
   expectedVersion: Type.Optional(Type.Integer()),
 });
 const CreateProject = Type.Object({
-  headOfficeId: Type.String({ format: 'uuid' }),
+  // headOfficeId is DERIVED server-side from the company's active primary HO —
+  // never trusted from the client body.
   code: Type.String({ minLength: 1, maxLength: 40 }),
   name: Type.String({ minLength: 1, maxLength: 200 }),
+  projectType: Type.Optional(
+    Type.Union([
+      Type.Literal('RESIDENTIAL'),
+      Type.Literal('COMMERCIAL'),
+      Type.Literal('INDUSTRIAL'),
+      Type.Literal('INFRASTRUCTURE'),
+      Type.Literal('OTHER'),
+    ]),
+  ),
+  clientName: Type.Optional(Type.String({ maxLength: 200 })),
+  contractRef: Type.Optional(Type.String({ maxLength: 80 })),
+  locationCity: Type.Optional(Type.String({ maxLength: 80 })),
+  locationDistrict: Type.Optional(Type.String({ maxLength: 80 })),
+  locationState: Type.Optional(Type.String({ maxLength: 80 })),
+  locationPin: Type.Optional(Type.String({ maxLength: 10 })),
   timezone: Type.String({ minLength: 1 }),
   description: Type.Optional(Type.String()),
   startDate: Type.Optional(Type.String({ format: 'date' })),
@@ -90,9 +124,17 @@ const CreateSite = Type.Object({
   code: Type.String({ minLength: 1, maxLength: 40 }),
   name: Type.String({ minLength: 1, maxLength: 200 }),
   address: Type.Optional(Type.String()),
-  geoLatitude: Type.Optional(Type.Number()),
-  geoLongitude: Type.Optional(Type.Number()),
-  geoFenceRadiusM: Type.Optional(Type.Integer()),
+  addressLine1: Type.Optional(Type.String({ maxLength: 120 })),
+  addressLine2: Type.Optional(Type.String({ maxLength: 120 })),
+  locality: Type.Optional(Type.String({ maxLength: 80 })),
+  city: Type.Optional(Type.String({ maxLength: 80 })),
+  district: Type.Optional(Type.String({ maxLength: 80 })),
+  state: Type.Optional(Type.String({ maxLength: 80 })),
+  pinCode: Type.Optional(Type.String({ maxLength: 10 })),
+  country: Type.Optional(Type.String({ maxLength: 80 })),
+  geoLatitude: Type.Optional(Type.Number({ minimum: -90, maximum: 90 })),
+  geoLongitude: Type.Optional(Type.Number({ minimum: -180, maximum: 180 })),
+  geoFenceRadiusM: Type.Optional(Type.Integer({ minimum: 1 })),
   timezone: Type.Optional(Type.String()),
 });
 const UpdateSite = Type.Object({
@@ -204,19 +246,34 @@ export function organizationRoutes(service: OrganizationService) {
       '/org/projects',
       { schema: { body: CreateProject }, ...perm('ORG_PROJECT_CREATE', atCompany) },
       async (req) => {
-        const { headOfficeId, ...input } = req.body as {
-          headOfficeId: string;
+        const input = req.body as {
           code: string;
           name: string;
+          projectType?: string;
+          clientName?: string;
+          contractRef?: string;
+          locationCity?: string;
+          locationDistrict?: string;
+          locationState?: string;
+          locationPin?: string;
           timezone: string;
           description?: string;
           startDate?: string;
           endDate?: string;
         };
-        return service.createProject(actorOf(req), companyIdOf(req), headOfficeId, {
+        return service.createProject(actorOf(req), companyIdOf(req), {
           code: input.code,
           name: input.name,
           timezone: input.timezone,
+          ...(input.projectType !== undefined ? { projectType: input.projectType } : {}),
+          ...(input.clientName !== undefined ? { clientName: input.clientName } : {}),
+          ...(input.contractRef !== undefined ? { contractRef: input.contractRef } : {}),
+          ...(input.locationCity !== undefined ? { locationCity: input.locationCity } : {}),
+          ...(input.locationDistrict !== undefined
+            ? { locationDistrict: input.locationDistrict }
+            : {}),
+          ...(input.locationState !== undefined ? { locationState: input.locationState } : {}),
+          ...(input.locationPin !== undefined ? { locationPin: input.locationPin } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
           ...(input.startDate !== undefined ? { startDate: new Date(input.startDate) } : {}),
           ...(input.endDate !== undefined ? { endDate: new Date(input.endDate) } : {}),

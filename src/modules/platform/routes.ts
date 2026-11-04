@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
+import { AddressOpt } from '../organization/routes.js';
 import type { PlatformService } from './service.js';
 import type { ScopeTarget } from '../access-control/service.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
@@ -75,11 +76,14 @@ const OnboardBody = Type.Object({
       Object.fromEntries(Object.entries(ProfileFields).map(([k, v]) => [k, Type.Optional(v)])),
     ),
   ),
+  // Shared field set with POST /org/head-offices — one contract, no drift.
+  // isPrimary is intentionally NOT client-controlled: the service forces the
+  // first head office primary under the one-primary-per-company invariant.
   headOffice: Type.Optional(
     Type.Object({
       code: Type.String({ minLength: 1, maxLength: 40 }),
       name: Type.String({ minLength: 1, maxLength: 200 }),
-      isPrimary: Type.Optional(Type.Boolean()),
+      ...AddressOpt,
     }),
   ),
 });

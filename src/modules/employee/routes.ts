@@ -6,14 +6,49 @@ import type { ScopeTarget } from '../access-control/service.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ActorContext } from '../organization/types.js';
 
+const EngagementType = Type.Union([
+  Type.Literal('DIRECT_EMPLOYEE'),
+  Type.Literal('CONTRACTOR_WORKER'),
+  Type.Literal('DAILY_WAGE'),
+  Type.Literal('APPRENTICE'),
+  Type.Literal('CONSULTANT'),
+  Type.Literal('OTHER'),
+]);
 const CreateEmployee = Type.Object({
   employeeCode: Type.String({ minLength: 1, maxLength: 40 }),
   displayName: Type.String({ minLength: 1, maxLength: 200 }),
+  // Required on create; column is nullable for legacy rows.
+  engagementType: EngagementType,
+  designation: Type.Optional(Type.String({ maxLength: 120 })),
+  tradeCategory: Type.Optional(Type.String({ maxLength: 80 })),
+  joiningDate: Type.Optional(Type.String({ format: 'date' })),
+  contactPhone: Type.Optional(Type.String({ maxLength: 20 })),
+  contactEmail: Type.Optional(Type.String({ format: 'email' })),
+  // Pair rule enforced in the service — both or neither.
+  emergencyContactName: Type.Optional(Type.String({ maxLength: 120 })),
+  emergencyContactPhone: Type.Optional(Type.String({ maxLength: 20 })),
+});
+const MembershipBody = Type.Object({
+  departmentId: Type.String({ format: 'uuid' }),
+  isPrimary: Type.Optional(Type.Boolean()),
+  startedAt: Type.Optional(Type.String({ format: 'date-time' })),
+});
+const MembershipPatchBody = Type.Object({
+  isPrimary: Type.Boolean(),
+  expectedVersion: Type.Integer(),
 });
 // expectedVersion is REQUIRED on every mutation — stale writes must fail
 // closed, not silently overwrite a concurrent change.
 const UpdateEmployee = Type.Object({
   displayName: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  engagementType: Type.Optional(EngagementType),
+  designation: Type.Optional(Type.Union([Type.String({ maxLength: 120 }), Type.Null()])),
+  tradeCategory: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  joiningDate: Type.Optional(Type.Union([Type.String({ format: 'date' }), Type.Null()])),
+  contactPhone: Type.Optional(Type.Union([Type.String({ maxLength: 20 }), Type.Null()])),
+  contactEmail: Type.Optional(Type.Union([Type.String({ format: 'email' }), Type.Null()])),
+  emergencyContactName: Type.Optional(Type.Union([Type.String({ maxLength: 120 }), Type.Null()])),
+  emergencyContactPhone: Type.Optional(Type.Union([Type.String({ maxLength: 20 }), Type.Null()])),
   expectedVersion: Type.Integer(),
 });
 const InviteBody = Type.Object({
@@ -82,16 +117,32 @@ export function employeeRoutes(service: EmployeeService, accessService?: Employe
       async (req) => {
         const { expectedVersion, ...patch } = req.body as {
           displayName?: string;
+          engagementType?: string | null;
+          designation?: string | null;
+          tradeCategory?: string | null;
+          joiningDate?: string | null;
+          contactPhone?: string | null;
+          contactEmail?: string | null;
+          emergencyContactName?: string | null;
+          emergencyContactPhone?: string | null;
           expectedVersion?: number;
         };
         return service.update(
           actorOf(req),
           companyIdOf(req),
           (req.params as { id: string }).id,
-          patch,
+          {
+            ...patch,
+            ...(patch.joiningDate !== undefined && patch.joiningDate !== null
+              ? { joiningDate: new Date(patch.joiningDate) }
+              : {}),
+          } as never,
           expectedVersion,
         );
       },
+    );
+    app.get('/employees/:id', { ...perm('EMPLOYEE_READ') }, async (req) =>
+      service.getById(actorOf(req), companyIdOf(req), (req.params as { id: string }).id),
     );
     app.post(
       '/employees/:id/status',
@@ -103,6 +154,67 @@ export function employeeRoutes(service: EmployeeService, accessService?: Employe
           (req.params as { id: string }).id,
           (req.body as { to: 'ACTIVE' | 'INACTIVE' }).to,
           (req.body as { expectedVersion?: number }).expectedVersion,
+        ),
+    );
+
+    // --------------------------------------------------------- Memberships
+    // Organizational placement only — membership never satisfies permissions.
+    app.get('/employees/:id/memberships', { ...perm('EMPLOYEE_READ') }, async (req) =>
+      service.listMemberships(companyIdOf(req), (req.params as { id: string }).id),
+    );
+    app.post(
+      '/employees/:id/memberships',
+      { schema: { body: MembershipBody }, ...perm('EMPLOYEE_MANAGE') },
+      async (req) => {
+        const body = req.body as {
+          departmentId: string;
+          isPrimary?: boolean;
+          startedAt?: string;
+        };
+        return service.addMembership(
+          actorOf(req),
+          companyIdOf(req),
+          (req.params as { id: string }).id,
+          {
+            departmentId: body.departmentId,
+            ...(body.isPrimary !== undefined ? { isPrimary: body.isPrimary } : {}),
+            ...(body.startedAt !== undefined ? { startedAt: new Date(body.startedAt) } : {}),
+          },
+        );
+      },
+    );
+    app.patch(
+      '/employees/:id/memberships/:membershipId',
+      { schema: { body: MembershipPatchBody }, ...perm('EMPLOYEE_MANAGE') },
+      async (req) => {
+        const { membershipId } = req.params as { id: string; membershipId: string };
+        const { isPrimary, expectedVersion } = req.body as {
+          isPrimary: boolean;
+          expectedVersion: number;
+        };
+        return service.updateMembership(
+          actorOf(req),
+          companyIdOf(req),
+          (req.params as { id: string }).id,
+          membershipId,
+          { isPrimary },
+          expectedVersion,
+        );
+      },
+    );
+    app.post(
+      '/employees/:id/memberships/:membershipId/end',
+      {
+        schema: { body: Type.Object({ expectedVersion: Type.Integer() }) },
+        ...perm('EMPLOYEE_MANAGE'),
+      },
+      async (req) =>
+        service.endMembership(
+          actorOf(req),
+          companyIdOf(req),
+          (req.params as { id: string }).id,
+          (req.params as { membershipId: string }).membershipId,
+          (req.body as { expectedVersion: number }).expectedVersion,
         ),
     );
 

@@ -45,7 +45,11 @@ describe('org + department routes require authentication', () => {
     ['GET', '/api/v1/org/sites'],
     ['PATCH', `/api/v1/org/sites/${uuid}`, { name: 'X' }],
     ['POST', `/api/v1/org/sites/${uuid}/status`, { to: 'ARCHIVED' }],
-    ['POST', '/api/v1/departments', { scopeType: 'COMPANY', code: 'FIN', name: 'Finance' }],
+    [
+      'POST',
+      '/api/v1/departments',
+      { scopeType: 'COMPANY', code: 'FIN', name: 'Finance', category: 'FINANCE' },
+    ],
     ['GET', '/api/v1/departments'],
     ['PATCH', `/api/v1/departments/${uuid}`, { name: 'X' }],
     ['POST', `/api/v1/departments/${uuid}/status`, { to: 'ACTIVE' }],

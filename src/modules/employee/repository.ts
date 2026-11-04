@@ -13,7 +13,7 @@ export interface EmployeeRowRepository {
     companyId: string,
     filter: { status?: string; cursor?: { createdAt: Date; id: string }; limit: number },
   ): Promise<Employee[]>;
-  create(companyId: string, data: { employeeCode: string; displayName: string }): Promise<Employee>;
+  create(companyId: string, data: Record<string, unknown>): Promise<Employee>;
   update(
     companyId: string,
     id: string,
@@ -29,11 +29,43 @@ export interface EmployeeRowRepository {
   clearHeadReferences(companyId: string, employeeId: string): Promise<{ id: string }[]>;
   /** Last-admin guard: distinct active principals holding any of the keys. */
   activeHoldersOfKeys(companyId: string, keys: string[], at: Date): Promise<string[]>;
+  /** Deactivation cascade — end all ACTIVE memberships in the same tx. */
+  endActiveMemberships(companyId: string, employeeId: string): Promise<{ id: string }[]>;
 }
 
 export interface EmployeeRepos extends DepartmentRepos {
   employees: EmployeeRowRepository & {
     findById(companyId: string, id: string): Promise<Employee | null>;
+  };
+  memberships: {
+    list(
+      companyId: string,
+      employeeId: string,
+    ): Promise<import('@prisma/client').DepartmentMembership[]>;
+    findById(
+      companyId: string,
+      employeeId: string,
+      id: string,
+    ): Promise<import('@prisma/client').DepartmentMembership | null>;
+    activeForEmployee(
+      companyId: string,
+      employeeId: string,
+    ): Promise<import('@prisma/client').DepartmentMembership[]>;
+    create(data: {
+      companyId: string;
+      employeeId: string;
+      departmentId: string;
+      isPrimary: boolean;
+      startedAt?: Date;
+    }): Promise<import('@prisma/client').DepartmentMembership>;
+    setPrimary(
+      companyId: string,
+      employeeId: string,
+      id: string,
+      version: number,
+    ): Promise<unknown>;
+    demoteOthers(companyId: string, employeeId: string, exceptId: string): Promise<unknown>;
+    end(companyId: string, employeeId: string, id: string, version: number): Promise<unknown>;
   };
 }
 
@@ -62,7 +94,7 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
       }),
     create: async (companyId, data) => {
       try {
-        return await tx.employee.create({ data: { ...data, companyId } });
+        return await tx.employee.create({ data: { ...data, companyId } } as never);
       } catch (error) {
         mapOrgWriteError(error, 'EMPLOYEE');
       }
@@ -102,6 +134,19 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
       }
       return rows;
     },
+    endActiveMemberships: async (companyId, employeeId) => {
+      const rows = await tx.departmentMembership.findMany({
+        where: { companyId, employeeId, endedAt: null },
+        select: { id: true },
+      });
+      for (const r of rows) {
+        await tx.departmentMembership.updateMany({
+          where: { id: r.id, companyId },
+          data: { endedAt: new Date(), version: { increment: 1 } },
+        });
+      }
+      return rows;
+    },
     activeHoldersOfKeys: async (companyId, keys, at) => {
       const rows = await tx.roleAssignment.findMany({
         where: {
@@ -117,7 +162,53 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
       return [...new Set(rows.map((r) => r.principalId))];
     },
   };
-  return { ...dept, employees };
+  const memberships = {
+    list: (companyId: string, employeeId: string) =>
+      tx.departmentMembership.findMany({
+        where: { companyId, employeeId },
+        orderBy: [{ endedAt: 'desc' as const }, { startedAt: 'desc' as const }],
+      }),
+    findById: (companyId: string, employeeId: string, id: string) =>
+      tx.departmentMembership.findFirst({ where: { id, companyId, employeeId } }),
+    activeForEmployee: (companyId: string, employeeId: string) =>
+      tx.departmentMembership.findMany({ where: { companyId, employeeId, endedAt: null } }),
+    create: async (data: {
+      companyId: string;
+      employeeId: string;
+      departmentId: string;
+      isPrimary: boolean;
+      startedAt?: Date;
+    }) => {
+      try {
+        return await tx.departmentMembership.create({ data });
+      } catch (error) {
+        // Partial-unique violations (active dup / concurrent primary) -> 409.
+        mapOrgWriteError(error, 'DEPARTMENT_MEMBERSHIP');
+      }
+    },
+    setPrimary: (companyId: string, employeeId: string, id: string, version: number) =>
+      tx.departmentMembership.updateMany({
+        where: { id, companyId, employeeId, endedAt: null, version },
+        data: { isPrimary: true, version: { increment: 1 } },
+      }),
+    demoteOthers: (companyId: string, employeeId: string, exceptId: string) =>
+      tx.departmentMembership.updateMany({
+        where: {
+          companyId,
+          employeeId,
+          endedAt: null,
+          isPrimary: true,
+          NOT: { id: exceptId },
+        },
+        data: { isPrimary: false, version: { increment: 1 } },
+      }),
+    end: (companyId: string, employeeId: string, id: string, version: number) =>
+      tx.departmentMembership.updateMany({
+        where: { id, companyId, employeeId, endedAt: null, version },
+        data: { endedAt: new Date(), version: { increment: 1 } },
+      }),
+  };
+  return { ...dept, employees, memberships };
 }
 
 export interface EmployeeUnitOfWork {

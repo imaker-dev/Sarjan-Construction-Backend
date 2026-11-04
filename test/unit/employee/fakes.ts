@@ -101,6 +101,7 @@ export function makeEmployeeTestRepos(store: EmpStore): EmployeeRepos {
         }
         return rows.map((d) => ({ id: d.id }));
       },
+      endActiveMemberships: async () => [],
       activeHoldersOfKeys: async (companyId, keys, at) => {
         const holders = store.roleAssignments.filter(
           (a) =>
@@ -113,6 +114,15 @@ export function makeEmployeeTestRepos(store: EmpStore): EmployeeRepos {
         );
         return [...new Set(holders.map((a) => a.principalId))];
       },
+    },
+    memberships: {
+      list: async () => [],
+      findById: async () => null,
+      activeForEmployee: async () => [],
+      create: async (d) => d as never,
+      setPrimary: async () => ({ count: 1 }),
+      demoteOthers: async () => ({ count: 0 }),
+      end: async () => ({ count: 1 }),
     },
   };
 }

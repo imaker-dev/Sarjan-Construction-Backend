@@ -33,11 +33,12 @@ export interface Store {
   headOffices: Row[];
   projects: Row[];
   sites: Row[];
+  departments: Row[];
   auditLog: AuditRecord[];
 }
 
 export function emptyStore(): Store {
-  return { companies: [], headOffices: [], projects: [], sites: [], auditLog: [] };
+  return { companies: [], headOffices: [], projects: [], sites: [], departments: [], auditLog: [] };
 }
 
 let nextId = 0;
@@ -193,7 +194,16 @@ export function makeFakeRepos(
       asSite(updateScoped(store.sites, companyId, id, data, expectedVersion, 'SITE')),
   };
 
-  return { companies, headOffices, projects, sites, audit };
+  const departments = {
+    countByCategory: async (companyId: string, scopeType: string, categories: string[]) =>
+      store.departments.filter(
+        (d) =>
+          d.companyId === companyId &&
+          d.scopeType === scopeType &&
+          categories.includes(d.category as string),
+      ).length,
+  };
+  return { companies, headOffices, projects, sites, departments, audit };
 }
 
 // Simulates transaction semantics: a snapshot restore on failure, so a failed

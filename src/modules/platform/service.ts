@@ -34,10 +34,23 @@ export interface OnboardInput {
   loginId?: string;
   displayName?: string;
   company?: Record<string, unknown>;
+  // Mirrors the supported head-office create contract. isPrimary is server-
+  // forced to true — the first HO is always primary; never trusted from input.
   headOffice?: {
     code: string;
     name: string;
-    isPrimary?: boolean;
+    legalName?: string;
+    addressLine1?: string;
+    addressLine2?: string;
+    locality?: string;
+    city?: string;
+    district?: string;
+    state?: string;
+    pinCode?: string;
+    country?: string;
+    contactName?: string;
+    contactPhone?: string;
+    contactEmail?: string;
   };
 }
 
@@ -302,8 +315,37 @@ export class PlatformService {
           companyId: active.companyId,
           code: input.headOffice.code.trim().toUpperCase(),
           name: input.headOffice.name.trim(),
-          isPrimary: input.headOffice.isPrimary ?? true,
+          // First HO is always primary — enforced, never client-controlled.
+          isPrimary: true,
           status: 'ACTIVE',
+          ...(input.headOffice.legalName !== undefined
+            ? { legalName: input.headOffice.legalName }
+            : {}),
+          ...(input.headOffice.addressLine1 !== undefined
+            ? { addressLine1: input.headOffice.addressLine1 }
+            : {}),
+          ...(input.headOffice.addressLine2 !== undefined
+            ? { addressLine2: input.headOffice.addressLine2 }
+            : {}),
+          ...(input.headOffice.locality !== undefined
+            ? { locality: input.headOffice.locality }
+            : {}),
+          ...(input.headOffice.city !== undefined ? { city: input.headOffice.city } : {}),
+          ...(input.headOffice.district !== undefined
+            ? { district: input.headOffice.district }
+            : {}),
+          ...(input.headOffice.state !== undefined ? { state: input.headOffice.state } : {}),
+          ...(input.headOffice.pinCode !== undefined ? { pinCode: input.headOffice.pinCode } : {}),
+          ...(input.headOffice.country !== undefined ? { country: input.headOffice.country } : {}),
+          ...(input.headOffice.contactName !== undefined
+            ? { contactName: input.headOffice.contactName }
+            : {}),
+          ...(input.headOffice.contactPhone !== undefined
+            ? { contactPhone: input.headOffice.contactPhone }
+            : {}),
+          ...(input.headOffice.contactEmail !== undefined
+            ? { contactEmail: input.headOffice.contactEmail }
+            : {}),
         });
         headOfficeId = ho.id;
       }

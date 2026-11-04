@@ -23,10 +23,34 @@ export interface CreateHeadOfficeInput {
   code: string;
   name: string;
   isPrimary?: boolean;
+  legalName?: string;
+  addressLine1?: string;
+  addressLine2?: string;
+  locality?: string;
+  city?: string;
+  district?: string;
+  state?: string;
+  pinCode?: string;
+  country?: string;
+  contactName?: string;
+  contactPhone?: string;
+  contactEmail?: string;
 }
 
 export interface UpdateHeadOfficeInput {
   name?: string;
+  legalName?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  locality?: string | null;
+  city?: string | null;
+  district?: string | null;
+  state?: string | null;
+  pinCode?: string | null;
+  country?: string | null;
+  contactName?: string | null;
+  contactPhone?: string | null;
+  contactEmail?: string | null;
   isPrimary?: boolean;
 }
 
@@ -34,6 +58,13 @@ export interface CreateProjectInput {
   code: string;
   name: string;
   description?: string;
+  projectType?: string;
+  clientName?: string;
+  contractRef?: string;
+  locationCity?: string;
+  locationDistrict?: string;
+  locationState?: string;
+  locationPin?: string;
   timezone: string;
   startDate?: Date;
   endDate?: Date;
@@ -51,6 +82,14 @@ export interface CreateSiteInput {
   code: string;
   name: string;
   address?: string;
+  addressLine1?: string;
+  addressLine2?: string;
+  locality?: string;
+  city?: string;
+  district?: string;
+  state?: string;
+  pinCode?: string;
+  country?: string;
   geoLatitude?: number;
   geoLongitude?: number;
   geoFenceRadiusM?: number;
@@ -60,6 +99,14 @@ export interface CreateSiteInput {
 export interface UpdateSiteInput {
   name?: string;
   address?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  locality?: string | null;
+  city?: string | null;
+  district?: string | null;
+  state?: string | null;
+  pinCode?: string | null;
+  country?: string | null;
   geoLatitude?: number | null;
   geoLongitude?: number | null;
   geoFenceRadiusM?: number | null;

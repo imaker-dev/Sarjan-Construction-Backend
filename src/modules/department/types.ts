@@ -1,3 +1,4 @@
+import type { DepartmentCategory } from '@prisma/client';
 // Departments support only these scopes (HEAD_OFFICE is rejected).
 export type DepartmentScopeType = 'COMPANY' | 'PROJECT' | 'SITE';
 
@@ -7,6 +8,8 @@ export interface CreateDepartmentInput {
   scopeId?: string;
   code: string;
   name: string;
+  category?: DepartmentCategory; // API requires it; service defaults CUSTOM
+  categoryLabel?: string;
   capabilityKey?: string;
   headEmployeeId?: string;
   // Physical location only — never a permission scope.

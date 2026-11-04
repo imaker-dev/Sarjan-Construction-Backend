@@ -94,7 +94,7 @@ describe('employee routes', () => {
         method: 'POST',
         url: '/api/v1/employees',
         headers,
-        payload: { employeeCode: 'E-01', displayName: 'Ram' },
+        payload: { employeeCode: 'E-01', displayName: 'Ram', engagementType: 'DIRECT_EMPLOYEE' },
       });
       expect(create.statusCode).toBe(200);
       const emp = create.json<{ id: string; version: number; status: string }>();
@@ -135,7 +135,7 @@ describe('employee routes', () => {
         method: 'POST',
         url: '/api/v1/employees',
         headers,
-        payload: { employeeCode: 'E-9', displayName: 'Y' },
+        payload: { employeeCode: 'E-9', displayName: 'Y', engagementType: 'DIRECT_EMPLOYEE' },
       });
       const emp = create.json<{ id: string; version: number }>();
       const stale = await app.inject({
@@ -158,7 +158,7 @@ describe('employee routes', () => {
         method: 'POST',
         url: '/api/v1/employees',
         headers: { authorization: `Bearer ${token}`, 'x-company-id': CID },
-        payload: { employeeCode: 'E-1', displayName: 'Z' },
+        payload: { employeeCode: 'E-1', displayName: 'Z', engagementType: 'DIRECT_EMPLOYEE' },
       });
       const emp = create.json<{ id: string }>();
       const other = await app.inject({

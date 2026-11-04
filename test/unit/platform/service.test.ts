@@ -285,13 +285,25 @@ describe('claim verification and onboarding flow', () => {
       headOffice: {
         code: 'HQ',
         name: 'Corporate Head Office',
-        isPrimary: true,
+        legalName: 'Corp HO Pvt Ltd',
+        addressLine1: '10 Corporate Rd',
+        city: 'Pune',
+        state: 'MH',
+        pinCode: '411001',
+        country: 'IN',
+        contactName: 'Front Desk',
+        contactEmail: 'front@example.test',
       },
     });
 
     expect(result.status).toBe('ONBOARDED');
     expect(result.companyId).toBe(created.companyId);
     expect(result.headOfficeId).toBeTruthy();
+    const hoCreated = store.headOffices.find((h) => h.id === result.headOfficeId);
+    // First HO is server-forced primary — client cannot demote it.
+    expect(hoCreated?.isPrimary).toBe(true);
+    expect(hoCreated?.addressLine1).toBe('10 Corporate Rd');
+    expect(hoCreated?.contactEmail).toBe('front@example.test');
 
     // Verify company profile was updated
     const company = store.companies.find((c) => c.id === created.companyId);

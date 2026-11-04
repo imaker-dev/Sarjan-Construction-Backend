@@ -32,6 +32,7 @@ async function cleanup(p: PrismaClient, code: string) {
   await p.claimToken.deleteMany({
     where: { principal: { roleAssignments: { some: { companyId: company.id } } } },
   });
+  await p.department.deleteMany({ where: { companyId: company.id } });
   await p.roleAssignment.deleteMany({ where: { companyId: company.id } });
   await p.rolePermission.deleteMany({ where: { role: { companyId: company.id } } });
   await p.role.deleteMany({ where: { companyId: company.id } });
@@ -229,11 +230,8 @@ describe('Phase 1 — employee login + HO Admin (real PostgreSQL)', () => {
     async () => {
       if (prisma === undefined) throw new Error('unreachable');
       const company = await prisma.company.findFirstOrThrow({ where: { code: 'EA1' } });
-      const secondary = await prisma.headOffice.findFirstOrThrow({
-        where: { companyId: company.id, code: 'HO2' },
-      });
       await expect(
-        org.createProject(OWNER, company.id, secondary.id, {
+        org.createProject(OWNER, company.id, {
           code: 'P1',
           name: 'Proj',
           timezone: 'UTC',
@@ -242,7 +240,26 @@ describe('Phase 1 — employee login + HO Admin (real PostgreSQL)', () => {
       const primary = await prisma.headOffice.findFirstOrThrow({
         where: { companyId: company.id, code: 'HO' },
       });
-      const proj = await org.createProject(OWNER, company.id, primary.id, {
+      // Setup prerequisite: FINANCE + ADMINISTRATION must exist company-wide.
+      await prisma.department.createMany({
+        data: [
+          {
+            companyId: company.id,
+            scopeType: 'COMPANY',
+            code: 'FIN',
+            name: 'F',
+            category: 'FINANCE',
+          },
+          {
+            companyId: company.id,
+            scopeType: 'COMPANY',
+            code: 'ADM',
+            name: 'A',
+            category: 'ADMINISTRATION',
+          },
+        ],
+      });
+      const proj = await org.createProject(OWNER, company.id, {
         code: 'P1',
         name: 'Proj',
         timezone: 'UTC',

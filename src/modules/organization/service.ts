@@ -187,6 +187,18 @@ export class OrganizationService {
         code,
         name,
         ...(input.isPrimary !== undefined ? { isPrimary: input.isPrimary } : {}),
+        ...(input.legalName !== undefined ? { legalName: input.legalName } : {}),
+        ...(input.addressLine1 !== undefined ? { addressLine1: input.addressLine1 } : {}),
+        ...(input.addressLine2 !== undefined ? { addressLine2: input.addressLine2 } : {}),
+        ...(input.locality !== undefined ? { locality: input.locality } : {}),
+        ...(input.city !== undefined ? { city: input.city } : {}),
+        ...(input.district !== undefined ? { district: input.district } : {}),
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...(input.pinCode !== undefined ? { pinCode: input.pinCode } : {}),
+        ...(input.country !== undefined ? { country: input.country } : {}),
+        ...(input.contactName !== undefined ? { contactName: input.contactName } : {}),
+        ...(input.contactPhone !== undefined ? { contactPhone: input.contactPhone } : {}),
+        ...(input.contactEmail !== undefined ? { contactEmail: input.contactEmail } : {}),
       });
       await this.recordMutation(
         audit,
@@ -212,6 +224,22 @@ export class OrganizationService {
     const data: Record<string, unknown> = {};
     if (patch.name !== undefined) data.name = normalizeName(patch.name);
     if (patch.isPrimary !== undefined) data.isPrimary = patch.isPrimary;
+    for (const f of [
+      'legalName',
+      'addressLine1',
+      'addressLine2',
+      'locality',
+      'city',
+      'district',
+      'state',
+      'pinCode',
+      'country',
+      'contactName',
+      'contactPhone',
+      'contactEmail',
+    ] as const) {
+      if (patch[f] !== undefined) data[f] = patch[f];
+    }
 
     if (patch.isPrimary === true) {
       // Demote incumbents inside the same transaction before promoting.
@@ -295,12 +323,7 @@ export class OrganizationService {
 
   // ------------------------------------------------------------------ Project
 
-  async createProject(
-    actor: ActorContext,
-    companyId: string,
-    headOfficeId: string,
-    input: CreateProjectInput,
-  ) {
+  async createProject(actor: ActorContext, companyId: string, input: CreateProjectInput) {
     const code = normalizeCode(input.code);
     const name = normalizeName(input.name);
     const timezone = assertValidTimezone(input.timezone);
@@ -308,14 +331,30 @@ export class OrganizationService {
       throw new OrgValidationError('endDate', 'must not be before startDate');
     }
 
-    return this.uow.run(async ({ headOffices, projects, audit }) => {
-      // Validate parent inside the requested company scope before mutating.
-      const headOffice = await headOffices.findById(companyId, headOfficeId);
-      if (!headOffice) throw new OrgEntityNotFoundError('HEAD_OFFICE');
-      // One shared HO invariant: projects bind to the company's PRIMARY HO only.
-      if (!headOffice.isPrimary) {
-        throw new OrgValidationError('headOfficeId', 'must be the company primary head office');
+    return this.uow.run(async ({ headOffices, projects, departments, audit }) => {
+      // Shared-HO derivation: the project binds to the company's ACTIVE primary
+      // Head Office — never trusted from the client body.
+      const headOfficesList = await headOffices.list(companyId, { status: 'ACTIVE' });
+      const headOffice = headOfficesList.find((h) => h.isPrimary);
+      if (!headOffice) {
+        throw new OrgValidationError(
+          'headOfficeId',
+          'company must have an active primary head office before creating projects',
+        );
       }
+      // Setup prerequisite: company-wide Finance + Administration departments
+      // must exist before the first project is created.
+      const depts = await departments.countByCategory(companyId, 'COMPANY', [
+        'FINANCE',
+        'ADMINISTRATION',
+      ]);
+      if (depts < 2) {
+        throw new OrgValidationError(
+          'departments',
+          'company-wide FINANCE and ADMINISTRATION departments must exist before creating projects',
+        );
+      }
+      const headOfficeId = headOffice.id;
       const project = await projects.create(companyId, headOfficeId, {
         code,
         name,
@@ -404,7 +443,20 @@ export class OrganizationService {
     const timezone = input.timezone !== undefined ? assertValidTimezone(input.timezone) : undefined;
     if (input.geoLatitude !== undefined) assertValidLatitude(input.geoLatitude);
     if (input.geoLongitude !== undefined) assertValidLongitude(input.geoLongitude);
-    if (input.geoFenceRadiusM !== undefined) assertValidGeoFenceRadius(input.geoFenceRadiusM);
+    // Coordinates are a pair — either both or neither.
+    if ((input.geoLatitude === undefined) !== (input.geoLongitude === undefined)) {
+      throw new OrgValidationError(
+        'geoCoordinates',
+        'latitude and longitude must be provided together',
+      );
+    }
+    // Geofence requires coordinates to define the fenced point.
+    if (input.geoFenceRadiusM !== undefined) {
+      assertValidGeoFenceRadius(input.geoFenceRadiusM);
+      if (input.geoLatitude === undefined) {
+        throw new OrgValidationError('geoFenceRadiusM', 'geofence requires coordinates');
+      }
+    }
 
     return this.uow.run(async ({ projects, sites, audit }) => {
       const project = await projects.findById(companyId, projectId);

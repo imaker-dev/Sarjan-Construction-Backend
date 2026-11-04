@@ -70,7 +70,9 @@ const OPERATION_DOCS: Record<
   'POST /auth/claim/onboard': {
     summary: 'Onboard Company',
     description:
-      'Unauthenticated; rate-limited. Sets password, updates company, and creates HeadOffice.',
+      'Unauthenticated; rate-limited. Sets password, updates company, and creates HeadOffice. ' +
+      'The Head Office body shares the POST /org/head-offices structured-address contract; ' +
+      'isPrimary is NOT client-controlled — the first head office is always the company primary.',
   },
   'GET /org/company': { summary: 'Read own company profile', permission: 'ORG_COMPANY_READ' },
   'PATCH /org/company': {
@@ -86,7 +88,13 @@ const OPERATION_DOCS: Record<
     description: 'Deterministic cursor pagination on (createdAt,id); pass `cursor`.',
     permission: 'ORG_HEAD_OFFICE_READ',
   },
-  'POST /org/head-offices': { summary: 'Create head office', permission: 'ORG_HEAD_OFFICE_CREATE' },
+  'POST /org/head-offices': {
+    summary: 'Create head office',
+    description:
+      'Structured operational address + contact fields; isPrimary=true promotes by replacement ' +
+      'under the one-primary-per-company invariant.',
+    permission: 'ORG_HEAD_OFFICE_CREATE',
+  },
   'PATCH /org/head-offices/:id': {
     summary: 'Update head office',
     permission: 'ORG_HEAD_OFFICE_UPDATE',
@@ -99,21 +107,44 @@ const OPERATION_DOCS: Record<
     summary: 'List projects (cursor-paginated)',
     permission: 'ORG_PROJECT_READ',
   },
-  'POST /org/projects': { summary: 'Create project', permission: 'ORG_PROJECT_CREATE' },
+  'POST /org/projects': {
+    summary: 'Create project',
+    description:
+      'headOfficeId is derived server-side from the active primary Head Office — ' +
+      'never accepted from the body. Requires an active primary HO and company-wide ' +
+      'FINANCE and ADMINISTRATION departments to already exist (422 otherwise).',
+    permission: 'ORG_PROJECT_CREATE',
+  },
   'PATCH /org/projects/:id': { summary: 'Update project', permission: 'ORG_PROJECT_UPDATE' },
   'POST /org/projects/:id/status': {
     summary: 'Transition project status',
     permission: 'ORG_PROJECT_STATUS',
   },
   'GET /org/sites': { summary: 'List sites (cursor-paginated)', permission: 'ORG_SITE_READ' },
-  'POST /org/sites': { summary: 'Create site', permission: 'ORG_SITE_CREATE' },
+  'POST /org/sites': {
+    summary: 'Create site',
+    description:
+      'Structured address fields (addressLine1/2, locality, city, district, state, pinCode, country). ' +
+      'geoLatitude/geoLongitude form a required pair with range validation; geoFenceRadiusM (10-5000m) ' +
+      'requires coordinates. Omitted timezone inherits the parent project timezone.',
+    permission: 'ORG_SITE_CREATE',
+  },
   'PATCH /org/sites/:id': { summary: 'Update site', permission: 'ORG_SITE_UPDATE' },
   'POST /org/sites/:id/status': {
     summary: 'Transition site status',
     permission: 'ORG_SITE_STATUS',
   },
   'GET /departments': { summary: 'List departments', permission: 'DEPARTMENT_READ' },
-  'POST /departments': { summary: 'Create department', permission: 'DEPARTMENT_CONFIGURE' },
+  'POST /departments': {
+    summary: 'Create department',
+    description:
+      'category is a controlled construction-department enum (FINANCE, ADMINISTRATION, HR, ' +
+      'PROCUREMENT, STORE, MACHINERY, SAFETY, QUALITY, SITE_ENGINEERING, KITCHEN, OPERATIONS, CUSTOM); ' +
+      'categoryLabel is required when category=CUSTOM. scopeId is required for PROJECT/SITE scopes ' +
+      'and omitted for COMPANY. baseHeadOfficeId is physical location only — never a permission scope. ' +
+      'capabilityKey is an internal routing identifier.',
+    permission: 'DEPARTMENT_CONFIGURE',
+  },
   'PATCH /departments/:id': { summary: 'Update department', permission: 'DEPARTMENT_CONFIGURE' },
   'POST /departments/:id/status': {
     summary: 'Transition department status',
@@ -124,7 +155,32 @@ const OPERATION_DOCS: Record<
     permission: 'EMPLOYEE_READ',
   },
   'POST /employees': { summary: 'Create employee profile', permission: 'EMPLOYEE_MANAGE' },
-  'PATCH /employees/:id': { summary: 'Update employee profile', permission: 'EMPLOYEE_MANAGE' },
+  'GET /employees/:id': { summary: 'Get employee profile', permission: 'EMPLOYEE_READ' },
+  'PATCH /employees/:id': {
+    summary: 'Update employee profile',
+    description: 'Operational fields only; nullable-union fields clear the stored value.',
+    permission: 'EMPLOYEE_MANAGE',
+  },
+  'GET /employees/:id/memberships': {
+    summary: 'List department memberships (active + history)',
+    description: 'Placement records only — membership never grants API permission.',
+    permission: 'EMPLOYEE_READ',
+  },
+  'POST /employees/:id/memberships': {
+    summary: 'Add department membership',
+    description:
+      'Targets an ACTIVE COMPANY/PROJECT/SITE department in the same company. ' +
+      'isPrimary=true demotes the prior active primary in the same transaction.',
+    permission: 'EMPLOYEE_MANAGE',
+  },
+  'PATCH /employees/:id/memberships/:membershipId': {
+    summary: 'Set membership primary flag',
+    permission: 'EMPLOYEE_MANAGE',
+  },
+  'POST /employees/:id/memberships/:membershipId/end': {
+    summary: 'End membership (server timestamp)',
+    permission: 'EMPLOYEE_MANAGE',
+  },
   'POST /employees/:id/status': {
     summary: 'Activate/deactivate employee (atomic offboarding)',
     permission: 'EMPLOYEE_MANAGE',
