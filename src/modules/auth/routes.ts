@@ -13,11 +13,27 @@ const RefreshBody = Type.Object({
   refreshToken: Type.String({ minLength: 1, maxLength: 512 }),
 });
 
+const UserProfile = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  loginId: Type.String(),
+  displayName: Type.Optional(Type.String()),
+  employeeCode: Type.Optional(Type.String()),
+  companyId: Type.Optional(Type.String({ format: 'uuid' })),
+  companyCode: Type.Optional(Type.String()),
+  companyName: Type.Optional(Type.String()),
+  isPlatform: Type.Optional(Type.Boolean()),
+  role: Type.Optional(Type.String()),
+  roles: Type.Array(Type.String()),
+});
+
 const TokenResponse = Type.Object({
   accessToken: Type.String(),
   refreshToken: Type.String(),
   tokenType: Type.Literal('Bearer'),
   expiresIn: Type.Number(),
+  role: Type.Optional(Type.String()),
+  roles: Type.Optional(Type.Array(Type.String())),
+  user: Type.Optional(UserProfile),
 });
 
 const EmptyResponse = Type.Object({});

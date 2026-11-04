@@ -35,6 +35,15 @@ export function makeAuthRepos(store: AuthStore): AuthRepos {
   return {
     principals: {
       findByLoginId: async (loginId) => store.principals.find((p) => p.loginId === loginId) ?? null,
+      findWithDetailsByLoginId: async (loginId) => {
+        const found = store.principals.find((p) => p.loginId === loginId);
+        if (!found) return null;
+        return {
+          ...found,
+          employees: [],
+          roleAssignments: [],
+        };
+      },
       findById: async (id) => store.principals.find((p) => p.id === id) ?? null,
     },
     sessions: {
@@ -97,7 +106,7 @@ export function makeAuthRepos(store: AuthStore): AuthRepos {
 }
 
 export class FakeAuthUoW implements AuthUnitOfWork {
-  constructor(public readonly store: AuthStore) {}
+  constructor(public readonly store: AuthStore) { }
 
   async run<T>(fn: (repos: AuthRepos) => Promise<T>): Promise<T> {
     const snapshot = structuredClone(this.store);

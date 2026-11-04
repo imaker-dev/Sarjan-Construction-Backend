@@ -5,7 +5,41 @@ import type { AuditRecord } from '../organization/types.js';
 
 type Tx = Prisma.TransactionClient;
 
+export interface PrincipalDetails extends Principal {
+  employees?: {
+    id: string;
+    displayName: string;
+    employeeCode: string;
+    companyId: string;
+    company: {
+      id: string;
+      code: string;
+      name: string;
+      isPlatform: boolean;
+    };
+  }[];
+  roleAssignments?: {
+    id: string;
+    roleId: string;
+    role: {
+      key: string;
+      name: string;
+    };
+    companyId: string;
+    company: {
+      id: string;
+      code: string;
+      name: string;
+    };
+    scopeType: string;
+    headOfficeId: string | null;
+    projectId: string | null;
+    siteId: string | null;
+  }[];
+}
+
 export interface PrincipalRepository {
+  findWithDetailsByLoginId?(loginId: string): Promise<PrincipalDetails | null>;
   findByLoginId(loginId: string): Promise<Principal | null>;
   findById(id: string): Promise<Principal | null>;
 }
@@ -51,6 +85,26 @@ export function makeAuthRepos(tx: Tx): AuthRepos {
   return {
     principals: {
       findByLoginId: (loginId) => tx.principal.findUnique({ where: { loginId } }),
+      findWithDetailsByLoginId: (loginId) =>
+        tx.principal.findUnique({
+          where: { loginId },
+          include: {
+            employees: {
+              include: {
+                company: true,
+              },
+            },
+            roleAssignments: {
+              where: {
+                revokedAt: null,
+              },
+              include: {
+                role: true,
+                company: true,
+              },
+            },
+          },
+        }),
       findById: (id) => tx.principal.findUnique({ where: { id } }),
     },
     sessions: {

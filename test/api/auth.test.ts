@@ -60,6 +60,40 @@ describe('auth routes', () => {
       expect(body.expiresIn).toBe(900);
     });
 
+    it('returns user profile and roles on success when available', async () => {
+      const appUser = await appWith(
+        makeService({
+          login: async () => ({
+            ...tokenPair,
+            role: 'COMPANY_OWNER',
+            roles: ['COMPANY_OWNER'],
+            user: {
+              id: 'p1',
+              loginId: 'admin@acme.com',
+              displayName: 'Acme Admin',
+              companyId: 'c1',
+              companyCode: 'ACME',
+              companyName: 'Acme Infra',
+              isPlatform: false,
+              role: 'COMPANY_OWNER',
+              roles: ['COMPANY_OWNER'],
+            },
+          }),
+        }),
+      );
+      const res = await appUser.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { loginId: 'admin@acme.com', password: 'pw' },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<AuthResult>();
+      expect(body.role).toBe('COMPANY_OWNER');
+      expect(body.roles).toEqual(['COMPANY_OWNER']);
+      expect(body.user?.companyCode).toBe('ACME');
+      await appUser.close();
+    });
+
     it('rejects malformed bodies with a schema error', async () => {
       const res = await app.inject({
         method: 'POST',

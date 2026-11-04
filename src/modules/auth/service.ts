@@ -10,11 +10,27 @@ export interface AuthConfig {
   refreshTokenTtlS: number;
 }
 
+export interface AuthenticatedUser {
+  id: string;
+  loginId: string;
+  displayName?: string;
+  employeeCode?: string;
+  companyId?: string;
+  companyCode?: string;
+  companyName?: string;
+  isPlatform?: boolean;
+  role?: string;
+  roles: string[];
+}
+
 export interface AuthResult {
   accessToken: string;
   refreshToken: string;
   tokenType: 'Bearer';
   expiresIn: number;
+  role?: string;
+  roles?: string[];
+  user?: AuthenticatedUser;
 }
 
 export interface RequestMeta {
@@ -44,7 +60,11 @@ export class AuthService {
   ): Promise<AuthResult> {
     const loginId = normalizeLoginId(input.loginId);
 
-    const principal = await this.uow.run(({ principals }) => principals.findByLoginId(loginId));
+    const principal = await this.uow.run(({ principals }) =>
+      principals.findWithDetailsByLoginId
+        ? principals.findWithDetailsByLoginId(loginId)
+        : principals.findByLoginId(loginId),
+    );
 
     // Always verify a password-shaped value to keep timing uniform —
     // unknown accounts verify against a dummy hash.
@@ -81,7 +101,37 @@ export class AuthService {
         ...(meta.correlationId !== undefined ? { correlationId: meta.correlationId } : {}),
         statusAfter: 'ACTIVE',
       });
-      return this.issueTokens(principal, session.id, refreshToken);
+      const roles: string[] = [];
+      const details = principal as typeof principal & {
+        employees?: {
+          displayName?: string;
+          employeeCode?: string;
+          companyId?: string;
+          company?: { id: string; code: string; name: string; isPlatform: boolean };
+        }[];
+        roleAssignments?: { role?: { key?: string }; companyId?: string }[];
+      };
+      if (details.roleAssignments) {
+        for (const ra of details.roleAssignments) {
+          if (ra.role?.key && !roles.includes(ra.role.key)) {
+            roles.push(ra.role.key);
+          }
+        }
+      }
+      const emp = details.employees?.[0];
+      const userInfo: AuthenticatedUser = {
+        id: principal.id,
+        loginId: principal.loginId ?? loginId,
+        ...(emp?.displayName !== undefined ? { displayName: emp.displayName } : {}),
+        ...(emp?.employeeCode !== undefined ? { employeeCode: emp.employeeCode } : {}),
+        ...(emp?.companyId !== undefined ? { companyId: emp.companyId } : {}),
+        ...(emp?.company?.code !== undefined ? { companyCode: emp.company.code } : {}),
+        ...(emp?.company?.name !== undefined ? { companyName: emp.company.name } : {}),
+        ...(emp?.company?.isPlatform !== undefined ? { isPlatform: emp.company.isPlatform } : {}),
+        ...(roles[0] !== undefined ? { role: roles[0] } : {}),
+        roles,
+      };
+      return this.issueTokens(principal, session.id, refreshToken, userInfo);
     });
   }
 
@@ -205,12 +255,16 @@ export class AuthService {
     principal: { id: string },
     sessionId: string,
     refreshToken: string,
+    user?: AuthenticatedUser,
   ): AuthResult {
     return {
       accessToken: this.tokens.signAccessToken(principal.id, sessionId),
       refreshToken,
       tokenType: 'Bearer',
       expiresIn: this.cfg.accessTokenTtlS, // access-token lifetime, not refresh
+      ...(user?.role !== undefined ? { role: user.role } : {}),
+      ...(user?.roles !== undefined ? { roles: user.roles } : {}),
+      ...(user !== undefined ? { user } : {}),
     };
   }
 }
