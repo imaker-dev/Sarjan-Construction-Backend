@@ -103,6 +103,8 @@ model Company {
   outboxEvents          OutboxEvent[]
   notifications         Notification[]
   complianceRecords     ComplianceRecord[]
+  departmentOperations  DepartmentOperation[]
+  employeeOperations    EmployeeOperation[]
 }
 
 model HeadOffice {
@@ -348,30 +350,31 @@ model Principal {
 // Company-scoped workforce record. Login linkage is optional — most labourers
 // never have a Principal.
 model Employee {
-  id           String         @id @default(uuid()) @db.Uuid
-  companyId    String         @db.Uuid
-  principalId  String?        @db.Uuid
-  employeeCode String
-  displayName  String
+  id                    String                    @id @default(uuid()) @db.Uuid
+  companyId             String                    @db.Uuid
+  principalId           String?                   @db.Uuid
+  employeeCode          String
+  displayName           String
   // Nullable for additive migration safety on legacy rows; required by the
   // create API. Not a lifecycle state — status carries lifecycle.
   engagementType        EmploymentEngagementType?
   designation           String?
   tradeCategory         String?
-  joiningDate           DateTime?                @db.Date
+  joiningDate           DateTime?                 @db.Date
   contactPhone          String?
   contactEmail          String?
   emergencyContactName  String?
   emergencyContactPhone String?
-  status       EmployeeStatus @default(ACTIVE)
-  version      Int            @default(0)
-  createdAt    DateTime       @default(now()) @db.Timestamptz
-  updatedAt    DateTime       @updatedAt @db.Timestamptz
+  status                EmployeeStatus            @default(ACTIVE)
+  version               Int                       @default(0)
+  createdAt             DateTime                  @default(now()) @db.Timestamptz
+  updatedAt             DateTime                  @updatedAt @db.Timestamptz
 
-  company           Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  principal         Principal?             @relation(fields: [principalId], references: [id], onDelete: Restrict)
-  headedDepartments Department[]
-  memberships       DepartmentMembership[]
+  company            Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  principal          Principal?             @relation(fields: [principalId], references: [id], onDelete: Restrict)
+  headedDepartments  Department[]
+  memberships        DepartmentMembership[]
+  employeeOperations EmployeeOperation[]
 
   // Employee code is unique within a company.
   @@unique([companyId, employeeCode])
@@ -582,16 +585,17 @@ model Department {
   createdAt        DateTime           @default(now()) @db.Timestamptz
   updatedAt        DateTime           @updatedAt @db.Timestamptz
 
-  company        Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  company              Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
   // Composite FKs keep the scope target inside this company.
-  project        Project?               @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  site           Site?                  @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  project              Project?               @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site                 Site?                  @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
   // Department head must be an Employee of the same company.
-  headEmployee   Employee?              @relation(fields: [headEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  headEmployee         Employee?              @relation(fields: [headEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
   // Base Head Office must belong to the same company (location, not scope).
-  baseHeadOffice HeadOffice?            @relation(fields: [baseHeadOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
-  operations     Operation[]
-  memberships    DepartmentMembership[]
+  baseHeadOffice       HeadOffice?            @relation(fields: [baseHeadOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  operations           Operation[]
+  memberships          DepartmentMembership[]
+  departmentOperations DepartmentOperation[]
 
   // Scoped code uniqueness — company-wide rows are unambiguous; the same code
   // may repeat inside distinct project/site scopes (partial indexes in SQL).
@@ -1415,4 +1419,53 @@ model DepartmentMembership {
   @@unique([id, companyId])
   @@index([companyId, employeeId, endedAt])
   @@index([companyId, departmentId, endedAt])
+}
+
+// Global, read-only operation catalogue — the master list of work types an
+// admin can enable on departments. Seeded by migration; no companyId.
+model OperationCatalogueEntry {
+  key         String  @id
+  domain      String // EMPLOYEE_RECORDS|PAYROLL|BILLING|QUOTATION|WALLET|REPORT
+  name        String
+  description String
+  sensitive   Boolean @default(false)
+
+  departmentOperations DepartmentOperation[]
+  employeeOperations   EmployeeOperation[]
+
+  @@index([domain])
+}
+
+// Which operations a department is enabled to perform. Placement is a row's
+// existence — no status field.
+model DepartmentOperation {
+  id           String   @id @default(uuid()) @db.Uuid
+  companyId    String   @db.Uuid
+  departmentId String   @db.Uuid
+  operationKey String
+  createdAt    DateTime @default(now()) @db.Timestamptz
+
+  company    Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  department Department              @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  operation  OperationCatalogueEntry @relation(fields: [operationKey], references: [key])
+
+  @@unique([companyId, departmentId, operationKey])
+  @@index([companyId, departmentId])
+}
+
+// Which of a department's enabled operations an employee may perform —
+// a strict subset validated against the employee's active memberships.
+model EmployeeOperation {
+  id           String   @id @default(uuid()) @db.Uuid
+  companyId    String   @db.Uuid
+  employeeId   String   @db.Uuid
+  operationKey String
+  createdAt    DateTime @default(now()) @db.Timestamptz
+
+  company   Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee  Employee                @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  operation OperationCatalogueEntry @relation(fields: [operationKey], references: [key])
+
+  @@unique([companyId, employeeId, operationKey])
+  @@index([companyId, employeeId])
 }

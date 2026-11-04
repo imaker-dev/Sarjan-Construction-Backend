@@ -39,6 +39,8 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { ComplianceService } from './modules/compliance/service.js';
 import { complianceRoutes } from './modules/compliance/routes.js';
+import { operationAssignmentRoutes } from './modules/operation/routes.js';
+import { OperationAssignmentService } from './modules/operation/assignment.js';
 import { AuthService } from './modules/auth/service.js';
 import { makeAuthRepos, PrismaAuthUnitOfWork } from './modules/auth/repository.js';
 import { AccessControlService } from './modules/access-control/service.js';
@@ -160,6 +162,44 @@ const OPERATION_DOCS: Record<
     summary: 'Update employee profile',
     description: 'Operational fields only; nullable-union fields clear the stored value.',
     permission: 'EMPLOYEE_MANAGE',
+  },
+  'GET /operations': {
+    summary: 'Operation catalogue',
+    description:
+      'Global master list of work types an admin can enable on departments ' +
+      '(finance payroll, billing, quotation, wallet, reports). Read-only rows ' +
+      'seeded by migration — not per-company.',
+    permission: 'OPERATION_READ',
+  },
+  'GET /departments/:id/operations': {
+    summary: 'List enabled department operations',
+    permission: 'DEPARTMENT_READ',
+  },
+  'POST /departments/:id/operations': {
+    summary: 'Enable operation on a department',
+    description:
+      'operationKey must exist in the global catalogue and the department must be ACTIVE. ' +
+      'Duplicate enablement conflicts (409).',
+    permission: 'OPERATION_CONFIGURE',
+  },
+  'DELETE /departments/:id/operations/:operationKey': {
+    summary: 'Disable operation on a department',
+    permission: 'OPERATION_CONFIGURE',
+  },
+  'GET /employees/:id/operations': {
+    summary: 'List employee assigned operations',
+    permission: 'EMPLOYEE_READ',
+  },
+  'POST /employees/:id/operations': {
+    summary: 'Assign operation to employee',
+    description:
+      'Strict subset rule: the operation must be enabled on at least one ACTIVE ' +
+      'department the employee is a member of — membership is the work boundary.',
+    permission: 'OPERATION_EMPLOYEE_ASSIGN',
+  },
+  'DELETE /employees/:id/operations/:operationKey': {
+    summary: 'Revoke operation from employee',
+    permission: 'OPERATION_EMPLOYEE_ASSIGN',
   },
   'GET /employees/:id/memberships': {
     summary: 'List department memberships (active + history)',
@@ -528,13 +568,26 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     },
   });
 
-  authService ??= new AuthService(new PrismaAuthUnitOfWork(app.prisma), app.tokenService, {
-    accessTokenTtlS: app.config.ACCESS_TOKEN_TTL_S,
-    refreshTokenTtlS: app.config.REFRESH_TOKEN_TTL_S,
-  });
+  authService ??= new AuthService(
+    new PrismaAuthUnitOfWork(app.prisma),
+    app.tokenService,
+    {
+      accessTokenTtlS: app.config.ACCESS_TOKEN_TTL_S,
+      refreshTokenTtlS: app.config.REFRESH_TOKEN_TTL_S,
+    },
+    () => new Date(),
+    (companyId, employeeId) =>
+      opAssignment.getEffectiveOperations(companyId, employeeId),
+  );
   accessControl ??= new AccessControlService({
     principals: makeAuthRepos(app.prisma).principals,
     access: makeAccessRepository(app.prisma),
+  });
+  // Late-bound for the auth login resolver: this const is referenced by the
+  // AuthService closure above and dereferenced only at login time.
+  const opAssignment = new OperationAssignmentService(app.prisma, {
+    assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+      accessControl.assertPermission(pid, key, target),
   });
 
   const platformResolver = async (): Promise<string | null> => {
@@ -612,6 +665,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         }),
       services.employeeAccessService ?? new EmployeeAccessService(app.prisma),
     ),
+    { prefix: '/api/v1' },
+  );
+  await app.register(
+    operationAssignmentRoutes(opAssignment),
     { prefix: '/api/v1' },
   );
   await app.register(

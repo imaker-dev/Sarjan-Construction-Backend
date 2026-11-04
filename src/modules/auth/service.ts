@@ -21,6 +21,7 @@ export interface AuthenticatedUser {
   isPlatform?: boolean;
   role?: string;
   roles: string[];
+  operations?: string[];
 }
 
 export interface AuthResult {
@@ -47,6 +48,7 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly cfg: AuthConfig,
     private readonly now: () => Date = () => new Date(),
+    private readonly resolveOperations?: (companyId: string, employeeId: string) => Promise<string[]>,
   ) {}
 
   /**
@@ -118,7 +120,9 @@ export class AuthService {
           }
         }
       }
-      const emp = details.employees?.[0];
+      const emp = details.employees?.[0] as
+        | ({ id?: string } & NonNullable<typeof details.employees>[number])
+        | undefined;
       const userInfo: AuthenticatedUser = {
         id: principal.id,
         loginId: principal.loginId ?? loginId,
@@ -131,6 +135,13 @@ export class AuthService {
         ...(roles[0] !== undefined ? { role: roles[0] } : {}),
         roles,
       };
+      // Effective operations = employee grants ∩ enabled ops on active
+      // membership depts (empty when the resolver or employee is absent).
+      const operations =
+        emp?.id !== undefined && emp.companyId !== undefined && this.resolveOperations !== undefined
+          ? await this.resolveOperations(emp.companyId, emp.id)
+          : undefined;
+      if (operations !== undefined) userInfo.operations = operations;
       return this.issueTokens(principal, session.id, refreshToken, userInfo);
     });
   }
