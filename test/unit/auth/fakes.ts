@@ -4,13 +4,22 @@ import type { AuditRecord } from '../../../src/modules/organization/types.js';
 
 export interface AuthStore {
   principals: Principal[];
+  employees: {
+    id: string;
+    principalId: string;
+    companyId: string;
+    displayName: string;
+    employeeCode: string;
+    company: { id: string; code: string; name: string; isPlatform: boolean };
+  }[];
   sessions: AuthSession[];
   refreshTokens: RefreshToken[];
   auditLog: AuditRecord[];
 }
 
 export function emptyAuthStore(): AuthStore {
-  return { principals: [], sessions: [], refreshTokens: [], auditLog: [] };
+  return { principals: [],
+    employees: [], sessions: [], refreshTokens: [], auditLog: [] };
 }
 
 let nextId = 0;
@@ -40,7 +49,7 @@ export function makeAuthRepos(store: AuthStore): AuthRepos {
         if (!found) return null;
         return {
           ...found,
-          employees: [],
+          employees: store.employees.filter((e) => e.principalId === found.id),
           roleAssignments: [],
         };
       },

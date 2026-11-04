@@ -26,6 +26,7 @@ export interface AuthenticatedUser {
   isPlatform?: boolean;
   role?: string;
   roles: string[];
+  operations?: string[];
 }
 
 export interface AuthResult {
@@ -52,8 +53,9 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly cfg: AuthConfig,
     private readonly now: () => Date = () => new Date(),
+    private readonly resolveOperations?: (companyId: string, employeeId: string) => Promise<string[]>,
     private readonly cache: UserProfileCache = new InMemoryUserProfileCache(),
-  ) {}
+  ) { }
 
 
   get userCache(): UserProfileCache {
@@ -130,7 +132,9 @@ export class AuthService {
           }
         }
       }
-      const emp = details.employees?.[0];
+      const emp = details.employees?.[0] as
+        | ({ id?: string } & NonNullable<typeof details.employees>[number])
+        | undefined;
       const userInfo: AuthenticatedUser = {
         id: principal.id,
         loginId: principal.loginId ?? loginId,
@@ -143,6 +147,13 @@ export class AuthService {
         ...(roles[0] !== undefined ? { role: roles[0] } : {}),
         roles,
       };
+      // Effective operations = employee grants ∩ enabled ops on active
+      // membership depts (empty when the resolver or employee is absent).
+      const operations =
+        emp?.id !== undefined && emp.companyId !== undefined && this.resolveOperations !== undefined
+          ? await this.resolveOperations(emp.companyId, emp.id)
+          : undefined;
+      if (operations !== undefined) userInfo.operations = operations;
       return this.issueTokens(principal, session.id, refreshToken, userInfo);
     });
   }
@@ -289,14 +300,14 @@ export class AuthService {
 
     for (const ra of full.roleAssignments) {
 
-        if (!roles.includes(ra.role.key)) {
-          roles.push(ra.role.key);
+      if (!roles.includes(ra.role.key)) {
+        roles.push(ra.role.key);
+      }
+      for (const rp of ra.role.permissions) {
+        if (!permissions.includes(rp.permission.key)) {
+          permissions.push(rp.permission.key);
         }
-        for (const rp of ra.role.permissions) {
-          if (!permissions.includes(rp.permission.key)) {
-            permissions.push(rp.permission.key);
-          }
-        }
+      }
       assignments.push({
         id: ra.id,
         roleKey: ra.role.key,
@@ -317,13 +328,13 @@ export class AuthService {
     if (emp?.memberships) {
       for (const m of emp.memberships) {
 
-          departments.push({
-            departmentId: m.departmentId,
-            departmentCode: m.department.code,
-            departmentName: m.department.name,
-            category: (m.department as { category?: string }).category ?? null,
-            isPrimary: m.isPrimary,
-          });
+        departments.push({
+          departmentId: m.departmentId,
+          departmentCode: m.department.code,
+          departmentName: m.department.name,
+          category: (m.department as { category?: string }).category ?? null,
+          isPrimary: m.isPrimary,
+        });
       }
     }
 
@@ -341,11 +352,11 @@ export class AuthService {
       joiningDate: emp?.joiningDate ? emp.joiningDate.toISOString().slice(0, 10) : null,
       company: company
         ? {
-            id: company.id,
-            code: company.code,
-            name: company.name,
-            isPlatform: company.isPlatform,
-          }
+          id: company.id,
+          code: company.code,
+          name: company.name,
+          isPlatform: company.isPlatform,
+        }
         : null,
       role: roles[0] ?? null,
       roles,

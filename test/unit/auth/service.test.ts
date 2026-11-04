@@ -198,3 +198,31 @@ describe('getMe', () => {
     expect(res3.loginId).toBe('changed@example.com');
   });
 });
+
+describe('login operations resolver', () => {
+  it('includes effective operations when the resolver returns them', async () => {
+    const opsSvc = new AuthService(
+      new FakeAuthUoW(store),
+      tokens,
+      { accessTokenTtlS: 900, refreshTokenTtlS: 1209600 },
+      () => new Date(),
+      async () => ['PETTY_CASH_REQUEST_APPROVE', 'EMPLOYEE_PAYROLL_PREPARE'],
+    );
+    const passwordHash = await passwordService.hash('secret-pw');
+    const p = fakePrincipal({ passwordHash, loginId: 'ops@t.test', status: 'ACTIVE', type: 'USER' });
+    store.principals.push(p);
+    store.employees.push({
+      id: 'emp-ops',
+      principalId: p.id,
+      companyId: 'c1',
+      displayName: 'Ops Emp',
+      employeeCode: 'E-OPS',
+      company: { id: 'c1', code: 'C1', name: 'Co', isPlatform: false },
+    });
+    const result = await opsSvc.login({ loginId: 'ops@t.test', password: 'secret-pw' }, {});
+    expect(result.user?.operations).toEqual([
+      'PETTY_CASH_REQUEST_APPROVE',
+      'EMPLOYEE_PAYROLL_PREPARE',
+    ]);
+  });
+});
