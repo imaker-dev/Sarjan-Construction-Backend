@@ -197,6 +197,7 @@ describe('openapi document', () => {
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/refresh',
       'POST /api/v1/auth/logout',
+      'GET /api/v1/auth/me',
       'POST /api/v1/auth/claim',
       'GET /api/v1/auth/claim/verify',
       'POST /api/v1/auth/claim/onboard',

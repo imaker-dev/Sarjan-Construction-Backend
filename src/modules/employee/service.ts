@@ -68,6 +68,7 @@ export class EmployeeService {
   constructor(
     private readonly uow: EmployeeUnitOfWork,
     private readonly authorizer: Authorizer,
+    private readonly cache?: import('../auth/cache.js').UserProfileCache,
   ) {}
 
   async list(
@@ -235,6 +236,9 @@ export class EmployeeService {
           },
         }),
       );
+      if (this.cache && existing.principalId) {
+        await this.cache.invalidate(existing.principalId);
+      }
       return updated;
     });
   }
@@ -336,6 +340,9 @@ export class EmployeeService {
           changedFields: { status: { before: existing.status, after: to } },
         }),
       );
+      if (this.cache && existing.principalId) {
+        await this.cache.invalidate(existing.principalId);
+      }
       return updated;
     });
   }
@@ -412,6 +419,9 @@ export class EmployeeService {
           },
         }),
       );
+      if (this.cache && employee.principalId) {
+        await this.cache.invalidate(employee.principalId);
+      }
       return membership;
     });
   }
@@ -429,7 +439,7 @@ export class EmployeeService {
       EMPLOYEE_MANAGE,
       companyTarget(companyId),
     );
-    return this.uow.run(async ({ memberships, audit }) => {
+    return this.uow.run(async ({ employees, memberships, audit }) => {
       const existing = await memberships.findById(companyId, employeeId, membershipId);
       if (!existing) throw new OrgEntityNotFoundError('DEPARTMENT_MEMBERSHIP');
       if (existing.endedAt !== null) {
@@ -457,6 +467,10 @@ export class EmployeeService {
           changedFields: { isPrimary: { before: existing.isPrimary, after: true } },
         }),
       );
+      if (this.cache) {
+        const emp = await employees.findById(companyId, employeeId);
+        if (emp?.principalId) await this.cache.invalidate(emp.principalId);
+      }
       return updated;
     });
   }
@@ -473,7 +487,7 @@ export class EmployeeService {
       EMPLOYEE_MANAGE,
       companyTarget(companyId),
     );
-    return this.uow.run(async ({ memberships, audit }) => {
+    return this.uow.run(async ({ employees, memberships, audit }) => {
       const existing = await memberships.findById(companyId, employeeId, membershipId);
       if (!existing) throw new OrgEntityNotFoundError('DEPARTMENT_MEMBERSHIP');
       if (existing.endedAt !== null) {
@@ -494,6 +508,10 @@ export class EmployeeService {
           changedFields: { endedAt: { before: null, after: 'ended by admin' } },
         }),
       );
+      if (this.cache) {
+        const emp = await employees.findById(companyId, employeeId);
+        if (emp?.principalId) await this.cache.invalidate(emp.principalId);
+      }
       return memberships.findById(companyId, employeeId, membershipId);
     });
   }

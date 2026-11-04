@@ -38,8 +38,70 @@ export interface PrincipalDetails extends Principal {
   }[];
 }
 
+export interface FullPrincipalDetails extends Principal {
+  employees: {
+    id: string;
+    companyId: string;
+    employeeCode: string;
+    displayName: string;
+    designation: string | null;
+    tradeCategory: string | null;
+    joiningDate: Date | null;
+    contactPhone: string | null;
+    contactEmail: string | null;
+    status: string;
+    company: {
+      id: string;
+      code: string;
+      name: string;
+      isPlatform: boolean;
+    };
+    memberships: {
+      id: string;
+      departmentId: string;
+      isPrimary: boolean;
+      department: {
+        id: string;
+        code: string;
+        name: string;
+        category?: string | null;
+      };
+    }[];
+  }[];
+  roleAssignments: {
+    id: string;
+    roleId: string;
+    companyId: string;
+    scopeType: string;
+    headOfficeId: string | null;
+    projectId: string | null;
+    siteId: string | null;
+    effectiveFrom: Date | null;
+    effectiveTo: Date | null;
+    role: {
+      id: string;
+      key: string;
+      name: string;
+      permissions: {
+        permission: {
+          id: string;
+          key: string;
+        };
+      }[];
+    };
+    headOffice?: { id: string; code: string; name: string } | null;
+    project?: { id: string; code: string; name: string } | null;
+    site?: { id: string; code: string; name: string } | null;
+  }[];
+}
+
 export interface PrincipalRepository {
   findWithDetailsByLoginId?(loginId: string): Promise<PrincipalDetails | null>;
+  findFullProfile?(
+    principalId: string,
+    companyId?: string,
+    now?: Date,
+  ): Promise<FullPrincipalDetails | null>;
   findByLoginId(loginId: string): Promise<Principal | null>;
   findById(id: string): Promise<Principal | null>;
 }
@@ -106,6 +168,46 @@ export function makeAuthRepos(tx: Tx): AuthRepos {
           },
         }),
       findById: (id) => tx.principal.findUnique({ where: { id } }),
+      findFullProfile: (principalId, companyId, now = new Date()) =>
+        tx.principal.findUnique({
+          where: { id: principalId },
+          include: {
+            employees: {
+              ...(companyId ? { where: { companyId } } : {}),
+              include: {
+                company: true,
+                memberships: {
+                  where: { endedAt: null },
+                  include: {
+                    department: true,
+                  },
+                },
+              },
+            },
+            roleAssignments: {
+              where: {
+                revokedAt: null,
+                ...(companyId ? { companyId } : {}),
+                OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }],
+                AND: [{ OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] }],
+              },
+              include: {
+                role: {
+                  include: {
+                    permissions: {
+                      include: {
+                        permission: true,
+                      },
+                    },
+                  },
+                },
+                headOffice: { select: { id: true, code: true, name: true } },
+                project: { select: { id: true, code: true, name: true } },
+                site: { select: { id: true, code: true, name: true } },
+              },
+            },
+          },
+        }),
     },
     sessions: {
       create: (data) => tx.authSession.create({ data }),

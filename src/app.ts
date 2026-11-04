@@ -10,6 +10,10 @@ import authenticationPlugin from './plugins/authentication.js';
 import authorizationPlugin from './plugins/authorization.js';
 import healthRoutes from './modules/health/routes.js';
 import authRoutes from './modules/auth/routes.js';
+import {
+  RedisUserProfileCache,
+  InMemoryUserProfileCache,
+} from './modules/auth/cache.js';
 import websocketPlugin from '@fastify/websocket';
 import { PrismaNotificationUnitOfWork } from './modules/notification/repository.js';
 import { NotificationService } from './modules/notification/service.js';
@@ -60,6 +64,10 @@ const OPERATION_DOCS: Record<
   },
   'POST /auth/refresh': { summary: 'Rotate refresh token' },
   'POST /auth/logout': { summary: 'Invalidate the current session', permission: 'authenticated' },
+  'GET /auth/me': {
+    summary: 'Get current authenticated user profile, roles, permissions, and scope assignments (cached)',
+    permission: 'authenticated',
+  },
   'POST /auth/claim': {
     summary: 'Consume a one-time claim code and set password',
   },
@@ -528,10 +536,21 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     },
   });
 
-  authService ??= new AuthService(new PrismaAuthUnitOfWork(app.prisma), app.tokenService, {
+  const userProfileCache =
+    app.config.NODE_ENV === 'test'
+      ? new InMemoryUserProfileCache()
+      : new RedisUserProfileCache(app.redis);
+
+  authService ??= new AuthService(
+    new PrismaAuthUnitOfWork(app.prisma),
+    app.tokenService,
+    {
     accessTokenTtlS: app.config.ACCESS_TOKEN_TTL_S,
-    refreshTokenTtlS: app.config.REFRESH_TOKEN_TTL_S,
-  });
+      refreshTokenTtlS: app.config.REFRESH_TOKEN_TTL_S,
+    },
+    () => new Date(),
+    userProfileCache,
+  );
   accessControl ??= new AccessControlService({
     principals: makeAuthRepos(app.prisma).principals,
     access: makeAccessRepository(app.prisma),
@@ -609,8 +628,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         new EmployeeService(new PrismaEmployeeUnitOfWork(app.prisma), {
           assertPermission: (pid: string, key: string, target: ScopeTarget) =>
             accessControl.assertPermission(pid, key, target),
-        }),
-      services.employeeAccessService ?? new EmployeeAccessService(app.prisma),
+        }, userProfileCache),
+      services.employeeAccessService ?? new EmployeeAccessService(app.prisma, userProfileCache),
     ),
     { prefix: '/api/v1' },
   );

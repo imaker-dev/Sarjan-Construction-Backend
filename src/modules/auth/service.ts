@@ -4,6 +4,11 @@ import { passwordService } from '../identity/password.js';
 import { generateRefreshToken, hashRefreshToken, type TokenService } from './tokens.js';
 import type { AuthUnitOfWork } from './repository.js';
 import type { ActorContext } from '../organization/types.js';
+import {
+  type UserProfileCache,
+  type UserProfileResponse,
+  InMemoryUserProfileCache,
+} from './cache.js';
 
 export interface AuthConfig {
   accessTokenTtlS: number;
@@ -47,7 +52,14 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly cfg: AuthConfig,
     private readonly now: () => Date = () => new Date(),
+    private readonly cache: UserProfileCache = new InMemoryUserProfileCache(),
   ) {}
+
+
+  get userCache(): UserProfileCache {
+    return this.cache;
+  }
+
 
   /**
    * Authenticate a human principal. Returns generic INVALID_CREDENTIALS for
@@ -249,6 +261,101 @@ export class AuthService {
       sessionId: session.id,
       ...(meta.correlationId !== undefined ? { correlationId: meta.correlationId } : {}),
     };
+  }
+
+  async getMe(principalId: string, companyId?: string): Promise<UserProfileResponse> {
+    const cached = await this.cache.get(principalId, companyId);
+    if (cached !== null) {
+      return cached;
+    }
+
+    const full = await this.uow.run(async ({ principals }) => {
+      if (principals.findFullProfile) {
+        return principals.findFullProfile(principalId, companyId, this.now());
+      }
+      return null;
+    });
+
+    if (full?.status !== 'ACTIVE') {
+      throw new UnauthorizedError('ACCOUNT_INACTIVE', 'Account is not active');
+    }
+
+    const emp = full.employees[0];
+    const company = emp?.company ?? null;
+
+    const roles: string[] = [];
+    const permissions: string[] = [];
+    const assignments: UserProfileResponse['assignments'] = [];
+
+    for (const ra of full.roleAssignments) {
+
+        if (!roles.includes(ra.role.key)) {
+          roles.push(ra.role.key);
+        }
+        for (const rp of ra.role.permissions) {
+          if (!permissions.includes(rp.permission.key)) {
+            permissions.push(rp.permission.key);
+          }
+        }
+      assignments.push({
+        id: ra.id,
+        roleKey: ra.role.key,
+        roleName: ra.role.name,
+        scopeType: ra.scopeType,
+        headOfficeId: ra.headOfficeId,
+        headOfficeName: ra.headOffice?.name ?? null,
+        projectId: ra.projectId,
+        projectName: ra.project?.name ?? null,
+        siteId: ra.siteId,
+        siteName: ra.site?.name ?? null,
+        effectiveFrom: ra.effectiveFrom ? ra.effectiveFrom.toISOString() : null,
+        effectiveTo: ra.effectiveTo ? ra.effectiveTo.toISOString() : null,
+      });
+    }
+
+    const departments: UserProfileResponse['departments'] = [];
+    if (emp?.memberships) {
+      for (const m of emp.memberships) {
+
+          departments.push({
+            departmentId: m.departmentId,
+            departmentCode: m.department.code,
+            departmentName: m.department.name,
+            category: (m.department as { category?: string }).category ?? null,
+            isPrimary: m.isPrimary,
+          });
+      }
+    }
+
+    const response: UserProfileResponse = {
+      id: full.id,
+      loginId: full.loginId ?? '',
+      loginIdType: full.loginIdType ?? 'EMAIL',
+      status: full.status,
+      displayName: emp?.displayName ?? full.loginId ?? 'User',
+      employeeCode: emp?.employeeCode ?? null,
+      designation: emp?.designation ?? null,
+      tradeCategory: emp?.tradeCategory ?? null,
+      contactPhone: emp?.contactPhone ?? null,
+      contactEmail: emp?.contactEmail ?? null,
+      joiningDate: emp?.joiningDate ? emp.joiningDate.toISOString().slice(0, 10) : null,
+      company: company
+        ? {
+            id: company.id,
+            code: company.code,
+            name: company.name,
+            isPlatform: company.isPlatform,
+          }
+        : null,
+      role: roles[0] ?? null,
+      roles,
+      permissions,
+      assignments,
+      departments,
+    };
+
+    await this.cache.set(principalId, response, companyId);
+    return response;
   }
 
   private issueTokens(

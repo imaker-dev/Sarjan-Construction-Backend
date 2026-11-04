@@ -45,6 +45,15 @@ export function makeAuthRepos(store: AuthStore): AuthRepos {
         };
       },
       findById: async (id) => store.principals.find((p) => p.id === id) ?? null,
+      findFullProfile: async (id) => {
+        const found = store.principals.find((p) => p.id === id);
+        if (!found) return null;
+        return {
+          ...found,
+          employees: [],
+          roleAssignments: [],
+        };
+      },
     },
     sessions: {
       create: async (data) => {

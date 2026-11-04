@@ -38,6 +38,57 @@ const TokenResponse = Type.Object({
 
 const EmptyResponse = Type.Object({});
 
+const UserMeResponseSchema = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  loginId: Type.String(),
+  loginIdType: Type.String(),
+  status: Type.String(),
+  displayName: Type.String(),
+  employeeCode: Type.Union([Type.String(), Type.Null()]),
+  designation: Type.Union([Type.String(), Type.Null()]),
+  tradeCategory: Type.Union([Type.String(), Type.Null()]),
+  contactPhone: Type.Union([Type.String(), Type.Null()]),
+  contactEmail: Type.Union([Type.String(), Type.Null()]),
+  joiningDate: Type.Union([Type.String(), Type.Null()]),
+  company: Type.Union([
+    Type.Object({
+      id: Type.String({ format: 'uuid' }),
+      code: Type.String(),
+      name: Type.String(),
+      isPlatform: Type.Boolean(),
+    }),
+    Type.Null(),
+  ]),
+  role: Type.Union([Type.String(), Type.Null()]),
+  roles: Type.Array(Type.String()),
+  permissions: Type.Array(Type.String()),
+  assignments: Type.Array(
+    Type.Object({
+      id: Type.String({ format: 'uuid' }),
+      roleKey: Type.String(),
+      roleName: Type.String(),
+      scopeType: Type.String(),
+      headOfficeId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+      headOfficeName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      projectId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+      projectName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      siteId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+      siteName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      effectiveFrom: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      effectiveTo: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    }),
+  ),
+  departments: Type.Array(
+    Type.Object({
+      departmentId: Type.String({ format: 'uuid' }),
+      departmentCode: Type.String(),
+      departmentName: Type.String(),
+      category: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      isPrimary: Type.Boolean(),
+    }),
+  ),
+});
+
 export interface AuthRoutesOptions {
   service: AuthService;
   rateLimit: { max: number; timeWindow: number };
@@ -107,6 +158,21 @@ export default function authRoutes(opts: AuthRoutesOptions) {
         }
         await service.logout(request.principal);
         return {};
+      },
+    );
+
+    app.get(
+      '/auth/me',
+      {
+        schema: { response: { 200: UserMeResponseSchema } },
+        preHandler: [app.authenticate],
+      },
+      async (request) => {
+        if (!request.principal) {
+          throw new UnauthorizedError();
+        }
+        const companyId = request.headers['x-company-id'] as string | undefined;
+        return service.getMe(request.principal.actorId, companyId);
       },
     );
   };

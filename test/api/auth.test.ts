@@ -26,6 +26,30 @@ function makeService(over: Partial<AuthService> = {}) {
     login: async () => tokenPair,
     refresh: async () => tokenPair,
     logout: async () => undefined,
+    getMe: async () => ({
+      id: '00000000-0000-0000-0000-000000000001',
+      loginId: 'user@example.com',
+      loginIdType: 'EMAIL',
+      status: 'ACTIVE',
+      displayName: 'Test User',
+      employeeCode: 'EMP-001',
+      designation: 'Engineer',
+      tradeCategory: null,
+      contactPhone: null,
+      contactEmail: null,
+      joiningDate: null,
+      company: {
+        id: '00000000-0000-0000-0000-000000000002',
+        code: 'ACME',
+        name: 'Acme Corp',
+        isPlatform: false,
+      },
+      role: 'COMPANY_OWNER',
+      roles: ['COMPANY_OWNER'],
+      permissions: ['ORG_COMPANY_READ'],
+      assignments: [],
+      departments: [],
+    }),
     buildActorContext: async () => ({
       actorId: 'p1',
       actorType: 'USER' as const,
@@ -156,6 +180,42 @@ describe('auth routes', () => {
         headers: { authorization: 'Bearer not-a-real-jwt' },
       });
       expect(res.statusCode).toBe(401);
+      await app.close();
+    });
+  });
+
+  describe('GET /api/v1/auth/me', () => {
+    it('requires authentication', async () => {
+      const app = await appWith(makeService());
+      const res = await app.inject({ method: 'GET', url: '/api/v1/auth/me' });
+      expect(res.statusCode).toBe(401);
+      const body = res.json<{ error: { code: string } }>();
+      expect(body.error.code).toBe('TOKEN_MISSING');
+      await app.close();
+    });
+
+    it('returns user profile, roles, and permissions when authenticated', async () => {
+      const app = await appWith(makeService());
+      const token = app.tokenService.signAccessToken('p1', 's1');
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/me',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{
+        id: string;
+        loginId: string;
+        role: string;
+        roles: string[];
+        permissions: string[];
+        company: { code: string };
+      }>();
+      expect(body.loginId).toBe('user@example.com');
+      expect(body.role).toBe('COMPANY_OWNER');
+      expect(body.roles).toContain('COMPANY_OWNER');
+      expect(body.permissions).toContain('ORG_COMPANY_READ');
+      expect(body.company.code).toBe('ACME');
       await app.close();
     });
   });

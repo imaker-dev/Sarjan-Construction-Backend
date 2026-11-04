@@ -11,7 +11,10 @@ const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
 const hashToken = (raw: string) => createHash('sha256').update(raw).digest('hex');
 
 export class EmployeeAccessService {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly cache?: import('../auth/cache.js').UserProfileCache,
+  ) {}
 
   /** Invite a profile-only employee — suspended principal + one-time code. */
   async invite(
@@ -182,6 +185,9 @@ export class EmployeeAccessService {
           },
         }) as never,
       });
+      if (this.cache && emp.principalId) {
+        await this.cache.invalidate(emp.principalId);
+      }
       return assignment;
     });
   }
@@ -205,6 +211,9 @@ export class EmployeeAccessService {
           // Phase 1 route wiring is in employee/routes.ts — service methods above.
         }) as never,
       });
+      if (this.cache && existing.principalId) {
+        await this.cache.invalidate(existing.principalId);
+      }
       return { id: assignmentId, revoked: true };
     });
   }

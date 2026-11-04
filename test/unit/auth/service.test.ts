@@ -176,3 +176,25 @@ describe('normalizeLoginId', () => {
     expect(normalizeLoginId('  USER@Example.COM ')).toBe('user@example.com');
   });
 });
+
+describe('getMe', () => {
+  it('loads profile from DB, caches it, and invalidation triggers fresh fetch', async () => {
+    const p = await seedPrincipal({ loginId: 'cached@example.com' });
+    const res1 = await service.getMe(p.id);
+    expect(res1.loginId).toBe('cached@example.com');
+
+    // Simulate DB change
+    p.loginId = 'changed@example.com';
+
+    // Second call returns cached value
+    const res2 = await service.getMe(p.id);
+    expect(res2.loginId).toBe('cached@example.com');
+
+    // Invalidate cache
+    await service.userCache.invalidate(p.id);
+
+    // Fresh fetch returns updated value
+    const res3 = await service.getMe(p.id);
+    expect(res3.loginId).toBe('changed@example.com');
+  });
+});
