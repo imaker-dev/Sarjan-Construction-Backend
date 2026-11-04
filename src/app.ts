@@ -569,6 +569,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   let accessControl = services.accessControl;
   let notificationService = services.notificationService;
 
+  const userProfileCache =
+    app.config.NODE_ENV === 'test'
+      ? new InMemoryUserProfileCache()
+      : new RedisUserProfileCache(app.redis);
+
   await app.register(authenticationPlugin, {
     buildActorContext: (claims, meta): Promise<PrincipalContext> => {
       if (!authService) throw new Error('auth service not initialized');
@@ -586,6 +591,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     () => new Date(),
     (companyId, employeeId) =>
       opAssignment.getEffectiveOperations(companyId, employeeId),
+    userProfileCache,
   );
   accessControl ??= new AccessControlService({
     principals: makeAuthRepos(app.prisma).principals,
