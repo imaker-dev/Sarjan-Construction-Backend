@@ -1,4 +1,7 @@
 -- Milestone 2: operation catalogue + department enablement + employee assignment.
+DROP TABLE IF EXISTS "EmployeeOperation";
+DROP TABLE IF EXISTS "DepartmentOperation";
+DROP TABLE IF EXISTS "OperationCatalogueEntry";
 CREATE TABLE "OperationCatalogueEntry" (
   "key"         TEXT    NOT NULL,
   "domain"      TEXT    NOT NULL,
@@ -51,7 +54,7 @@ CREATE INDEX "EmployeeOperation_companyId_employeeId_idx"
 INSERT INTO "OperationCatalogueEntry"("key","domain","name","description") VALUES
 ('FINANCE_EMPLOYEE_DIRECTORY_VIEW','EMPLOYEE_RECORDS','Employee directory view','View basic employee details needed for Finance work (name, code, department, project, status)'),
 ('FINANCE_EMPLOYMENT_DETAILS_VIEW','EMPLOYEE_RECORDS','Employment details view','View approved employment details needed for payroll processing'),
-('FINANCE_PAYROLL_RECORD_VIEW','EMPLOYEE_RECORDS','Payroll record view','View payroll history and salary calculation details (authorized payroll staff only)', TRUE),
+('FINANCE_PAYROLL_RECORD_VIEW','EMPLOYEE_RECORDS','Payroll record view','View payroll history and salary calculation details (authorized payroll staff only)'),
 ('EMPLOYEE_PAYROLL_PREPARE','PAYROLL','Prepare payroll','Prepare payroll for a pay period'),
 ('PAYROLL_REVIEW','PAYROLL','Review payroll','Review payroll calculations and exceptions'),
 ('SALARY_PAYMENT_APPROVE','PAYROLL','Approve salary payment','Approve a salary payment batch'),
@@ -86,3 +89,5 @@ INSERT INTO "OperationCatalogueEntry"("key","domain","name","description") VALUE
 ('FINANCE_EXPENSE_REPORT_VIEW','REPORT','Expense report','View employee and project expense claims'),
 ('FINANCE_REPORT_EXPORT','REPORT','Export report','Export an authorized Finance report')
 ON CONFLICT ("key") DO NOTHING;
+
+UPDATE "OperationCatalogueEntry" SET "sensitive" = TRUE WHERE "key" = 'FINANCE_PAYROLL_RECORD_VIEW';

@@ -12,6 +12,16 @@ interface ErrorBody {
 
 export default fp(async function errorHandlerPlugin(app: FastifyInstance) {
   app.setNotFoundHandler((request, reply) => {
+    request.log.warn(
+      {
+        method: request.method,
+        url: request.url,
+        statusCode: 404,
+        errorCode: 'NOT_FOUND',
+        requestId: request.id,
+      },
+      `API Error [404 NOT_FOUND] ${request.method} ${request.url}`,
+    );
     const body: ErrorBody = {
       error: { code: 'NOT_FOUND', message: 'Route not found', requestId: request.id },
     };
@@ -22,6 +32,17 @@ export default fp(async function errorHandlerPlugin(app: FastifyInstance) {
     const requestId = request.id;
 
     if (error instanceof AppError) {
+      request.log.warn(
+        {
+          method: request.method,
+          url: request.url,
+          statusCode: error.statusCode,
+          errorCode: error.code,
+          errorMessage: error.message,
+          requestId,
+        },
+        `API Error [${error.statusCode} ${error.code}] ${request.method} ${request.url}: ${error.message}`,
+      );
       const body: ErrorBody = {
         error: { code: error.code, message: error.message, requestId },
       };
@@ -29,13 +50,34 @@ export default fp(async function errorHandlerPlugin(app: FastifyInstance) {
     }
 
     if (error.statusCode !== undefined && error.statusCode < 500) {
+      request.log.warn(
+        {
+          method: request.method,
+          url: request.url,
+          statusCode: error.statusCode,
+          errorCode: error.code,
+          errorMessage: error.message,
+          validation: error.validation,
+          requestId,
+        },
+        `API Error [${error.statusCode} ${error.code}] ${request.method} ${request.url}: ${error.message}`,
+      );
       const body: ErrorBody = {
         error: { code: error.code, message: error.message, requestId },
       };
       return reply.status(error.statusCode).send(body);
     }
 
-    request.log.error({ err: error }, 'unhandled error');
+    request.log.error(
+      {
+        method: request.method,
+        url: request.url,
+        statusCode: 500,
+        err: error,
+        requestId,
+      },
+      `API Unhandled Error [500] ${request.method} ${request.url}: ${error.message}`,
+    );
     const body: ErrorBody = {
       error: {
         code: 'INTERNAL_SERVER_ERROR',

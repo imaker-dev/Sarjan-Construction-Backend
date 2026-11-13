@@ -13,7 +13,7 @@ export const HO_ADMIN_PERMISSIONS: readonly string[] = [
 export interface TenantRoleTemplate {
   key: string;
   name: string;
-  scopeShape: 'COMPANY' | 'HEAD_OFFICE';
+  scopeShape: 'COMPANY' | 'HEAD_OFFICE' | 'PROJECT' | 'SITE';
   permissions: readonly string[];
 }
 export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
@@ -23,6 +23,64 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
     name: 'HO Admin',
     scopeShape: 'HEAD_OFFICE',
     permissions: HO_ADMIN_PERMISSIONS,
+  },
+  {
+    key: 'PROJECT_MANAGER',
+    name: 'Project Manager',
+    scopeShape: 'PROJECT',
+    permissions: [
+      'ORG_PROJECT_READ',
+      'ORG_SITE_READ',
+      'ORG_SITE_CREATE',
+      'ORG_SITE_UPDATE',
+      'DEPARTMENT_READ',
+      'DEPARTMENT_CONFIGURE',
+      'EMPLOYEE_READ',
+      'EMPLOYEE_MANAGE',
+      'OPERATION_READ',
+      'OPERATION_EMPLOYEE_ASSIGN',
+      'FORM_READ',
+      'COMPLIANCE_READ',
+    ],
+  },
+  {
+    key: 'SITE_ENGINEER',
+    name: 'Site Engineer',
+    scopeShape: 'SITE',
+    permissions: [
+      'ORG_SITE_READ',
+      'DEPARTMENT_READ',
+      'EMPLOYEE_READ',
+      'OPERATION_READ',
+      'FORM_READ',
+    ],
+  },
+  {
+    key: 'DEPT_HEAD',
+    name: 'Department Head',
+    scopeShape: 'COMPANY',
+    permissions: [
+      'DEPARTMENT_READ',
+      'EMPLOYEE_READ',
+      'OPERATION_READ',
+      'OPERATION_EMPLOYEE_ASSIGN',
+      'FORM_READ',
+      'FORM_CONFIGURE',
+    ],
+  },
+  {
+    key: 'EMPLOYEE',
+    name: 'Employee',
+    scopeShape: 'COMPANY',
+    permissions: [
+      'ORG_COMPANY_READ',
+      'ORG_HEAD_OFFICE_READ',
+      'ORG_PROJECT_READ',
+      'ORG_SITE_READ',
+      'DEPARTMENT_READ',
+      'OPERATION_READ',
+      'FORM_READ',
+    ],
   },
 ];
 export function findRoleTemplate(key: string): TenantRoleTemplate | undefined {

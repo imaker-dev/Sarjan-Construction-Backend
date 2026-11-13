@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import { AddressOpt } from '../organization/routes.js';
 import type { PlatformService } from './service.js';
 import type { ScopeTarget } from '../access-control/service.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
@@ -59,31 +58,46 @@ const CreateCompany = Type.Object({
 
 const ClaimBody = Type.Object({
   token: Type.String({ minLength: 1 }),
-  password: Type.String({ minLength: 12 }),
+  password: Type.String({ minLength: 1 }),
 });
 
 const VerifyClaimQuery = Type.Object({
   token: Type.String({ minLength: 1 }),
 });
 
+const OptStringOrNull = Type.Optional(Type.Union([Type.String(), Type.Null()]));
+
 const OnboardBody = Type.Object({
   token: Type.String({ minLength: 1 }),
-  password: Type.String({ minLength: 12 }),
-  loginId: Type.Optional(Type.String({ minLength: 3, maxLength: 320 })),
-  displayName: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+  password: Type.String({ minLength: 1 }),
+  loginId: OptStringOrNull,
+  displayName: OptStringOrNull,
   company: Type.Optional(
     Type.Object(
-      Object.fromEntries(Object.entries(ProfileFields).map(([k, v]) => [k, Type.Optional(v)])),
+      Object.fromEntries(Object.keys(ProfileFields).map((k) => [k, OptStringOrNull])),
     ),
   ),
-  // Shared field set with POST /org/head-offices — one contract, no drift.
+  // Shared field set with POST /org/head-offices.
   // isPrimary is intentionally NOT client-controlled: the service forces the
   // first head office primary under the one-primary-per-company invariant.
   headOffice: Type.Optional(
     Type.Object({
-      code: Type.String({ minLength: 1, maxLength: 40 }),
-      name: Type.String({ minLength: 1, maxLength: 200 }),
-      ...AddressOpt,
+      code: OptStringOrNull,
+      name: OptStringOrNull,
+      legalName: OptStringOrNull,
+      addressLine1: OptStringOrNull,
+      addressLine2: OptStringOrNull,
+      locality: OptStringOrNull,
+      city: OptStringOrNull,
+      district: OptStringOrNull,
+      state: OptStringOrNull,
+      pinCode: OptStringOrNull,
+      country: OptStringOrNull,
+      contactName: OptStringOrNull,
+      contactPhone: OptStringOrNull,
+      contactEmail: Type.Optional(
+        Type.Union([Type.String({ format: 'email' }), Type.Literal(''), Type.Null()]),
+      ),
     }),
   ),
 });

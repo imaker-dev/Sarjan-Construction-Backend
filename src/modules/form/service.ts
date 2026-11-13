@@ -189,6 +189,15 @@ export class FormService {
     return this.uow.run(({ forms }) => forms.list(companyId, filter));
   }
 
+  async getForm(actor: ActorContext, companyId: string, id: string): Promise<Form> {
+    return this.uow.run(async (repos) => {
+      const existing = await repos.forms.findById(companyId, id);
+      if (!existing) throw new OrgEntityNotFoundError('FORM');
+      await this.authorizeForForm(repos, actor, FORM_READ, existing);
+      return existing;
+    });
+  }
+
   async listVersions(actor: ActorContext, companyId: string, formId: string) {
     return this.uow.run(async (repos) => {
       const existing = await repos.forms.findById(companyId, formId);

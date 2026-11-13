@@ -31,26 +31,26 @@ const hashToken = (raw: string): string => createHash('sha256').update(raw).dige
 
 export interface OnboardInput {
   password: string;
-  loginId?: string;
-  displayName?: string;
+  loginId?: string | null;
+  displayName?: string | null;
   company?: Record<string, unknown>;
   // Mirrors the supported head-office create contract. isPrimary is server-
   // forced to true — the first HO is always primary; never trusted from input.
   headOffice?: {
-    code: string;
-    name: string;
-    legalName?: string;
-    addressLine1?: string;
-    addressLine2?: string;
-    locality?: string;
-    city?: string;
-    district?: string;
-    state?: string;
-    pinCode?: string;
-    country?: string;
-    contactName?: string;
-    contactPhone?: string;
-    contactEmail?: string;
+    code?: string | null;
+    name?: string | null;
+    legalName?: string | null;
+    addressLine1?: string | null;
+    addressLine2?: string | null;
+    locality?: string | null;
+    city?: string | null;
+    district?: string | null;
+    state?: string | null;
+    pinCode?: string | null;
+    country?: string | null;
+    contactName?: string | null;
+    contactPhone?: string | null;
+    contactEmail?: string | null;
   };
 }
 
@@ -218,7 +218,7 @@ export class PlatformService {
   /** Consume a claim code: set the admin's real password + activate. One tx.
    *  The audit actor is the claimed principal themselves (a real USER). */
   async consumeClaim(rawToken: string, password: string) {
-    if (password.length < 12) throw new OrgValidationError('password', 'at least 12 characters');
+    if (!password || password.length === 0) throw new OrgValidationError('password', 'password is required');
     const tokenHash = hashToken(rawToken);
     return this.uow.run(async (repos) => {
       const token = await repos.claimTokens.consume(tokenHash, new Date());
@@ -264,14 +264,8 @@ export class PlatformService {
     companyCode: string;
     headOfficeId?: string;
   }> {
-    if (input.password.length < 12) {
-      throw new OrgValidationError('password', 'at least 12 characters');
-    }
-    if (input.headOffice?.code) {
-      const hoCode = input.headOffice.code.trim().toUpperCase();
-      if (!/^[A-Z0-9][A-Z0-9_-]{0,39}$/.test(hoCode)) {
-        throw new OrgValidationError('headOffice.code', '1–40 chars: A-Z 0-9 - _');
-      }
+    if (!input.password || input.password.length === 0) {
+      throw new OrgValidationError('password', 'password is required');
     }
     const tokenHash = hashToken(rawToken);
     return this.uow.run(async (repos) => {
@@ -288,8 +282,9 @@ export class PlatformService {
         passwordHash,
         status: 'ACTIVE',
       };
-      if (input.loginId) {
-        principalUpdate.loginId = input.loginId.toLowerCase().trim();
+      const trimmedLoginId = input.loginId?.trim();
+      if (trimmedLoginId) {
+        principalUpdate.loginId = trimmedLoginId.toLowerCase();
       }
       const activated = await repos.principals.activateIfSuspended(
         token.principalId,
@@ -299,52 +294,83 @@ export class PlatformService {
         throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
       }
 
-      if (input.displayName) {
+      const trimmedDisplayName = input.displayName?.trim();
+      if (trimmedDisplayName) {
         await repos.employees.updateByPrincipalId(token.principalId, {
-          displayName: input.displayName.trim(),
+          displayName: trimmedDisplayName,
         });
       }
 
-      if (input.company && Object.keys(input.company).length > 0) {
-        await repos.companies.update(active.companyId, input.company);
+      if (input.company) {
+        const cleanedCompany: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(input.company)) {
+          if (v === null || v === undefined) continue;
+          if (typeof v === 'string') {
+            const trimmed = v.trim();
+            if (trimmed === '') continue;
+            if (k === 'formedOn') {
+              const d = new Date(trimmed);
+              if (!Number.isNaN(d.getTime())) cleanedCompany[k] = d;
+              continue;
+            }
+            cleanedCompany[k] = trimmed;
+          } else {
+            cleanedCompany[k] = v;
+          }
+        }
+        if (Object.keys(cleanedCompany).length > 0) {
+          await repos.companies.update(active.companyId, cleanedCompany);
+        }
       }
 
       let headOfficeId: string | undefined;
-      if (input.headOffice) {
+      const rawHoName = input.headOffice?.name?.trim();
+      const rawHoCode = input.headOffice?.code?.trim().toUpperCase();
+      const hoName = rawHoName && rawHoName.length > 0 ? rawHoName : undefined;
+      const hoCode = rawHoCode && rawHoCode.length > 0 ? rawHoCode : undefined;
+      if (input.headOffice && (hoName !== undefined || hoCode !== undefined)) {
+        const cleanStr = (v?: string | null) => {
+          const t = v?.trim();
+          return t && t.length > 0 ? t : undefined;
+        };
         const ho = await repos.headOffices.create({
           companyId: active.companyId,
-          code: input.headOffice.code.trim().toUpperCase(),
-          name: input.headOffice.name.trim(),
+          code: hoCode ?? 'HQ',
+          name: hoName ?? hoCode ?? 'Head Office',
           // First HO is always primary — enforced, never client-controlled.
           isPrimary: true,
           status: 'ACTIVE',
-          ...(input.headOffice.legalName !== undefined
-            ? { legalName: input.headOffice.legalName }
+          ...(cleanStr(input.headOffice.legalName)
+            ? { legalName: cleanStr(input.headOffice.legalName) }
             : {}),
-          ...(input.headOffice.addressLine1 !== undefined
-            ? { addressLine1: input.headOffice.addressLine1 }
+          ...(cleanStr(input.headOffice.addressLine1)
+            ? { addressLine1: cleanStr(input.headOffice.addressLine1) }
             : {}),
-          ...(input.headOffice.addressLine2 !== undefined
-            ? { addressLine2: input.headOffice.addressLine2 }
+          ...(cleanStr(input.headOffice.addressLine2)
+            ? { addressLine2: cleanStr(input.headOffice.addressLine2) }
             : {}),
-          ...(input.headOffice.locality !== undefined
-            ? { locality: input.headOffice.locality }
+          ...(cleanStr(input.headOffice.locality)
+            ? { locality: cleanStr(input.headOffice.locality) }
             : {}),
-          ...(input.headOffice.city !== undefined ? { city: input.headOffice.city } : {}),
-          ...(input.headOffice.district !== undefined
-            ? { district: input.headOffice.district }
+          ...(cleanStr(input.headOffice.city) ? { city: cleanStr(input.headOffice.city) } : {}),
+          ...(cleanStr(input.headOffice.district)
+            ? { district: cleanStr(input.headOffice.district) }
             : {}),
-          ...(input.headOffice.state !== undefined ? { state: input.headOffice.state } : {}),
-          ...(input.headOffice.pinCode !== undefined ? { pinCode: input.headOffice.pinCode } : {}),
-          ...(input.headOffice.country !== undefined ? { country: input.headOffice.country } : {}),
-          ...(input.headOffice.contactName !== undefined
-            ? { contactName: input.headOffice.contactName }
+          ...(cleanStr(input.headOffice.state) ? { state: cleanStr(input.headOffice.state) } : {}),
+          ...(cleanStr(input.headOffice.pinCode)
+            ? { pinCode: cleanStr(input.headOffice.pinCode) }
             : {}),
-          ...(input.headOffice.contactPhone !== undefined
-            ? { contactPhone: input.headOffice.contactPhone }
+          ...(cleanStr(input.headOffice.country)
+            ? { country: cleanStr(input.headOffice.country) }
             : {}),
-          ...(input.headOffice.contactEmail !== undefined
-            ? { contactEmail: input.headOffice.contactEmail }
+          ...(cleanStr(input.headOffice.contactName)
+            ? { contactName: cleanStr(input.headOffice.contactName) }
+            : {}),
+          ...(cleanStr(input.headOffice.contactPhone)
+            ? { contactPhone: cleanStr(input.headOffice.contactPhone) }
+            : {}),
+          ...(cleanStr(input.headOffice.contactEmail)
+            ? { contactEmail: cleanStr(input.headOffice.contactEmail) }
             : {}),
         });
         headOfficeId = ho.id;

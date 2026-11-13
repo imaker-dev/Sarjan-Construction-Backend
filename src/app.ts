@@ -10,6 +10,7 @@ import authenticationPlugin from './plugins/authentication.js';
 import authorizationPlugin from './plugins/authorization.js';
 import healthRoutes from './modules/health/routes.js';
 import authRoutes from './modules/auth/routes.js';
+import cors from '@fastify/cors';
 import {
   RedisUserProfileCache,
   InMemoryUserProfileCache,
@@ -45,6 +46,9 @@ import { ComplianceService } from './modules/compliance/service.js';
 import { complianceRoutes } from './modules/compliance/routes.js';
 import { operationAssignmentRoutes } from './modules/operation/routes.js';
 import { OperationAssignmentService } from './modules/operation/assignment.js';
+import { FormService } from './modules/form/service.js';
+import { formRoutes } from './modules/form/routes.js';
+import { PrismaFormUnitOfWork } from './modules/form/repository.js';
 import { AuthService } from './modules/auth/service.js';
 import { makeAuthRepos, PrismaAuthUnitOfWork } from './modules/auth/repository.js';
 import { AccessControlService } from './modules/access-control/service.js';
@@ -256,6 +260,10 @@ const OPERATION_DOCS: Record<
     summary: 'Revoke a role assignment',
     permission: 'ACCESS_ROLE_REVOKE',
   },
+  'GET /roles': {
+    summary: 'List assignable tenant role templates and their required scope shapes',
+    permission: 'ROLE_ASSIGNMENT_READ',
+  },
   'GET /compliance-records': {
     summary: 'List company compliance records',
     permission: 'COMPLIANCE_READ',
@@ -300,6 +308,22 @@ const OPERATION_DOCS: Record<
     summary: 'Reissue admin claim code (invalidates prior codes)',
     permission: 'PLATFORM_COMPANY_CREATE',
   },
+  'GET /forms': { summary: 'List forms in company', permission: 'FORM_READ' },
+  'POST /forms': { summary: 'Create draft form definition', permission: 'FORM_CONFIGURE' },
+  'GET /forms/:id': { summary: 'Get form definition by ID', permission: 'FORM_READ' },
+  'PATCH /forms/:id': { summary: 'Update draft form definition', permission: 'FORM_CONFIGURE' },
+  'POST /forms/:id/status': {
+    summary: 'Transition form status (DRAFT/ACTIVE/ARCHIVED)',
+    permission: 'FORM_CONFIGURE',
+  },
+  'POST /forms/:id/publish': {
+    summary: 'Publish form draft to immutable revision',
+    permission: 'FORM_PUBLISH',
+  },
+  'GET /forms/:id/versions': {
+    summary: 'List published revisions of a form',
+    permission: 'FORM_READ',
+  },
 };
 
 export interface BuildAppOptions {
@@ -313,6 +337,7 @@ export interface BuildAppOptions {
     employeeAccessService?: EmployeeAccessService;
     complianceService?: ComplianceService;
     platformService?: PlatformService;
+    formService?: FormService;
     // Test hook: inject the sentinel platform-company id (null = none).
     platformCompanyId?: string | null;
   };
@@ -349,6 +374,18 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(errorHandlerPlugin);
   await app.register(prismaPlugin);
   await app.register(redisPlugin);
+  await app.register(cors, {
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'x-company-id',
+      'x-request-id',
+      'ngrok-skip-browser-warning',
+    ],
+  });
 
   // Rate limiting: Redis store in production (fails closed on outage — the
   // dedicated client connects eagerly and queues nothing offline, so a dead
@@ -454,8 +491,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           ['/org/', 'org'],
           ['/departments', 'department'],
           ['/employees', 'employee'],
+          ['/roles', 'employee'],
           ['/compliance-records', 'compliance'],
           ['/notifications', 'notification'],
+          ['/forms', 'form'],
         ];
         if (PUBLIC.has(methodPath)) {
           s.security = []; // explicitly unauthenticated
@@ -687,6 +726,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   );
   await app.register(
     complianceRoutes(services.complianceService ?? new ComplianceService(app.prisma)),
+    { prefix: '/api/v1' },
+  );
+  await app.register(
+    formRoutes(
+      services.formService ??
+        new FormService(new PrismaFormUnitOfWork(app.prisma), {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+        }),
+    ),
     { prefix: '/api/v1' },
   );
   await app.register(

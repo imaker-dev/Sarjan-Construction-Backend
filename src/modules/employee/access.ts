@@ -132,22 +132,59 @@ export class EmployeeAccessService {
       if (principal?.status !== 'ACTIVE' || principal.type !== 'USER') {
         throw new AppError(409, 'PRINCIPAL_INACTIVE', 'linked account must be an active user');
       }
-      const role = await tx.role.findFirst({ where: { companyId, key: tpl.key, isSystem: true } });
+      let role = await tx.role.findFirst({ where: { companyId, key: tpl.key, isSystem: true } });
+      if (!role && typeof tx.role.create === 'function') {
+        role = await tx.role.create({
+          data: { companyId, key: tpl.key, name: tpl.name, isSystem: true },
+        });
+        for (const permKey of tpl.permissions) {
+          const perm = await tx.permission.upsert({
+            where: { key: permKey },
+            update: {},
+            create: { key: permKey, description: `${permKey} permission` },
+          });
+          await tx.rolePermission.createMany({
+            data: [{ roleId: role.id, permissionId: perm.id }],
+            skipDuplicates: true,
+          });
+        }
+      }
       if (!role)
         throw new AppError(
           409,
           'ROLE_NOT_PROVISIONED',
           'role template not provisioned for company',
         );
-      // Scope-shape check: COMPANY scope = null ids; HEAD_OFFICE scope = the
-      // company's PRIMARY head office only (single shared HO invariant).
+      // Scope-shape check: COMPANY = null ids; HEAD_OFFICE = primary HO; PROJECT/SITE = owned by company.
       const scopeData: Record<string, unknown> = { scopeType: input.scopeType };
+      const scopeFilter: Record<string, unknown> = {
+        headOfficeId: null,
+        projectId: null,
+        siteId: null,
+      };
       if (input.scopeType === 'HEAD_OFFICE') {
         const ho = await tx.headOffice.findFirst({
           where: { id: input.scopeId ?? '', companyId, isPrimary: true, status: 'ACTIVE' },
         });
         if (!ho) throw new OrgValidationError('scopeId', 'must be the company primary head office');
         scopeData.headOfficeId = input.scopeId;
+        scopeFilter.headOfficeId = input.scopeId;
+      } else if (input.scopeType === 'PROJECT') {
+        const project = await tx.project.findFirst({
+          where: { id: input.scopeId ?? '', companyId },
+        });
+        if (!project)
+          throw new OrgValidationError('scopeId', 'must be a valid project in this company');
+        scopeData.projectId = input.scopeId;
+        scopeFilter.projectId = input.scopeId;
+      } else if (input.scopeType === 'SITE') {
+        const site = await tx.site.findFirst({
+          where: { id: input.scopeId ?? '', companyId },
+        });
+        if (!site)
+          throw new OrgValidationError('scopeId', 'must be a valid site in this company');
+        scopeData.siteId = input.scopeId;
+        scopeFilter.siteId = input.scopeId;
       } else if (input.scopeType === 'COMPANY') {
         if (input.scopeId !== undefined)
           throw new OrgValidationError('scopeId', 'COMPANY scope has no scopeId');
@@ -158,7 +195,7 @@ export class EmployeeAccessService {
           principalId: emp.principalId,
           roleId: role.id,
           scopeType: input.scopeType as never,
-          headOfficeId: scopeData.headOfficeId as string | null,
+          ...scopeFilter,
           revokedAt: null,
         },
       });
@@ -169,7 +206,13 @@ export class EmployeeAccessService {
           roleId: role.id,
           companyId,
           scopeType: input.scopeType as never,
-          headOfficeId: scopeData.headOfficeId as string | null,
+          ...(scopeData.headOfficeId !== undefined
+            ? { headOfficeId: scopeData.headOfficeId as string }
+            : {}),
+          ...(scopeData.projectId !== undefined
+            ? { projectId: scopeData.projectId as string }
+            : {}),
+          ...(scopeData.siteId !== undefined ? { siteId: scopeData.siteId as string } : {}),
           grantedByPrincipalId: actor.actorId,
         },
       });

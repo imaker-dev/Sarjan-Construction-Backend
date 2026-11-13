@@ -5,6 +5,7 @@ import type { EmployeeAccessService } from './access.js';
 import type { ScopeTarget } from '../access-control/service.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ActorContext } from '../organization/types.js';
+import { TENANT_ROLE_TEMPLATES } from '../setup/role-templates.js';
 
 const EngagementType = Type.Union([
   Type.Literal('DIRECT_EMPLOYEE'),
@@ -57,7 +58,12 @@ const InviteBody = Type.Object({
 });
 const AssignmentBody = Type.Object({
   roleKey: Type.String({ maxLength: 60 }),
-  scopeType: Type.Union([Type.Literal('COMPANY'), Type.Literal('HEAD_OFFICE')]),
+  scopeType: Type.Union([
+    Type.Literal('COMPANY'),
+    Type.Literal('HEAD_OFFICE'),
+    Type.Literal('PROJECT'),
+    Type.Literal('SITE'),
+  ]),
   scopeId: Type.Optional(Type.String({ format: 'uuid' })),
 });
 const StatusBody = Type.Object({
@@ -217,6 +223,9 @@ export function employeeRoutes(service: EmployeeService, accessService?: Employe
           (req.body as { expectedVersion: number }).expectedVersion,
         ),
     );
+
+    // Assignable tenant role templates — lists available roles & required scopeShape.
+    app.get('/roles', { ...perm('ROLE_ASSIGNMENT_READ') }, async () => TENANT_ROLE_TEMPLATES);
 
     // Phase 1 — account invite + whitelisted role assignments (Company Owner).
     if (accessService !== undefined) {

@@ -143,7 +143,9 @@ describe('openapi document', () => {
       'POST /api/v1/auth/claim/onboard',
     ]);
     const isTenant = (p: string) =>
-      /^\/api\/v1\/(org|departments|employees|compliance-records|notifications)\b/.test(p);
+      /^\/api\/v1\/(org|departments|employees|roles|compliance-records|notifications|forms)\b/.test(
+        p,
+      );
     const isPlatform = (p: string) => p.startsWith('/api/v1/platform/');
     for (const [path, item] of Object.entries(doc.paths)) {
       for (const [method, op] of Object.entries(item)) {
@@ -240,6 +242,7 @@ describe('openapi document', () => {
       'GET /api/v1/employees/{id}/assignments',
       'POST /api/v1/employees/{id}/assignments',
       'DELETE /api/v1/employees/{id}/assignments/{assignmentId}',
+      'GET /api/v1/roles',
       'GET /api/v1/compliance-records',
       'POST /api/v1/compliance-records',
       'PATCH /api/v1/compliance-records/{id}',
@@ -251,6 +254,13 @@ describe('openapi document', () => {
       'POST /api/v1/platform/companies',
       'GET /api/v1/platform/companies',
       'POST /api/v1/platform/companies/{companyId}/claim-token',
+      'GET /api/v1/forms',
+      'POST /api/v1/forms',
+      'GET /api/v1/forms/{id}',
+      'PATCH /api/v1/forms/{id}',
+      'POST /api/v1/forms/{id}/status',
+      'POST /api/v1/forms/{id}/publish',
+      'GET /api/v1/forms/{id}/versions',
     ];
     const missing = EXPECTED.filter((r) => !documented.has(r));
     const extra = [...documented].filter(
