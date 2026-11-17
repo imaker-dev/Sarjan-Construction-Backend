@@ -105,6 +105,21 @@ const CreateProject = Type.Object({
 const UpdateProject = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   description: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  projectType: Type.Optional(
+    Type.Union([
+      Type.Literal('RESIDENTIAL'),
+      Type.Literal('COMMERCIAL'),
+      Type.Literal('INDUSTRIAL'),
+      Type.Literal('INFRASTRUCTURE'),
+      Type.Literal('OTHER'),
+    ]),
+  ),
+  clientName: Type.Optional(Type.Union([Type.String({ maxLength: 200 }), Type.Null()])),
+  contractRef: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  locationCity: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  locationDistrict: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  locationState: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  locationPin: Type.Optional(Type.Union([Type.String({ maxLength: 10 }), Type.Null()])),
   timezone: Type.Optional(Type.String({ minLength: 1 })),
   startDate: Type.Optional(Type.Union([Type.String({ format: 'date' }), Type.Null()])),
   endDate: Type.Optional(Type.Union([Type.String({ format: 'date' }), Type.Null()])),
@@ -112,7 +127,9 @@ const UpdateProject = Type.Object({
 });
 const ProjectStatusBody = Type.Object({
   to: Type.Union([
+    Type.Literal('PLANNED'),
     Type.Literal('ACTIVE'),
+    Type.Literal('ON_HOLD'),
     Type.Literal('SUSPENDED'),
     Type.Literal('ARCHIVED'),
     Type.Literal('COMPLETED'),
@@ -140,6 +157,14 @@ const CreateSite = Type.Object({
 const UpdateSite = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   address: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  addressLine1: Type.Optional(Type.Union([Type.String({ maxLength: 120 }), Type.Null()])),
+  addressLine2: Type.Optional(Type.Union([Type.String({ maxLength: 120 }), Type.Null()])),
+  locality: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  city: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  district: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  state: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  pinCode: Type.Optional(Type.Union([Type.String({ maxLength: 10 }), Type.Null()])),
+  country: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
   geoLatitude: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
   geoLongitude: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
   geoFenceRadiusM: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
@@ -320,14 +345,17 @@ export function organizationRoutes(service: OrganizationService) {
     app.post(
       '/org/projects/:id/status',
       { schema: { body: ProjectStatusBody }, ...perm('ORG_PROJECT_STATUS', atCompany) },
-      async (req) =>
-        service.transitionProjectStatus(
+      async (req) => {
+        const rawTo = (req.body as { to: string }).to;
+        const to = rawTo === 'SUSPENDED' ? 'ON_HOLD' : rawTo;
+        return service.transitionProjectStatus(
           actorOf(req),
           companyIdOf(req),
           (req.params as { id: string }).id,
-          (req.body as { to: string }).to,
+          to,
           (req.body as { expectedVersion?: number }).expectedVersion,
-        ),
+        );
+      },
     );
 
     // ----------------------------------------------------------------- sites

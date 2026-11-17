@@ -360,6 +360,15 @@ export class OrganizationService {
         name,
         timezone,
         ...(input.description ? { description: input.description.trim() } : {}),
+        ...(input.projectType !== undefined ? { projectType: input.projectType as never } : {}),
+        ...(input.clientName !== undefined ? { clientName: input.clientName.trim() } : {}),
+        ...(input.contractRef !== undefined ? { contractRef: input.contractRef.trim() } : {}),
+        ...(input.locationCity !== undefined ? { locationCity: input.locationCity.trim() } : {}),
+        ...(input.locationDistrict !== undefined
+          ? { locationDistrict: input.locationDistrict.trim() }
+          : {}),
+        ...(input.locationState !== undefined ? { locationState: input.locationState.trim() } : {}),
+        ...(input.locationPin !== undefined ? { locationPin: input.locationPin.trim() } : {}),
         ...(input.startDate ? { startDate: input.startDate } : {}),
         ...(input.endDate ? { endDate: input.endDate } : {}),
       });
@@ -393,6 +402,33 @@ export class OrganizationService {
     if (patch.timezone !== undefined) data.timezone = assertValidTimezone(patch.timezone);
     if (patch.startDate !== undefined) data.startDate = patch.startDate;
     if (patch.endDate !== undefined) data.endDate = patch.endDate;
+    if (patch.projectType !== undefined) {
+      data.projectType = patch.projectType;
+    }
+    if (patch.clientName !== undefined) {
+      const trimmed = patch.clientName?.trim();
+      data.clientName = trimmed !== undefined && trimmed !== '' ? trimmed : null;
+    }
+    if (patch.contractRef !== undefined) {
+      const trimmed = patch.contractRef?.trim();
+      data.contractRef = trimmed !== undefined && trimmed !== '' ? trimmed : null;
+    }
+    if (patch.locationCity !== undefined) {
+      const trimmed = patch.locationCity?.trim();
+      data.locationCity = trimmed !== undefined && trimmed !== '' ? trimmed : null;
+    }
+    if (patch.locationDistrict !== undefined) {
+      const trimmed = patch.locationDistrict?.trim();
+      data.locationDistrict = trimmed !== undefined && trimmed !== '' ? trimmed : null;
+    }
+    if (patch.locationState !== undefined) {
+      const trimmed = patch.locationState?.trim();
+      data.locationState = trimmed !== undefined && trimmed !== '' ? trimmed : null;
+    }
+    if (patch.locationPin !== undefined) {
+      const trimmed = patch.locationPin?.trim();
+      data.locationPin = trimmed !== undefined && trimmed !== '' ? trimmed : null;
+    }
 
     return this.updateScoped(
       actor,
@@ -465,10 +501,18 @@ export class OrganizationService {
         code,
         name,
         ...(input.address ? { address: input.address.trim() } : {}),
+        ...(input.addressLine1 !== undefined ? { addressLine1: input.addressLine1?.trim() } : {}),
+        ...(input.addressLine2 !== undefined ? { addressLine2: input.addressLine2?.trim() } : {}),
+        ...(input.locality !== undefined ? { locality: input.locality?.trim() } : {}),
+        ...(input.city !== undefined ? { city: input.city?.trim() } : {}),
+        ...(input.district !== undefined ? { district: input.district?.trim() } : {}),
+        ...(input.state !== undefined ? { state: input.state?.trim() } : {}),
+        ...(input.pinCode !== undefined ? { pinCode: input.pinCode?.trim() } : {}),
+        ...(input.country !== undefined ? { country: input.country?.trim() } : {}),
         ...(input.geoLatitude !== undefined ? { geoLatitude: input.geoLatitude } : {}),
         ...(input.geoLongitude !== undefined ? { geoLongitude: input.geoLongitude } : {}),
         ...(input.geoFenceRadiusM !== undefined ? { geoFenceRadiusM: input.geoFenceRadiusM } : {}),
-        ...(timezone !== undefined ? { timezone } : {}),
+        timezone: timezone !== undefined ? timezone : project.timezone,
       });
       await this.recordMutation(
         audit,
@@ -507,12 +551,23 @@ export class OrganizationService {
       assertValidTimezone(patch.timezone);
     for (const key of [
       'address',
+      'addressLine1',
+      'addressLine2',
+      'locality',
+      'city',
+      'district',
+      'state',
+      'pinCode',
+      'country',
       'geoLatitude',
       'geoLongitude',
       'geoFenceRadiusM',
       'timezone',
     ] as const) {
-      if (patch[key] !== undefined) data[key] = patch[key];
+      if (patch[key] !== undefined) {
+        const v = patch[key];
+        data[key] = typeof v === 'string' ? (v.trim() || null) : v;
+      }
     }
 
     return this.updateScoped(

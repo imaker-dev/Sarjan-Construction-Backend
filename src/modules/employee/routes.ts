@@ -115,7 +115,15 @@ export function employeeRoutes(service: EmployeeService, accessService?: Employe
     app.post(
       '/employees',
       { schema: { body: CreateEmployee }, ...perm('EMPLOYEE_MANAGE') },
-      async (req) => service.create(actorOf(req), companyIdOf(req), req.body as never),
+      async (req) => {
+        const body = req.body as Record<string, unknown>;
+        return service.create(actorOf(req), companyIdOf(req), {
+          ...body,
+          ...(body.joiningDate !== undefined && body.joiningDate !== null
+            ? { joiningDate: new Date(body.joiningDate as string) }
+            : {}),
+        } as never);
+      },
     );
     app.patch(
       '/employees/:id',

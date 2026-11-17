@@ -22,6 +22,7 @@ interface Store {
   roleAssignments: Row[];
   claimTokens: Row[];
   auditLog: Row[];
+  operations: Row[];
 }
 
 const actor: ActorContext = { actorId: 'platform-admin-1', actorType: 'USER' };
@@ -47,8 +48,28 @@ function makeUow(store: Store): PlatformUnitOfWork {
       update: async (cid, data) => {
         const c = store.companies.find((x) => x.id === cid);
         if (!c) throw new Error('company not found');
+        if (typeof data.version === 'object' && data.version !== null && 'increment' in data.version) {
+          data.version = Number(c.version ?? 0) + 1;
+        }
         Object.assign(c, data);
         return c as unknown as Company;
+      },
+      getDetails: async (cid) => {
+        const c = store.companies.find((x) => x.id === cid && x.isPlatform !== true);
+        if (!c) return null;
+        const hos = store.headOffices.filter((h) => h.companyId === cid);
+        const emps = store.employees
+          .filter((e) => e.companyId === cid)
+          .map((e) => ({
+            ...e,
+            principal: store.principals.find((p) => p.id === e.principalId) ?? null,
+          }));
+        return {
+          ...c,
+          headOffices: hos,
+          employees: emps,
+          _count: { projects: 0, employees: emps.length, departments: 0 },
+        };
       },
     },
     headOffices: {
@@ -174,6 +195,24 @@ function makeUow(store: Store): PlatformUnitOfWork {
         };
       },
     },
+    operations: {
+      list: async () => store.operations,
+      find: async (k: string) => store.operations.find((op) => op.key === k) ?? null,
+      create: async (data: Record<string, unknown>) => {
+        const row = { id: id(), ...data };
+        store.operations.push(row);
+        return row;
+      },
+      delete: async (k: string) => {
+        const idx = store.operations.findIndex((op) => op.key === k);
+        if (idx >= 0) {
+          store.operations.splice(idx, 1);
+          return 1;
+        }
+        return 0;
+      },
+      isInUse: async () => false,
+    },
     audit: {
       record: async (entry) => {
         store.auditLog.push({ id: id(), ...entry });
@@ -207,6 +246,7 @@ beforeEach(() => {
     roleAssignments: [],
     claimTokens: [],
     auditLog: [],
+    operations: [],
   };
   svc = new PlatformService(makeUow(store), 'https://app.sarjan.local');
 });
@@ -379,5 +419,68 @@ describe('claim lifecycle', () => {
     await expect(svc.consumeClaim(created.claimCode, 'x'.repeat(12))).rejects.toThrow();
     const r = await svc.consumeClaim(reissued.claimCode, 'y'.repeat(12));
     expect(r.status).toBe('CLAIMED');
+  });
+});
+
+describe('platform management operations', () => {
+  it('getCompanyDetails, updateCompany, transitionCompanyStatus and catalogue operations', async () => {
+    const created = await svc.createCompanyWithAdmin(actor, {
+      companyCode: 'SARJAN',
+      companyName: 'Sarjan Construction',
+      adminLoginId: 'admin@sarjan.test',
+      adminDisplayName: 'Sarjan Admin',
+    });
+
+    // 1. Get Details
+    const details = (await svc.getCompanyDetails(created.companyId)) as {
+      id: string;
+      code: string;
+      admin: { loginId: string; claimPending: boolean } | null;
+    };
+    expect(details.id).toBe(created.companyId);
+    expect(details.code).toBe('SARJAN');
+    expect(details.admin?.loginId).toBe('admin@sarjan.test');
+    expect(details.admin?.claimPending).toBe(true);
+
+    // 2. Update Company
+    const updated = await svc.updateCompany(actor, created.companyId, {
+      legalName: 'Sarjan Construction Private Limited',
+      pan: 'ABCDE1234F',
+      website: 'https://sarjan.test',
+    });
+    expect(updated.legalName).toBe('Sarjan Construction Private Limited');
+    expect(updated.pan).toBe('ABCDE1234F');
+
+    // 3. Status Transition: ACTIVE -> SUSPENDED -> ACTIVE
+    const suspended = await svc.transitionCompanyStatus(actor, created.companyId, 'SUSPENDED');
+    expect(suspended.status).toBe('SUSPENDED');
+
+    const reactivated = await svc.transitionCompanyStatus(actor, created.companyId, 'ACTIVE');
+    expect(reactivated.status).toBe('ACTIVE');
+
+    // Invalid transition throws
+    await expect(svc.transitionCompanyStatus(actor, created.companyId, 'UNKNOWN')).rejects.toThrow();
+
+    // 4. Catalogue Operations
+    const op = (await svc.createCatalogueOperation(actor, {
+      key: 'TEST_OPERATION',
+      domain: 'QUALITY',
+      name: 'Test Quality Check',
+      description: 'Periodic quality verification',
+    })) as { key: string };
+    expect(op.key).toBe('TEST_OPERATION');
+
+    // Duplicate key throws 409
+    await expect(
+      svc.createCatalogueOperation(actor, {
+        key: 'TEST_OPERATION',
+        domain: 'QUALITY',
+        name: 'Another',
+      }),
+    ).rejects.toThrow();
+
+    // Delete operation
+    const del = await svc.deleteCatalogueOperation(actor, 'TEST_OPERATION');
+    expect(del.deleted).toBe(true);
   });
 });

@@ -2,8 +2,9 @@ import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { passwordService } from '../identity/password.js';
 import { OWNER_ROLE_KEY, TENANT_OWNER_PERMISSIONS } from '../setup/bootstrap.js';
 import { HO_ADMIN_PERMISSIONS } from '../setup/role-templates.js';
-import { OrgEntityNotFoundError, OrgValidationError } from '../organization/errors.js';
-import { UnauthorizedError } from '../../common/errors/app-error.js';
+import { OrgEntityNotFoundError, OrgValidationError, VersionConflictError } from '../organization/errors.js';
+import { AppError, UnauthorizedError } from '../../common/errors/app-error.js';
+import { assertTransition, COMPANY_TRANSITIONS } from '../organization/lifecycle.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import type { PlatformUnitOfWork } from './repository.js';
 
@@ -28,6 +29,10 @@ const auditEntry = (
 });
 
 const hashToken = (raw: string): string => createHash('sha256').update(raw).digest('hex');
+const keyToUuid = (key: string): string => {
+  const hash = createHash('sha256').update(`OPERATION_CATALOGUE:${key}`).digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+};
 
 export interface OnboardInput {
   password: string;
@@ -447,5 +452,219 @@ export class PlatformService {
         claimExpiresAt: expiresAt,
       };
     });
+  }
+
+  async getCompanyDetails(companyId: string) {
+    return this.uow.run(async (repos) => {
+      const company = (await repos.companies.getDetails(companyId)) as {
+        id: string;
+        code: string;
+        name: string;
+        status: string;
+        isPlatform: boolean;
+        employees?: {
+          id: string;
+          displayName: string;
+          principalId?: string | null;
+          principal?: { id: string; loginId: string | null; status: string } | null;
+        }[];
+        headOffices?: unknown[];
+        _count?: { projects: number; employees: number; departments: number };
+      } | null;
+
+      if (!company || company.isPlatform) {
+        throw new OrgEntityNotFoundError('COMPANY');
+      }
+
+      const adminEmployee = company.employees?.[0];
+      const adminPrincipal = adminEmployee?.principal;
+
+      return {
+        ...company,
+        admin: adminEmployee
+          ? {
+              employeeId: adminEmployee.id,
+              displayName: adminEmployee.displayName,
+              principalId: adminPrincipal?.id ?? null,
+              loginId: adminPrincipal?.loginId ?? null,
+              accountStatus: adminPrincipal?.status ?? 'UNKNOWN',
+              claimPending: adminPrincipal?.status === 'SUSPENDED',
+            }
+          : null,
+      };
+    });
+  }
+
+  async updateCompany(
+    actor: ActorContext,
+    companyId: string,
+    patch: Record<string, unknown>,
+    expectedVersion?: number,
+  ) {
+    return this.uow.run(async (repos) => {
+      const company = await repos.companies.findById(companyId, companyId);
+      if (!company || company.isPlatform) {
+        throw new OrgEntityNotFoundError('COMPANY');
+      }
+      if (expectedVersion !== undefined && company.version !== expectedVersion) {
+        throw new VersionConflictError('COMPANY');
+      }
+      const cleaned: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === undefined || k === 'expectedVersion') continue;
+        if (k === 'formedOn' && typeof v === 'string' && v.trim().length > 0) {
+          const d = new Date(v.trim());
+          if (!Number.isNaN(d.getTime())) cleaned[k] = d;
+          continue;
+        }
+        cleaned[k] = v;
+      }
+      const updated = await repos.companies.update(companyId, {
+        ...cleaned,
+        version: { increment: 1 },
+      });
+      const changedFields: Record<string, { before: unknown; after: unknown }> = {};
+      const compRec = company as unknown as Record<string, unknown>;
+      for (const [k, v] of Object.entries(cleaned)) {
+        changedFields[k] = { before: compRec[k] ?? null, after: v };
+      }
+      await repos.audit.record(
+        auditEntry(actor, {
+          action: 'PLATFORM_COMPANY_UPDATED',
+          entityType: 'COMPANY',
+          entityId: companyId,
+          companyId,
+          changedFields,
+        }),
+      );
+      return updated;
+    });
+  }
+
+  async transitionCompanyStatus(
+    actor: ActorContext,
+    companyId: string,
+    to: string,
+    expectedVersion?: number,
+  ) {
+    return this.uow.run(async (repos) => {
+      const company = await repos.companies.findById(companyId, companyId);
+      if (!company || company.isPlatform) {
+        throw new OrgEntityNotFoundError('COMPANY');
+      }
+      assertTransition('COMPANY', COMPANY_TRANSITIONS, company.status, to);
+      if (expectedVersion !== undefined && company.version !== expectedVersion) {
+        throw new VersionConflictError('COMPANY');
+      }
+      const updated = await repos.companies.update(companyId, {
+        status: to,
+        version: { increment: 1 },
+      });
+      await repos.audit.record(
+        auditEntry(actor, {
+          action: 'PLATFORM_COMPANY_STATUS_TRANSITIONED',
+          entityType: 'COMPANY',
+          entityId: companyId,
+          companyId,
+          statusBefore: company.status,
+          statusAfter: to,
+          changedFields: {
+            status: { before: company.status, after: to },
+          },
+        }),
+      );
+      return updated;
+    });
+  }
+
+  async createCatalogueOperation(
+    actor: ActorContext,
+    input: {
+      key: string;
+      domain: string;
+      name: string;
+      description?: string;
+      sensitive?: boolean;
+    },
+  ) {
+    const key = input.key.trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9_-]{0,79}$/.test(key)) {
+      throw new OrgValidationError(
+        'key',
+        '1–80 chars: uppercase letters, digits, underscores, dashes',
+      );
+    }
+    const domain = input.domain.trim().toUpperCase();
+    if (domain.length === 0 || domain.length > 80) {
+      throw new OrgValidationError('domain', '1–80 chars: uppercase domain identifier');
+    }
+    const name = input.name.trim();
+    if (name.length === 0 || name.length > 200) {
+      throw new OrgValidationError('name', '1–200 chars');
+    }
+    const description = (input.description ?? '').trim();
+
+    return this.uow.run(async (repos) => {
+      const existing = await repos.operations.find(key);
+      if (existing) {
+        throw new AppError(409, 'OPERATION_EXISTS', `Operation '${key}' already exists in catalogue`);
+      }
+      const created = await repos.operations.create({
+        key,
+        domain,
+        name,
+        description,
+        sensitive: input.sensitive ?? false,
+      });
+      await repos.audit.record(
+        auditEntry(actor, {
+          action: 'CATALOGUE_OPERATION_CREATED',
+          entityType: 'OPERATION_CATALOGUE',
+          entityId: keyToUuid(key),
+          metadata: { operationKey: key },
+          changedFields: {
+            key: { before: null, after: key },
+            domain: { before: null, after: domain },
+            name: { before: null, after: name },
+          },
+        }),
+      );
+      return created;
+    });
+  }
+
+  async deleteCatalogueOperation(actor: ActorContext, rawKey: string) {
+    const key = rawKey.trim().toUpperCase();
+    return this.uow.run(async (repos) => {
+      const existing = await repos.operations.find(key);
+      if (!existing) {
+        throw new OrgEntityNotFoundError('OPERATION');
+      }
+      const inUse = await repos.operations.isInUse(key);
+      if (inUse) {
+        throw new AppError(
+          409,
+          'OPERATION_IN_USE',
+          `Cannot delete operation '${key}': it is enabled on departments or assigned to employees`,
+        );
+      }
+      await repos.operations.delete(key);
+      await repos.audit.record(
+        auditEntry(actor, {
+          action: 'CATALOGUE_OPERATION_DELETED',
+          entityType: 'OPERATION_CATALOGUE',
+          entityId: keyToUuid(key),
+          metadata: { operationKey: key },
+          changedFields: {
+            key: { before: key, after: null },
+          },
+        }),
+      );
+      return { deleted: true, key };
+    });
+  }
+
+  async listCatalogueOperations() {
+    return this.uow.run((repos) => repos.operations.list());
   }
 }

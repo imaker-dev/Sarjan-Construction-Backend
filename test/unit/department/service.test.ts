@@ -149,7 +149,7 @@ describe('transitions', () => {
     expect(store.departments[0]?.status).toBe('ARCHIVED');
   });
 
-  it('rejects invalid transitions and ARCHIVED terminal', async () => {
+  it('rejects invalid transitions and allows ARCHIVED to ACTIVE', async () => {
     const d = seed('DRAFT');
     await expect(service.transitionDepartmentStatus(actor, 'c1', d.id, 'INACTIVE')).rejects.toThrow(
       InvalidStatusTransitionError,
@@ -158,9 +158,11 @@ describe('transitions', () => {
     const row = store.departments[0];
     if (row === undefined) throw new Error('seed missing');
     row.status = 'ARCHIVED';
-    await expect(service.transitionDepartmentStatus(actor, 'c1', d.id, 'ACTIVE')).rejects.toThrow(
+    await expect(service.transitionDepartmentStatus(actor, 'c1', d.id, 'INACTIVE')).rejects.toThrow(
       InvalidStatusTransitionError,
     );
+    const updated = await service.transitionDepartmentStatus(actor, 'c1', d.id, 'ACTIVE');
+    expect(updated.status).toBe('ACTIVE');
   });
 
   it('audits status changes with before/after', async () => {

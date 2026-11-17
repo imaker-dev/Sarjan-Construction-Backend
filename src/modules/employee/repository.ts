@@ -6,13 +6,22 @@ import { mapOrgWriteError } from '../organization/errors.js';
 
 type Tx = Prisma.TransactionClient;
 
+export interface EmployeeWithPrincipal extends Employee {
+  principal?: {
+    id: string;
+    loginId: string | null;
+    status: string;
+    sessions?: { createdAt: Date }[];
+  } | null;
+}
+
 export interface EmployeeRowRepository {
-  findById(companyId: string, id: string): Promise<Employee | null>;
-  findByCode(companyId: string, code: string): Promise<Employee | null>;
+  findById(companyId: string, id: string): Promise<EmployeeWithPrincipal | null>;
+  findByCode(companyId: string, code: string): Promise<EmployeeWithPrincipal | null>;
   list(
     companyId: string,
     filter: { status?: string; cursor?: { createdAt: Date; id: string }; limit: number },
-  ): Promise<Employee[]>;
+  ): Promise<EmployeeWithPrincipal[]>;
   create(companyId: string, data: Record<string, unknown>): Promise<Employee>;
   update(
     companyId: string,
@@ -72,9 +81,42 @@ export interface EmployeeRepos extends DepartmentRepos {
 export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
   const dept = makeDepartmentRepos(tx);
   const employees: EmployeeRowRepository = {
-    findById: (companyId, id) => tx.employee.findFirst({ where: { id, companyId } }),
+    findById: (companyId, id) =>
+      tx.employee.findFirst({
+        where: { id, companyId },
+        include: {
+          principal: {
+            select: {
+              id: true,
+              loginId: true,
+              status: true,
+              sessions: {
+                orderBy: { createdAt: 'desc' },
+                take: 1,
+                select: { createdAt: true },
+              },
+            },
+          },
+        },
+      }),
     findByCode: (companyId, code) =>
-      tx.employee.findFirst({ where: { companyId, employeeCode: code } }),
+      tx.employee.findFirst({
+        where: { companyId, employeeCode: code },
+        include: {
+          principal: {
+            select: {
+              id: true,
+              loginId: true,
+              status: true,
+              sessions: {
+                orderBy: { createdAt: 'desc' },
+                take: 1,
+                select: { createdAt: true },
+              },
+            },
+          },
+        },
+      }),
     list: (companyId, filter) =>
       tx.employee.findMany({
         where: {
@@ -88,6 +130,20 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
                 ],
               }
             : {}),
+        },
+        include: {
+          principal: {
+            select: {
+              id: true,
+              loginId: true,
+              status: true,
+              sessions: {
+                orderBy: { createdAt: 'desc' },
+                take: 1,
+                select: { createdAt: true },
+              },
+            },
+          },
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: filter.limit,

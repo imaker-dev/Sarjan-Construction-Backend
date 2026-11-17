@@ -24,6 +24,7 @@ export interface PlatformRepos {
     list(): Promise<Company[]>;
     create(data: Record<string, unknown>): Promise<Company>;
     update(id: string, data: Record<string, unknown>): Promise<Company>;
+    getDetails(id: string): Promise<Record<string, unknown> | null>;
   };
   headOffices: {
     create(data: Record<string, unknown>): Promise<{ id: string; code: string; name: string }>;
@@ -53,6 +54,19 @@ export interface PlatformRepos {
     revokeActive(principalId: string, at: Date): Promise<number>;
     findActive(tokenHash: string, now: Date): Promise<ActiveClaimInfo | null>;
   };
+  operations: {
+    list(): Promise<unknown[]>;
+    find(key: string): Promise<Record<string, unknown> | null>;
+    create(data: {
+      key: string;
+      domain: string;
+      name: string;
+      description: string;
+      sensitive?: boolean;
+    }): Promise<unknown>;
+    delete(key: string): Promise<number>;
+    isInUse(key: string): Promise<boolean>;
+  };
   audit: AuditRepository;
 }
 
@@ -69,6 +83,32 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
       list: () => tx.company.findMany({ where: { isPlatform: false }, orderBy: { id: 'asc' } }),
       create: (data) => tx.company.create({ data: data as never }),
       update: (id, data) => tx.company.update({ where: { id }, data: data as never }),
+      getDetails: (id) =>
+        tx.company.findFirst({
+          where: { id, isPlatform: false },
+          include: {
+            headOffices: {
+              where: { status: { not: 'ARCHIVED' } },
+              orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+            },
+            employees: {
+              include: {
+                principal: {
+                  select: { id: true, loginId: true, status: true },
+                },
+              },
+              orderBy: { createdAt: 'asc' },
+              take: 5,
+            },
+            _count: {
+              select: {
+                projects: true,
+                employees: true,
+                departments: true,
+              },
+            },
+          },
+        }),
     },
     headOffices: {
       create: (data) => tx.headOffice.create({ data: data as never }),
@@ -166,6 +206,31 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
           companyCode: emp?.company.code ?? '',
           companyName: emp?.company.name ?? '',
         };
+      },
+    },
+    operations: {
+      list: () =>
+        tx.operationCatalogueEntry.findMany({
+          orderBy: [{ domain: 'asc' }, { key: 'asc' }],
+        }),
+      find: (key: string) => tx.operationCatalogueEntry.findUnique({ where: { key } }),
+      create: (data: {
+        key: string;
+        domain: string;
+        name: string;
+        description: string;
+        sensitive?: boolean;
+      }) => tx.operationCatalogueEntry.create({ data }),
+      delete: async (key: string) => {
+        const res = await tx.operationCatalogueEntry.deleteMany({ where: { key } });
+        return res.count;
+      },
+      isInUse: async (key: string) => {
+        const [deptCount, empCount] = await Promise.all([
+          tx.departmentOperation.count({ where: { operationKey: key } }),
+          tx.employeeOperation.count({ where: { operationKey: key } }),
+        ]);
+        return deptCount > 0 || empCount > 0;
       },
     },
     audit: {

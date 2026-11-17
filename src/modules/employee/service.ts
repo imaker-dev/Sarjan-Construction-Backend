@@ -62,6 +62,44 @@ export function decodeEmpCursor(cursor: string): { createdAt: Date; id: string }
   }
 }
 
+export function enrichEmployee<
+  T extends {
+    principalId?: string | null;
+    principal?: {
+      id?: string;
+      loginId?: string | null;
+      status?: string;
+      sessions?: { createdAt: Date }[];
+    } | null;
+  },
+>(emp: T) {
+  const p = emp.principal;
+  let accountStatus: 'NOT_INVITED' | 'INVITED' | 'ACTIVE' | string = 'NOT_INVITED';
+  let hasPassword = false;
+  let lastLoginAt: Date | null = null;
+
+  if (emp.principalId || p) {
+    if (p?.status === 'ACTIVE') {
+      accountStatus = 'ACTIVE';
+      hasPassword = true;
+    } else if (p?.status === 'SUSPENDED') {
+      accountStatus = 'INVITED';
+    } else {
+      accountStatus = p?.status ?? 'INVITED';
+    }
+    lastLoginAt = p?.sessions?.[0]?.createdAt ?? null;
+  }
+
+  return {
+    ...emp,
+    accountStatus,
+    hasPassword,
+    claimPending: accountStatus === 'INVITED',
+    loginId: p?.loginId ?? null,
+    lastLoginAt,
+  };
+}
+
 const MAX_LIMIT = 100;
 
 export class EmployeeService {
@@ -89,7 +127,7 @@ export class EmployeeService {
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
     return {
-      employees: page,
+      employees: page.map(enrichEmployee),
       nextCursor: rows.length > limit && last !== undefined ? encodeEmpCursor(last) : null,
     };
   }
@@ -127,6 +165,14 @@ export class EmployeeService {
         'emergency contact name and phone must be provided together',
       );
     }
+    let joiningDate: Date | undefined;
+    if (input.joiningDate !== undefined && input.joiningDate !== null) {
+      joiningDate =
+        typeof input.joiningDate === 'string' ? new Date(input.joiningDate) : input.joiningDate;
+      if (Number.isNaN(joiningDate.getTime())) {
+        throw new OrgValidationError('joiningDate', 'must be a valid date');
+      }
+    }
     return this.uow.run(async ({ employees, audit }) => {
       const employee = await employees.create(companyId, {
         employeeCode,
@@ -134,7 +180,7 @@ export class EmployeeService {
         engagementType: input.engagementType,
         ...(input.designation !== undefined ? { designation: input.designation } : {}),
         ...(input.tradeCategory !== undefined ? { tradeCategory: input.tradeCategory } : {}),
-        ...(input.joiningDate !== undefined ? { joiningDate: input.joiningDate } : {}),
+        ...(joiningDate !== undefined ? { joiningDate } : {}),
         ...(input.contactPhone !== undefined ? { contactPhone: input.contactPhone } : {}),
         ...(input.contactEmail !== undefined ? { contactEmail: input.contactEmail } : {}),
         ...(input.emergencyContactName !== undefined
@@ -205,13 +251,26 @@ export class EmployeeService {
       'engagementType',
       'designation',
       'tradeCategory',
-      'joiningDate',
       'contactPhone',
       'contactEmail',
       'emergencyContactName',
       'emergencyContactPhone',
     ] as const) {
       if (patch[f] !== undefined) data[f] = patch[f];
+    }
+    if (patch.joiningDate !== undefined) {
+      if (patch.joiningDate === null) {
+        data.joiningDate = null;
+      } else {
+        const d =
+          typeof patch.joiningDate === 'string'
+            ? new Date(patch.joiningDate)
+            : patch.joiningDate;
+        if (Number.isNaN(d.getTime())) {
+          throw new OrgValidationError('joiningDate', 'must be a valid date');
+        }
+        data.joiningDate = d;
+      }
     }
     return this.uow.run(async ({ employees, audit }) => {
       const existing = await employees.findById(companyId, id);
@@ -347,7 +406,7 @@ export class EmployeeService {
     });
   }
 
-  async getById(actor: ActorContext, companyId: string, id: string): Promise<Employee> {
+  async getById(actor: ActorContext, companyId: string, id: string) {
     await this.authorizer.assertPermission(
       actor.actorId,
       'EMPLOYEE_READ',
@@ -355,7 +414,7 @@ export class EmployeeService {
     );
     const employee = await this.uow.run(({ employees }) => employees.findById(companyId, id));
     if (!employee) throw new OrgEntityNotFoundError('EMPLOYEE');
-    return employee;
+    return enrichEmployee(employee);
   }
 
   // ------------------------------------------------------------ Memberships

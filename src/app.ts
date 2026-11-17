@@ -308,6 +308,30 @@ const OPERATION_DOCS: Record<
     summary: 'Reissue admin claim code (invalidates prior codes)',
     permission: 'PLATFORM_COMPANY_CREATE',
   },
+  'GET /platform/companies/:companyId': {
+    summary: 'Get customer company details, head offices, and admin info',
+    permission: 'PLATFORM_COMPANY_READ',
+  },
+  'PATCH /platform/companies/:companyId': {
+    summary: 'Update customer company profile from platform portal',
+    permission: 'PLATFORM_COMPANY_CREATE',
+  },
+  'POST /platform/companies/:companyId/status': {
+    summary: 'Transition customer company status (ACTIVE/SUSPENDED/ARCHIVED)',
+    permission: 'PLATFORM_COMPANY_CREATE',
+  },
+  'GET /platform/operations': {
+    summary: 'List global operations catalogue (Platform Admin)',
+    permission: 'PLATFORM_COMPANY_READ',
+  },
+  'POST /platform/operations': {
+    summary: 'Create global operation in master catalogue',
+    permission: 'PLATFORM_COMPANY_CREATE',
+  },
+  'DELETE /platform/operations/:key': {
+    summary: 'Delete global operation from master catalogue (fails if in use)',
+    permission: 'PLATFORM_COMPANY_CREATE',
+  },
   'GET /forms': { summary: 'List forms in company', permission: 'FORM_READ' },
   'POST /forms': { summary: 'Create draft form definition', permission: 'FORM_CONFIGURE' },
   'GET /forms/:id': { summary: 'Get form definition by ID', permission: 'FORM_READ' },
@@ -731,10 +755,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     formRoutes(
       services.formService ??
-        new FormService(new PrismaFormUnitOfWork(app.prisma), {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-        }),
+      new FormService(new PrismaFormUnitOfWork(app.prisma), {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+      }),
     ),
     { prefix: '/api/v1' },
   );

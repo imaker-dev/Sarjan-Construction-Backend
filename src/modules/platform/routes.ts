@@ -105,6 +105,74 @@ const OnboardBody = Type.Object({
 const ReissueParams = Type.Object({ companyId: Type.String({ format: 'uuid' }) });
 const ReissueBody = Type.Object({ adminPrincipalId: Type.String({ format: 'uuid' }) });
 
+const CompanyParams = Type.Object({ companyId: Type.String({ format: 'uuid' }) });
+
+const UpdateCompanyBody = Type.Object({
+  name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  legalName: OptStringOrNull,
+  entityType: Type.Optional(
+    Type.Union([
+      Type.Literal('PRIVATE_LIMITED'),
+      Type.Literal('PUBLIC_LIMITED'),
+      Type.Literal('LLP'),
+      Type.Literal('PARTNERSHIP'),
+      Type.Literal('PROPRIETORSHIP'),
+      Type.Literal('OTHER'),
+      Type.Null(),
+    ]),
+  ),
+  tradeName: OptStringOrNull,
+  formedOn: OptStringOrNull,
+  pan: OptStringOrNull,
+  cin: OptStringOrNull,
+  llpin: OptStringOrNull,
+  regNumber: OptStringOrNull,
+  website: OptStringOrNull,
+  description: OptStringOrNull,
+  regAddressLine1: OptStringOrNull,
+  regAddressLine2: OptStringOrNull,
+  regLocality: OptStringOrNull,
+  regCity: OptStringOrNull,
+  regDistrict: OptStringOrNull,
+  regStateUt: OptStringOrNull,
+  regPin: OptStringOrNull,
+  regCountry: OptStringOrNull,
+  corrAddressLine1: OptStringOrNull,
+  corrAddressLine2: OptStringOrNull,
+  corrLocality: OptStringOrNull,
+  corrCity: OptStringOrNull,
+  corrDistrict: OptStringOrNull,
+  corrStateUt: OptStringOrNull,
+  corrPin: OptStringOrNull,
+  corrCountry: OptStringOrNull,
+  contactName: OptStringOrNull,
+  contactDesignation: OptStringOrNull,
+  contactEmail: OptStringOrNull,
+  contactPhone: OptStringOrNull,
+  expectedVersion: Type.Optional(Type.Integer()),
+});
+
+const CompanyStatusBody = Type.Object({
+  to: Type.Union([
+    Type.Literal('ACTIVE'),
+    Type.Literal('SUSPENDED'),
+    Type.Literal('ARCHIVED'),
+  ]),
+  expectedVersion: Type.Optional(Type.Integer()),
+});
+
+const CreateOperationBody = Type.Object({
+  key: Type.String({ minLength: 1, maxLength: 80 }),
+  domain: Type.String({ minLength: 1, maxLength: 80 }),
+  name: Type.String({ minLength: 1, maxLength: 200 }),
+  description: Type.Optional(Type.String({ maxLength: 1000 })),
+  sensitive: Type.Optional(Type.Boolean()),
+});
+
+const DeleteOperationParams = Type.Object({
+  key: Type.String({ minLength: 1, maxLength: 80 }),
+});
+
 const actorOf = (r: FastifyRequest): ActorContext => ({
   actorId: (r.principal as { actorId: string }).actorId,
   actorType: 'USER',
@@ -162,6 +230,65 @@ export function platformRoutes(
         const { adminPrincipalId } = req.body as { adminPrincipalId: string };
         return service.reissueClaim(actorOf(req), companyId, adminPrincipalId);
       },
+    );
+
+    app.get(
+      '/platform/companies/:companyId',
+      { schema: { params: CompanyParams }, preHandler: guard('PLATFORM_COMPANY_READ') },
+      async (req) => service.getCompanyDetails((req.params as { companyId: string }).companyId),
+    );
+
+    app.patch(
+      '/platform/companies/:companyId',
+      {
+        schema: { params: CompanyParams, body: UpdateCompanyBody },
+        preHandler: guard('PLATFORM_COMPANY_CREATE'),
+      },
+      async (req) => {
+        const { companyId } = req.params as { companyId: string };
+        const { expectedVersion, ...patch } = req.body as Record<string, unknown> & {
+          expectedVersion?: number;
+        };
+        return service.updateCompany(actorOf(req), companyId, patch, expectedVersion);
+      },
+    );
+
+    app.post(
+      '/platform/companies/:companyId/status',
+      {
+        schema: { params: CompanyParams, body: CompanyStatusBody },
+        preHandler: guard('PLATFORM_COMPANY_CREATE'),
+      },
+      async (req) => {
+        const { companyId } = req.params as { companyId: string };
+        const { to, expectedVersion } = req.body as { to: string; expectedVersion?: number };
+        return service.transitionCompanyStatus(actorOf(req), companyId, to, expectedVersion);
+      },
+    );
+
+    app.get(
+      '/platform/operations',
+      { preHandler: guard('PLATFORM_COMPANY_READ') },
+      async () => service.listCatalogueOperations(),
+    );
+
+    app.post(
+      '/platform/operations',
+      {
+        schema: { body: CreateOperationBody },
+        preHandler: guard('PLATFORM_COMPANY_CREATE'),
+      },
+      async (req) => service.createCatalogueOperation(actorOf(req), req.body as never),
+    );
+
+    app.delete(
+      '/platform/operations/:key',
+      {
+        schema: { params: DeleteOperationParams },
+        preHandler: guard('PLATFORM_COMPANY_CREATE'),
+      },
+      async (req) =>
+        service.deleteCatalogueOperation(actorOf(req), (req.params as { key: string }).key),
     );
 
     // Verify an unconsumed claim token before starting onboarding.

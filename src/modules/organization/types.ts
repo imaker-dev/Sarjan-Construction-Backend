@@ -73,6 +73,13 @@ export interface CreateProjectInput {
 export interface UpdateProjectInput {
   name?: string;
   description?: string | null;
+  projectType?: string | null;
+  clientName?: string | null;
+  contractRef?: string | null;
+  locationCity?: string | null;
+  locationDistrict?: string | null;
+  locationState?: string | null;
+  locationPin?: string | null;
   timezone?: string;
   startDate?: Date | null;
   endDate?: Date | null;

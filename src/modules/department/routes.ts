@@ -40,6 +40,7 @@ const StatusBody = Type.Object({
   to: Type.Union([
     Type.Literal('DRAFT'),
     Type.Literal('ACTIVE'),
+    Type.Literal('INACTIVE'),
     Type.Literal('SUSPENDED'),
     Type.Literal('ARCHIVED'),
   ]),
@@ -112,7 +113,7 @@ export function departmentRoutes(service: DepartmentService) {
         actorOf(req),
         companyIdOf(req),
         (req.params as { id: string }).id,
-        (req.body as { to: string }).to,
+        ((req.body as { to: string }).to === 'SUSPENDED' ? 'INACTIVE' : (req.body as { to: string }).to) as never,
         (req.body as { expectedVersion?: number }).expectedVersion,
       ),
     );
