@@ -13,6 +13,8 @@ interface FakeStore {
   roleAssignments: Record<string, unknown>[];
   claimTokens: Record<string, unknown>[];
   headOffices: Record<string, unknown>[];
+  projects: Record<string, unknown>[];
+  sites: Record<string, unknown>[];
   auditLog: Record<string, unknown>[];
 }
 
@@ -86,10 +88,14 @@ function fakePrisma(store: FakeStore) {
     roleAssignment: {
       findMany: async ({ where }: Record<string, unknown>) => {
         const w = where as Record<string, unknown>;
-        return store.roleAssignments.filter(
-          (a) =>
-            a.companyId === w.companyId && a.principalId === w.principalId && a.revokedAt === null,
-        );
+        return store.roleAssignments.filter((a) => {
+          if (a.companyId !== w.companyId) return false;
+          if ('principalId' in w && a.principalId !== w.principalId) return false;
+          if ('roleId' in w && a.roleId !== w.roleId) return false;
+          if ('scopeType' in w && a.scopeType !== w.scopeType) return false;
+          if ('projectId' in w && a.projectId !== w.projectId) return false;
+          return a.revokedAt === null;
+        });
       },
       findFirst: async ({ where }: Record<string, unknown>) => {
         const w = where as Record<string, unknown>;
@@ -97,12 +103,18 @@ function fakePrisma(store: FakeStore) {
           store.roleAssignments.find((a) => {
             if ('id' in w)
               return a.id === w.id && a.companyId === w.companyId && a.revokedAt === null;
-            return (
-              a.companyId === w.companyId &&
-              a.principalId === w.principalId &&
-              a.roleId === w.roleId &&
-              a.revokedAt === null
-            );
+            for (const key of [
+              'companyId',
+              'principalId',
+              'roleId',
+              'scopeType',
+              'headOfficeId',
+              'projectId',
+              'siteId',
+            ] as const) {
+              if (key in w && (a[key] ?? null) !== w[key]) return false;
+            }
+            return a.revokedAt === null;
           }) ?? null
         );
       },
@@ -131,11 +143,28 @@ function fakePrisma(store: FakeStore) {
         );
       },
     },
+    project: {
+      findFirst: async ({ where }: Record<string, unknown>) => {
+        const w = where as Record<string, unknown>;
+        return (
+          store.projects.find((p) => p.id === w.id && p.companyId === w.companyId) ?? null
+        );
+      },
+    },
+    site: {
+      findFirst: async ({ where }: Record<string, unknown>) => {
+        const w = where as Record<string, unknown>;
+        return store.sites.find((s) => s.id === w.id && s.companyId === w.companyId) ?? null;
+      },
+    },
     auditLog: {
       create: async ({ data }: Record<string, unknown>) => {
         store.auditLog.push(data as Record<string, unknown>);
       },
     },
+    // FOR UPDATE project lock — no-op in the fake; serialization is covered
+    // by the real-DB integration suite.
+    $queryRaw: async () => [],
   };
   const prisma = {
     $transaction: (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
@@ -157,6 +186,13 @@ function store(over: Partial<FakeStore> = {}): FakeStore {
     roleAssignments: [],
     claimTokens: [],
     headOffices: [{ id: 'ho-1', companyId: COMPANY, isPrimary: true, status: 'ACTIVE' }],
+    projects: [
+      { id: 'pr-1', companyId: COMPANY, status: 'ACTIVE' },
+      { id: 'pr-2', companyId: COMPANY, status: 'ACTIVE' },
+      { id: 'pr-inactive', companyId: COMPANY, status: 'ARCHIVED' },
+      { id: 'pr-other', companyId: 'OTHER', status: 'ACTIVE' },
+    ],
+    sites: [{ id: 'st-1', companyId: COMPANY, projectId: 'pr-1', status: 'ACTIVE' }],
     auditLog: [],
     ...over,
   };
@@ -298,6 +334,142 @@ describe('EmployeeAccessService.grant', () => {
         scopeType: 'COMPANY',
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
+  });
+});
+
+describe('EmployeeAccessService.grant — project leadership (PD/PI)', () => {
+  function linkedStoreWithLeadership() {
+    const s = store();
+    first(s.employees).principalId = 'pri-9';
+    s.principals.push({ id: 'pri-9', status: 'ACTIVE', type: 'USER' });
+    s.roles.push(
+      { id: 'r-pd', companyId: COMPANY, key: 'PROJECT_DIRECTOR', isSystem: true },
+      { id: 'r-pi', companyId: COMPANY, key: 'PROJECT_INCHARGE', isSystem: true },
+    );
+    return s;
+  }
+  const pd = (projectId: string) => ({
+    employeeId: 'e-1',
+    roleKey: 'PROJECT_DIRECTOR',
+    scopeType: 'PROJECT',
+    scopeId: projectId,
+  });
+
+  it('grants PROJECT_DIRECTOR at PROJECT scope with project UUID', async () => {
+    const svc = new EmployeeAccessService(fakePrisma(linkedStoreWithLeadership()));
+    const asg = await svc.grant(ACTOR, COMPANY, pd('pr-1'));
+    expect((asg as Record<string, unknown>).projectId).toBe('pr-1');
+    expect((asg as Record<string, unknown>).scopeType).toBe('PROJECT');
+  });
+
+  it('rejects wrong scope type and site-scoped leadership', async () => {
+    const svc = new EmployeeAccessService(fakePrisma(linkedStoreWithLeadership()));
+    for (const scopeType of ['COMPANY', 'HEAD_OFFICE', 'SITE']) {
+      await expect(
+        svc.grant(ACTOR as never, COMPANY, { ...pd('pr-1'), scopeType }),
+      ).rejects.toBeInstanceOf(Error);
+    }
+  });
+
+  it('rejects missing, invalid, and cross-company project scopeId', async () => {
+    const svc = new EmployeeAccessService(fakePrisma(linkedStoreWithLeadership()));
+    for (const scopeId of [undefined, 'nope', 'pr-other']) {
+      await expect(
+        svc.grant(ACTOR as never, COMPANY, {
+          employeeId: 'e-1',
+          roleKey: 'PROJECT_DIRECTOR',
+          scopeType: 'PROJECT',
+          ...(scopeId !== undefined ? { scopeId } : {}),
+        }),
+      ).rejects.toBeInstanceOf(Error);
+    }
+  });
+
+  it('rejects inactive project and inactive/unlinked employee', async () => {
+    const svc = new EmployeeAccessService(fakePrisma(linkedStoreWithLeadership()));
+    await expect(svc.grant(ACTOR as never, COMPANY, pd('pr-inactive'))).rejects.toBeInstanceOf(
+      Error,
+    );
+    const unlinked = new EmployeeAccessService(fakePrisma(store()));
+    await expect(unlinked.grant(ACTOR as never, COMPANY, pd('pr-1'))).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it('one PD may hold multiple projects', async () => {
+    const svc = new EmployeeAccessService(fakePrisma(linkedStoreWithLeadership()));
+    await svc.grant(ACTOR, COMPANY, pd('pr-1'));
+    await svc.grant(ACTOR, COMPANY, pd('pr-2'));
+    const mine = (await svc.listAssignments(COMPANY, 'e-1')) as Record<string, unknown>[];
+    expect(mine.filter((a) => a.projectId !== undefined && a.projectId !== null)).toHaveLength(2);
+  });
+
+  it('granting a second PD on a project replaces the incumbent', async () => {
+    const s = linkedStoreWithLeadership();
+    s.employees.push({ id: 'e-2', companyId: COMPANY, status: 'ACTIVE', principalId: 'pri-10' });
+    s.principals.push({ id: 'pri-10', status: 'ACTIVE', type: 'USER' });
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    const firstAsg = (await svc.grant(ACTOR, COMPANY, pd('pr-1'))) as { id: string };
+    const secondAsg = await svc.grant(ACTOR, COMPANY, { ...pd('pr-1'), employeeId: 'e-2' });
+    expect(secondAsg).toBeTruthy();
+    const oldRow = s.roleAssignments.find((a) => a.id === firstAsg.id) as
+      | { revokedAt: Date | null }
+      | undefined;
+    expect(oldRow?.revokedAt).not.toBeNull();
+    expect(JSON.stringify(s.auditLog)).toContain('ROLE_ASSIGNMENT_REPLACED');
+    // incumbent on a DIFFERENT project is untouched
+    await svc.grant(ACTOR, COMPANY, { ...pd('pr-2'), employeeId: 'e-2' });
+    const pr1Holders = s.roleAssignments.filter(
+      (a) => a.projectId === 'pr-1' && a.roleId === 'r-pd' && a.revokedAt === null,
+    );
+    expect(pr1Holders).toHaveLength(1);
+  });
+
+  it('same-employee duplicate grant still conflicts (409)', async () => {
+    const svc = new EmployeeAccessService(fakePrisma(linkedStoreWithLeadership()));
+    await svc.grant(ACTOR, COMPANY, pd('pr-1'));
+    await expect(svc.grant(ACTOR as never, COMPANY, pd('pr-1'))).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it('rejects self-grant — admin cannot appoint themselves', async () => {
+    const s = linkedStoreWithLeadership();
+    first(s.employees).principalId = 'own-1'; // actor.actorId === principalId
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await expect(svc.grant(ACTOR as never, COMPANY, pd('pr-1'))).rejects.toBeInstanceOf(Error);
+  });
+
+  it('PD/PI grant requires ACTIVE linked employee — suspended principal rejected', async () => {
+    const s = linkedStoreWithLeadership();
+    const [firstPrincipal] = s.principals;
+    if (firstPrincipal !== undefined) firstPrincipal.status = 'SUSPENDED';
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await expect(svc.grant(ACTOR as never, COMPANY, pd('pr-1'))).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it('PD and PI are independent slots on the same project', async () => {
+    const s = linkedStoreWithLeadership();
+    s.employees.push({ id: 'e-2', companyId: COMPANY, status: 'ACTIVE', principalId: 'pri-10' });
+    s.principals.push({ id: 'pri-10', status: 'ACTIVE', type: 'USER' });
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await svc.grant(ACTOR, COMPANY, pd('pr-1'));
+    await svc.grant(ACTOR, COMPANY, {
+      employeeId: 'e-2',
+      roleKey: 'PROJECT_INCHARGE',
+      scopeType: 'PROJECT',
+      scopeId: 'pr-1',
+    });
+    const pdHolders = s.roleAssignments.filter(
+      (a) => a.projectId === 'pr-1' && a.roleId === 'r-pd' && a.revokedAt === null,
+    );
+    const piHolders = s.roleAssignments.filter(
+      (a) => a.projectId === 'pr-1' && a.roleId === 'r-pi' && a.revokedAt === null,
+    );
+    expect(pdHolders).toHaveLength(1);
+    expect(piHolders).toHaveLength(1);
   });
 });
 

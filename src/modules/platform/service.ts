@@ -1,7 +1,11 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { passwordService } from '../identity/password.js';
 import { OWNER_ROLE_KEY, TENANT_OWNER_PERMISSIONS } from '../setup/bootstrap.js';
-import { HO_ADMIN_PERMISSIONS } from '../setup/role-templates.js';
+import {
+  HO_ADMIN_PERMISSIONS,
+  HO_ADMIN_ROLE_KEY,
+  TENANT_ROLE_TEMPLATES,
+} from '../setup/role-templates.js';
 import {
   OrgEntityNotFoundError,
   OrgValidationError,
@@ -131,6 +135,22 @@ export class PlatformService {
       for (const key of HO_ADMIN_PERMISSIONS) {
         const permission = await repos.permissions.upsert(key);
         await repos.rolePermissions.create(hoRole.id, permission.id);
+      }
+
+      // Project leadership roles — PROJECT scope, least-privilege templates.
+      // One active holder per project enforced in the grant path.
+      for (const tpl of TENANT_ROLE_TEMPLATES) {
+        if (tpl.key === 'COMPANY_OWNER' || tpl.key === HO_ADMIN_ROLE_KEY) continue;
+        const tRole = await repos.roles.create({
+          companyId: company.id,
+          key: tpl.key,
+          name: tpl.name,
+          isSystem: true,
+        });
+        for (const key of tpl.permissions) {
+          const permission = await repos.permissions.upsert(key);
+          await repos.rolePermissions.create(tRole.id, permission.id);
+        }
       }
 
       // Pending admin: suspended until claim completes; placeholder hash is a

@@ -4,7 +4,8 @@ import type { ActorContext } from '../organization/types.js';
 import { auditEntry } from '../organization/service.js';
 import { OrgEntityNotFoundError, OrgValidationError } from '../organization/errors.js';
 import { AppError } from '../../common/errors/app-error.js';
-import { findRoleTemplate } from '../setup/role-templates.js';
+import { findRoleTemplate, PROJECT_LEADERSHIP_KEYS } from '../setup/role-templates.js';
+import { AccessDeniedError } from '../access-control/errors.js';
 import { passwordService } from '../identity/password.js';
 
 const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
@@ -118,6 +119,7 @@ export class EmployeeAccessService {
     if (tpl.scopeShape !== input.scopeType) {
       throw new OrgValidationError('scopeType', `${tpl.key} requires ${tpl.scopeShape} scope`);
     }
+    const isProjectLeadership = PROJECT_LEADERSHIP_KEYS.has(tpl.key);
     return this.prisma.$transaction(async (tx) => {
       const emp = await tx.employee.findFirst({ where: { id: input.employeeId, companyId } });
       if (!emp) throw new OrgEntityNotFoundError('EMPLOYEE');
@@ -127,6 +129,11 @@ export class EmployeeAccessService {
           'EMPLOYEE_NOT_LINKED',
           'employee must be ACTIVE with a linked account',
         );
+      }
+      // Self-grant denial: an administrator may not appoint themselves to a
+      // project leadership post — separation of duties.
+      if (isProjectLeadership && emp.principalId === actor.actorId) {
+        throw new AccessDeniedError();
       }
       const principal = await tx.principal.findUnique({ where: { id: emp.principalId } });
       if (principal?.status !== 'ACTIVE' || principal.type !== 'USER') {
@@ -162,6 +169,7 @@ export class EmployeeAccessService {
         projectId: null,
         siteId: null,
       };
+      let project: { id: string; status: string } | null = null;
       if (input.scopeType === 'HEAD_OFFICE') {
         const ho = await tx.headOffice.findFirst({
           where: { id: input.scopeId ?? '', companyId, isPrimary: true, status: 'ACTIVE' },
@@ -170,11 +178,15 @@ export class EmployeeAccessService {
         scopeData.headOfficeId = input.scopeId;
         scopeFilter.headOfficeId = input.scopeId;
       } else if (input.scopeType === 'PROJECT') {
-        const project = await tx.project.findFirst({
+        project = await tx.project.findFirst({
           where: { id: input.scopeId ?? '', companyId },
         });
         if (!project)
           throw new OrgValidationError('scopeId', 'must be a valid project in this company');
+        // Leadership appointments only land on live projects.
+        if (isProjectLeadership && project.status !== 'ACTIVE') {
+          throw new OrgValidationError('scopeId', 'project must be ACTIVE for this role');
+        }
         scopeData.projectId = input.scopeId;
         scopeFilter.projectId = input.scopeId;
       } else if (input.scopeType === 'SITE') {
@@ -199,6 +211,42 @@ export class EmployeeAccessService {
         },
       });
       if (dup) throw new AppError(409, 'ASSIGNMENT_EXISTS', 'assignment already active');
+
+      // One active PD/PI per project: lock the project row so concurrent
+      // grants serialize, then replace any other current holder of this role
+      // on this project. A director may still hold other projects — the lock
+      // and uniqueness are scoped to (project, role), not to the employee.
+      if (isProjectLeadership && project !== null) {
+        await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${project.id}::uuid FOR UPDATE`;
+        const holders = await tx.roleAssignment.findMany({
+          where: {
+            companyId,
+            roleId: role.id,
+            scopeType: 'PROJECT' as never,
+            projectId: project.id,
+            revokedAt: null,
+          },
+        });
+        for (const holder of holders) {
+          await tx.roleAssignment.update({
+            where: { id: holder.id },
+            data: { revokedAt: new Date() },
+          });
+          await tx.auditLog.create({
+            data: auditEntry(actor, {
+              action: 'ROLE_ASSIGNMENT_REPLACED',
+              entityType: 'ROLE_ASSIGNMENT',
+              entityId: holder.id,
+              companyId,
+              changedFields: {
+                roleKey: { before: tpl.key, after: tpl.key },
+                replacedByPrincipalId: { before: null, after: emp.principalId },
+              },
+            }) as never,
+          });
+          if (this.cache) await this.cache.invalidate(holder.principalId);
+        }
+      }
       const assignment = await tx.roleAssignment.create({
         data: {
           principalId: emp.principalId,

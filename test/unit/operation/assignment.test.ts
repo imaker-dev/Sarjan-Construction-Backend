@@ -7,13 +7,37 @@ const OWNER = { actorId: 'a1', actorType: 'USER' as const };
 function makeFakePrisma() {
   const state = {
     depts: [
-      { id: 'd-fin', companyId: 'c1', status: 'ACTIVE' },
-      { id: 'd-site', companyId: 'c1', status: 'ACTIVE' },
+      {
+        id: 'd-fin',
+        companyId: 'c1',
+        status: 'ACTIVE',
+        projectId: null as string | null,
+        siteId: null as string | null,
+      },
+      {
+        id: 'd-site',
+        companyId: 'c1',
+        status: 'ACTIVE',
+        projectId: null as string | null,
+        siteId: null as string | null,
+      },
     ],
     employees: [
-      { id: 'e1', companyId: 'c1', status: 'ACTIVE' },
-      { id: 'e2', companyId: 'c1', status: 'INACTIVE' },
+      { id: 'e1', companyId: 'c1', status: 'ACTIVE', principalId: null as string | null },
+      { id: 'e2', companyId: 'c1', status: 'INACTIVE', principalId: null as string | null },
     ],
+    sites: [] as { id: string; companyId: string; projectId: string }[],
+    roleAssignments: [] as {
+      companyId: string;
+      principalId: string;
+      roleId: string;
+      scopeType: string;
+      projectId: string | null;
+      revokedAt: Date | null;
+      effectiveFrom: Date | null;
+      effectiveTo: Date | null;
+      roleKey?: string;
+    }[],
     memberships: [
       { companyId: 'c1', employeeId: 'e1', departmentId: 'd-fin', endedAt: null },
       { companyId: 'c1', employeeId: 'e1', departmentId: 'd-site', endedAt: new Date() },
@@ -77,6 +101,41 @@ function makeFakePrisma() {
       findFirst: async ({ where }: { where: { id: string; companyId: string } }) =>
         state.employees.find((e) => e.id === where.id && e.companyId === where.companyId) ?? null,
     },
+    site: {
+      findMany: async ({
+        where,
+      }: {
+        where: { companyId: string; projectId?: { in: string[] } };
+      }) =>
+        state.sites.filter(
+          (s) =>
+            s.companyId === where.companyId &&
+            (where.projectId === undefined || where.projectId.in.includes(s.projectId)),
+        ),
+    },
+    roleAssignment: {
+      findMany: async ({
+        where,
+      }: {
+        where: {
+          companyId: string;
+          principalId: string;
+          revokedAt: Date | null;
+          scopeType: string;
+          role: { key: { in: string[] } };
+        };
+      }) =>
+        state.roleAssignments.filter(
+          (a) =>
+            a.companyId === where.companyId &&
+            a.principalId === where.principalId &&
+            a.revokedAt === where.revokedAt &&
+            a.scopeType === where.scopeType &&
+            where.role.key.in.includes(a.roleKey ?? '') &&
+            (a.effectiveFrom === null || a.effectiveFrom <= new Date()) &&
+            (a.effectiveTo === null || a.effectiveTo >= new Date()),
+        ),
+    },
     departmentMembership: {
       findMany: async ({
         where,
@@ -99,18 +158,56 @@ function makeFakePrisma() {
       findMany: async ({
         where,
       }: {
-        where: { companyId: string; departmentId?: unknown; status?: string };
+        where: {
+          companyId: string;
+          departmentId?: unknown;
+          status?: string;
+          department?: {
+            companyId?: string;
+            status?: string;
+            OR?: { projectId?: { in: string[] }; siteId?: { in: string[] } }[];
+          };
+          operation?: { sensitive?: boolean };
+        };
       }) =>
         state.deptOps
-          .filter(
-            (d) =>
-              d.companyId === where.companyId &&
-              (where.status === undefined || d.status === where.status) &&
-              (where.departmentId === undefined ||
-                (Array.isArray((where.departmentId as { in: string[] }).in)
-                  ? (where.departmentId as { in: string[] }).in.includes(d.departmentId)
-                  : d.departmentId === where.departmentId)),
-          )
+          .filter((d) => {
+            if (d.companyId !== where.companyId) return false;
+            if (where.status !== undefined && d.status !== where.status) return false;
+            if (
+              where.departmentId !== undefined &&
+              (Array.isArray((where.departmentId as { in: string[] }).in)
+                ? !(where.departmentId as { in: string[] }).in.includes(d.departmentId)
+                : d.departmentId !== where.departmentId)
+            )
+              return false;
+            if (where.department !== undefined) {
+              const dept = state.depts.find((x) => x.id === d.departmentId);
+              const df = where.department;
+              if (dept === undefined) return false;
+              if (df.companyId !== undefined && dept.companyId !== df.companyId) return false;
+              if (df.status !== undefined && dept.status !== df.status) return false;
+              if (df.OR !== undefined) {
+                const anyMatch = df.OR.some((c) => {
+                  if (c.projectId !== undefined)
+                    return dept.projectId !== null && c.projectId.in.includes(dept.projectId);
+                  if (c.siteId !== undefined)
+                    return dept.siteId !== null && c.siteId.in.includes(dept.siteId);
+                  return false;
+                });
+                if (!anyMatch) return false;
+              }
+            }
+            if (where.operation !== undefined) {
+              const cat = state.catalogue.find((c) => c.key === d.operationKey);
+              if (
+                where.operation.sensitive !== undefined &&
+                (cat?.sensitive ?? false) !== where.operation.sensitive
+              )
+                return false;
+            }
+            return true;
+          })
           .map((d) => ({
             ...d,
             status: d.status,
@@ -632,5 +729,185 @@ describe('OperationAssignmentService', () => {
     );
     expect(direct.status).toBe('ACTIVE');
     expect(direct.source).toBe('DIRECT');
+  });
+
+  describe('PD/PI project-role operation coverage', () => {
+    function withLeadership(state: ReturnType<typeof makeFakePrisma>['state']) {
+      const [e1] = state.employees;
+      if (e1 !== undefined) e1.principalId = 'p1';
+      state.sites.push(
+        { id: 's1', companyId: 'c1', projectId: 'proj-a' },
+        { id: 's2', companyId: 'c1', projectId: 'proj-b' },
+      );
+      state.depts.push(
+        {
+          id: 'd-proj-a',
+          companyId: 'c1',
+          status: 'ACTIVE',
+          projectId: 'proj-a',
+          siteId: null,
+        },
+        { id: 'd-site-1', companyId: 'c1', status: 'ACTIVE', projectId: null, siteId: 's1' },
+        {
+          id: 'd-proj-b',
+          companyId: 'c1',
+          status: 'ACTIVE',
+          projectId: 'proj-b',
+          siteId: null,
+        },
+      );
+      state.deptOps.push(
+        {
+          id: 'do-pa',
+          companyId: 'c1',
+          departmentId: 'd-proj-a',
+          operationKey: 'PETTY_CASH_REQUEST_APPROVE',
+          status: 'ACTIVE',
+        },
+        {
+          id: 'do-s1',
+          companyId: 'c1',
+          departmentId: 'd-site-1',
+          operationKey: 'SALARY_PAYMENT_APPROVE',
+          status: 'ACTIVE',
+        },
+        {
+          id: 'do-pb',
+          companyId: 'c1',
+          departmentId: 'd-proj-b',
+          operationKey: 'PETTY_CASH_REQUEST_APPROVE',
+          status: 'ACTIVE',
+        },
+      );
+      state.roleAssignments.push({
+        companyId: 'c1',
+        principalId: 'p1',
+        roleId: 'r-pd',
+        scopeType: 'PROJECT',
+        projectId: 'proj-a',
+        revokedAt: null,
+        effectiveFrom: null,
+        effectiveTo: null,
+        roleKey: 'PROJECT_DIRECTOR',
+      });
+    }
+
+    it('covers ops enabled on the assigned project and its sites', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withLeadership(state);
+      state.catalogue.push({
+        key: 'WORK_PROGRESS_SUBMIT',
+        domain: 'OPERATIONS',
+        name: 'Work Progress Submit',
+        description: '',
+        sensitive: false,
+      });
+      state.deptOps.push({
+        id: 'do-wps',
+        companyId: 'c1',
+        departmentId: 'd-site-1',
+        operationKey: 'WORK_PROGRESS_SUBMIT',
+        status: 'ACTIVE',
+      });
+      const keys = await svc(prisma).getLeadershipScopedOperationKeys('c1', 'e1');
+      // Non-sensitive proj-a + site-1 ops; SALARY_PAYMENT_APPROVE is sensitive.
+      expect(keys).toEqual(
+        expect.arrayContaining(['WORK_PROGRESS_SUBMIT']),
+      );
+      expect(keys).toContain('PETTY_CASH_REQUEST_APPROVE');
+    });
+
+    it('excludes sensitive ops and ops enabled only on other projects', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withLeadership(state);
+      state.catalogue.push(
+        {
+          key: 'PROJ_B_ONLY_OP',
+          domain: 'OPERATIONS',
+          name: 'Proj B Only',
+          description: '',
+          sensitive: false,
+        },
+        {
+          key: 'HO_ONLY_OP',
+          domain: 'OPERATIONS',
+          name: 'HO Only',
+          description: '',
+          sensitive: false,
+        },
+      );
+      // Enabled ONLY on proj-b dept — PD of proj-a must not see it.
+      state.deptOps.push({
+        id: 'do-pb2',
+        companyId: 'c1',
+        departmentId: 'd-proj-b',
+        operationKey: 'PROJ_B_ONLY_OP',
+        status: 'ACTIVE',
+      });
+      // Enabled ONLY on a company-wide (HO) dept — never in project scope.
+      state.deptOps.push({
+        id: 'do-ho',
+        companyId: 'c1',
+        departmentId: 'd-fin',
+        operationKey: 'HO_ONLY_OP',
+        status: 'ACTIVE',
+      });
+      const keys = await svc(prisma).getLeadershipScopedOperationKeys('c1', 'e1');
+      expect(keys).not.toContain('SALARY_PAYMENT_APPROVE');
+      expect(keys).not.toContain('PROJ_B_ONLY_OP');
+      expect(keys).not.toContain('HO_ONLY_OP');
+      expect(keys).toContain('PETTY_CASH_REQUEST_APPROVE');
+    });
+
+    it('role coverage appears in getEffectiveOperations and listEmployeeOperations', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withLeadership(state);
+      state.catalogue.push({
+        key: 'WORK_PROGRESS_SUBMIT',
+        domain: 'OPERATIONS',
+        name: 'Work Progress Submit',
+        description: '',
+        sensitive: false,
+      });
+      // Enabled only on site-1's dept — reachable solely through the PD role.
+      state.deptOps.push({
+        id: 'do-wps',
+        companyId: 'c1',
+        departmentId: 'd-site-1',
+        operationKey: 'WORK_PROGRESS_SUBMIT',
+        status: 'ACTIVE',
+      });
+      const effective = await svc(prisma).getEffectiveOperations('c1', 'e1');
+      expect(effective).toContain('WORK_PROGRESS_SUBMIT');
+      const ops = await svc(prisma).listEmployeeOperations(OWNER, 'c1', 'e1');
+      const roleOp = ops.find((o) => o.source === 'ROLE');
+      expect(roleOp).toBeTruthy();
+      expect(roleOp?.operationKey).toBe('WORK_PROGRESS_SUBMIT');
+    });
+
+    it('a revoked employee override still wins over role coverage', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withLeadership(state);
+      state.empOps.push({
+        id: 'eo1',
+        companyId: 'c1',
+        employeeId: 'e1',
+        operationKey: 'PETTY_CASH_REQUEST_APPROVE',
+        status: 'INACTIVE',
+      });
+      const effective = await svc(prisma).getEffectiveOperations('c1', 'e1');
+      expect(effective).not.toContain('PETTY_CASH_REQUEST_APPROVE');
+    });
+
+    it('coverage ends when the role assignment is revoked', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withLeadership(state);
+      const [pdAssignment] = state.roleAssignments;
+      if (pdAssignment !== undefined) pdAssignment.revokedAt = new Date();
+      const keys = await svc(prisma).getLeadershipScopedOperationKeys('c1', 'e1');
+      expect(keys).toEqual([]);
+      const ops = await svc(prisma).listEmployeeOperations(OWNER, 'c1', 'e1');
+      expect(ops.find((o) => o.source === 'ROLE')).toBeUndefined();
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import { OrgEntityNotFoundError, OrgValidationError } from '../organization/errors.js';
+import { PROJECT_LEADERSHIP_KEYS } from '../setup/role-templates.js';
 import type { Authorizer } from '../department/service.js';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
@@ -363,7 +364,7 @@ export class OperationAssignmentService {
         domain: string;
         status: string;
         inherited: boolean;
-        source: 'DEPARTMENT' | 'DIRECT';
+        source: 'DEPARTMENT' | 'DIRECT' | 'ROLE';
         createdAt: Date;
         operation: {
           key: string;
@@ -427,6 +428,44 @@ export class OperationAssignmentService {
           createdAt: eOp.createdAt,
           operation: eOp.operation,
         });
+      }
+
+      // 3. PD/PI project-leadership coverage — derived live from active
+      // role assignments; no EmployeeOperation row exists for these.
+      const roleKeys = await this.getLeadershipScopedOperationKeys(companyId, employeeId);
+      if (roleKeys.length > 0) {
+        const catalogue = await r.catalogue.list();
+        const byKey = new Map(catalogue.map((c) => [c.key, c]));
+        for (const key of roleKeys) {
+          if (processedKeys.has(key)) continue;
+          processedKeys.add(key);
+          const op = byKey.get(key);
+          const override = empOpMap.get(key);
+          const status =
+            override?.status === 'INACTIVE' || override?.status === 'REVOKED'
+              ? 'INACTIVE'
+              : 'ACTIVE';
+          results.push({
+            id: override?.id ?? `role:${key}`,
+            companyId,
+            employeeId,
+            departmentId: null,
+            operationKey: key,
+            name: op?.name ?? key,
+            domain: op?.domain ?? 'OPERATIONS',
+            status,
+            inherited: true,
+            source: 'ROLE',
+            createdAt: override?.createdAt ?? new Date(0),
+            operation: {
+              key,
+              domain: op?.domain ?? 'OPERATIONS',
+              name: op?.name ?? key,
+              description: op?.description ?? '',
+              sensitive: op?.sensitive ?? false,
+            },
+          });
+        }
       }
 
       return results.sort((a, b) => a.operationKey.localeCompare(b.operationKey));
@@ -626,14 +665,24 @@ export class OperationAssignmentService {
     });
   }
 
-  /** Effective ops = (active dept ops - inactive/revoked on employee) ∪ active direct grants */
+  /**
+   * Effective ops =
+   *   (ops enabled on active-membership departments − employee overrides)
+   *   ∪ active direct grants
+   *   ∪ PD/PI role coverage: every ACTIVE op enabled on departments scoped to
+   *     the employee's assigned projects (or their sites) — no per-op grant
+   *     needed. Sensitive ops are excluded from role coverage; they still
+   *     require an explicit per-employee grant (the distinct policy).
+   * Coverage ends the moment the role assignment is revoked — it is resolved
+   * from live rows on every call.
+   */
   async getEffectiveOperations(companyId: string, employeeId: string): Promise<string[]> {
     const memberships = await this.prisma.departmentMembership.findMany({
       where: { companyId, employeeId, endedAt: null },
       select: { departmentId: true },
     });
     const deptIds = memberships.map((m) => m.departmentId);
-    const [empOps, enabled] = await Promise.all([
+    const [empOps, enabled, roleScopedKeys] = await Promise.all([
       this.prisma.employeeOperation.findMany({
         where: { companyId, employeeId },
         select: { operationKey: true, status: true },
@@ -644,6 +693,7 @@ export class OperationAssignmentService {
             where: { companyId, departmentId: { in: deptIds }, status: 'ACTIVE' },
             select: { operationKey: true },
           }),
+      this.getLeadershipScopedOperationKeys(companyId, employeeId),
     ]);
     const inactiveKeys = new Set(
       empOps
@@ -656,7 +706,63 @@ export class OperationAssignmentService {
 
     const enabledSet = new Set(enabled.map((e) => e.operationKey));
     const inheritedActive = Array.from(enabledSet).filter((k) => !inactiveKeys.has(k));
-    return Array.from(new Set([...inheritedActive, ...directActiveKeys]));
+    const roleActive = roleScopedKeys.filter((k) => !inactiveKeys.has(k));
+    return Array.from(new Set([...inheritedActive, ...directActiveKeys, ...roleActive])).sort();
+  }
+
+  /**
+   * Project-leadership coverage: resolve the employee's active PD/PI
+   * RoleAssignments (PROJECT scope), then collect ACTIVE operations enabled
+   * on departments scoped to those projects or to sites beneath them.
+   * Company-wide (Head Office) departments are structurally out of scope —
+   * only projectId/siteId-scoped departments match. Sensitive operations are
+   * never covered by role access.
+   */
+  async getLeadershipScopedOperationKeys(
+    companyId: string,
+    employeeId: string,
+  ): Promise<string[]> {
+    const emp = await this.prisma.employee.findFirst({
+      where: { id: employeeId, companyId },
+      select: { principalId: true },
+    });
+    if (emp?.principalId === null || emp?.principalId === undefined) return [];
+    const now = new Date();
+    const assignments = await this.prisma.roleAssignment.findMany({
+      where: {
+        companyId,
+        principalId: emp.principalId,
+        revokedAt: null,
+        scopeType: 'PROJECT',
+        role: { key: { in: [...PROJECT_LEADERSHIP_KEYS] } },
+        OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }],
+        AND: [{ OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }] }],
+      },
+      select: { projectId: true },
+    });
+    const projectIds = [
+      ...new Set(assignments.map((a) => a.projectId).filter((p): p is string => p !== null)),
+    ];
+    if (projectIds.length === 0) return [];
+    const sites = await this.prisma.site.findMany({
+      where: { companyId, projectId: { in: projectIds } },
+      select: { id: true },
+    });
+    const siteIds = sites.map((s) => s.id);
+    const deptOps = await this.prisma.departmentOperation.findMany({
+      where: {
+        companyId,
+        status: 'ACTIVE',
+        department: {
+          companyId,
+          status: 'ACTIVE',
+          OR: [{ projectId: { in: projectIds } }, { siteId: { in: siteIds } }],
+        },
+        operation: { sensitive: false },
+      },
+      select: { operationKey: true },
+    });
+    return deptOps.map((d) => d.operationKey);
   }
 
   private async assertActiveDept(companyId: string, departmentId: string) {

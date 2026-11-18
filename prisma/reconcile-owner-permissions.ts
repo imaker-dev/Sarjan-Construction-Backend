@@ -1,6 +1,9 @@
-// Idempotent owner-permission reconcile — run manually after catalogue adds:
+// Idempotent role-template reconcile — run manually after template changes:
 //   npm run db:reconcile
-// Adds only the two EMPLOYEE_* grants to COMPANY_OWNER system roles.
+// 1) Grants missing employee keys to COMPANY_OWNER system roles.
+// 2) Provisions every approved tenant role template (HO_ADMIN, PROJECT_MANAGER,
+//    SITE_ENGINEER, PROJECT_DIRECTOR, PROJECT_INCHARGE, DEPT_HEAD, EMPLOYEE)
+//    for companies that are missing them, including new permission grants.
 // Never removes or broadens other grants; audits only real changes.
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';

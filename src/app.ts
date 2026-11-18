@@ -259,7 +259,7 @@ const OPERATION_DOCS: Record<
   },
   'POST /employees/:id/assignments': {
     summary:
-      'Grant a whitelisted tenant role (COMPANY_OWNER@COMPANY, HO_ADMIN@HEAD_OFFICE primary)',
+      'Grant a whitelisted tenant role (COMPANY_OWNER@COMPANY, HO_ADMIN@HEAD_OFFICE primary, PROJECT_DIRECTOR|PROJECT_INCHARGE@PROJECT — one active holder per project, covers project-scoped department operations across its sites)',
     permission: 'ACCESS_ROLE_ASSIGN',
   },
   'DELETE /employees/:id/assignments/:assignmentId': {
