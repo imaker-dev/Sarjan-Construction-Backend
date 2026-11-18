@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import type { Employee } from '@prisma/client';
 import { OrgEntityNotFoundError, OrgValidationError } from '../organization/errors.js';
-import type { EmployeeUnitOfWork } from './repository.js';
+import type { DepartmentMembershipWithDepartment, EmployeeUnitOfWork } from './repository.js';
 import type { ScopeTarget } from '../access-control/service.js';
 
 export const EMPLOYEE_READ = 'EMPLOYEE_READ';
@@ -74,7 +74,7 @@ export function enrichEmployee<
   },
 >(emp: T) {
   const p = emp.principal;
-  let accountStatus: 'NOT_INVITED' | 'INVITED' | 'ACTIVE' | string = 'NOT_INVITED';
+  let accountStatus = 'NOT_INVITED';
   let hasPassword = false;
   let lastLoginAt: Date | null = null;
 
@@ -166,7 +166,7 @@ export class EmployeeService {
       );
     }
     let joiningDate: Date | undefined;
-    if (input.joiningDate !== undefined && input.joiningDate !== null) {
+    if (input.joiningDate !== undefined) {
       joiningDate =
         typeof input.joiningDate === 'string' ? new Date(input.joiningDate) : input.joiningDate;
       if (Number.isNaN(joiningDate.getTime())) {
@@ -263,9 +263,7 @@ export class EmployeeService {
         data.joiningDate = null;
       } else {
         const d =
-          typeof patch.joiningDate === 'string'
-            ? new Date(patch.joiningDate)
-            : patch.joiningDate;
+          typeof patch.joiningDate === 'string' ? new Date(patch.joiningDate) : patch.joiningDate;
         if (Number.isNaN(d.getTime())) {
           throw new OrgValidationError('joiningDate', 'must be a valid date');
         }
@@ -420,7 +418,10 @@ export class EmployeeService {
   // ------------------------------------------------------------ Memberships
   // Placement only — membership never satisfies any permission check.
 
-  async listMemberships(companyId: string, employeeId: string) {
+  async listMemberships(
+    companyId: string,
+    employeeId: string,
+  ): Promise<DepartmentMembershipWithDepartment[]> {
     return this.uow.run(({ employees, memberships }) =>
       employees.findById(companyId, employeeId).then(async (employee) => {
         if (!employee) throw new OrgEntityNotFoundError('EMPLOYEE');
@@ -434,7 +435,7 @@ export class EmployeeService {
     companyId: string,
     employeeId: string,
     input: { departmentId: string; isPrimary?: boolean; startedAt?: Date },
-  ): Promise<import('@prisma/client').DepartmentMembership> {
+  ): Promise<DepartmentMembershipWithDepartment> {
     await this.authorizer.assertPermission(
       actor.actorId,
       EMPLOYEE_MANAGE,
@@ -492,7 +493,7 @@ export class EmployeeService {
     membershipId: string,
     input: { isPrimary: boolean },
     expectedVersion: number,
-  ) {
+  ): Promise<DepartmentMembershipWithDepartment | null> {
     await this.authorizer.assertPermission(
       actor.actorId,
       EMPLOYEE_MANAGE,
@@ -540,7 +541,7 @@ export class EmployeeService {
     employeeId: string,
     membershipId: string,
     expectedVersion: number,
-  ) {
+  ): Promise<DepartmentMembershipWithDepartment | null> {
     await this.authorizer.assertPermission(
       actor.actorId,
       EMPLOYEE_MANAGE,

@@ -9,6 +9,7 @@ import { OrganizationService } from '../../src/modules/organization/service.js';
 import { PrismaOrgUnitOfWork } from '../../src/modules/organization/repository.js';
 import { reconcileHoAdminRoles } from '../../src/modules/setup/reconcile.js';
 import { SYSTEM_PRINCIPAL_ID } from '../../src/modules/setup/bootstrap.js';
+import { HO_ADMIN_PERMISSIONS } from '../../src/modules/setup/role-templates.js';
 import { resolveTestDbUrl } from './test-db-url.js';
 import type { ActorContext } from '../../src/modules/organization/types.js';
 
@@ -96,16 +97,7 @@ describe('Phase 1 — employee login + HO Admin (real PostgreSQL)', () => {
       include: { permission: true },
     });
     expect(permKeys.map((p) => p.permission.key).sort()).toEqual(
-      [
-        'COMPLIANCE_READ',
-        'DEPARTMENT_CONFIGURE',
-        'DEPARTMENT_READ',
-        'EMPLOYEE_READ',
-        'ORG_HEAD_OFFICE_READ',
-        'ORG_HEAD_OFFICE_UPDATE',
-        'ORG_PROJECT_READ',
-        'ORG_SITE_READ',
-      ].sort(),
+      [...HO_ADMIN_PERMISSIONS].sort(),
     );
   });
 
@@ -291,7 +283,7 @@ describe('Phase 1 — employee login + HO Admin (real PostgreSQL)', () => {
       where: { companyId: company.id, key: 'HO_ADMIN' },
     });
     const grants = await prisma.rolePermission.findMany({ where: { roleId: role.id } });
-    expect(grants).toHaveLength(8);
+    expect(grants).toHaveLength(HO_ADMIN_PERMISSIONS.length);
     const second = await prisma.$transaction(async (tx) => {
       await tx.principal.upsert({
         where: { id: SYSTEM_PRINCIPAL_ID },

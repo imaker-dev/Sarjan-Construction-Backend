@@ -26,10 +26,14 @@ export interface EmpStore extends DeptStore {
     principalStatus?: string;
     permissionKeys?: string[];
   }[];
+  memberships: (import('@prisma/client').DepartmentMembership & {
+    department?: import('@prisma/client').Department | null;
+    employee?: import('@prisma/client').Employee | null;
+  })[];
 }
 
 export function emptyEmpStore(): EmpStore {
-  return { ...emptyDeptStore(), roleAssignments: [] };
+  return { ...emptyDeptStore(), roleAssignments: [], memberships: [] };
 }
 
 let nextId = 0;
@@ -116,13 +120,89 @@ export function makeEmployeeTestRepos(store: EmpStore): EmployeeRepos {
       },
     },
     memberships: {
-      list: async () => [],
-      findById: async () => null,
-      activeForEmployee: async () => [],
-      create: async (d) => d as never,
-      setPrimary: async () => ({ count: 1 }),
-      demoteOthers: async () => ({ count: 0 }),
-      end: async () => ({ count: 1 }),
+      list: async (companyId, employeeId) =>
+        store.memberships
+          .filter((m) => m.companyId === companyId && m.employeeId === employeeId)
+          .map((m) => ({
+            ...m,
+            department: store.departments.find((d) => d.id === m.departmentId) ?? null,
+            employee: store.employees.find((e) => e.id === m.employeeId) ?? null,
+          })),
+      findById: async (companyId, employeeId, id) => {
+        const m = store.memberships.find(
+          (x) => x.id === id && x.companyId === companyId && x.employeeId === employeeId,
+        );
+        if (!m) return null;
+        return {
+          ...m,
+          department: store.departments.find((d) => d.id === m.departmentId) ?? null,
+          employee: store.employees.find((e) => e.id === m.employeeId) ?? null,
+        };
+      },
+      activeForEmployee: async (companyId, employeeId) =>
+        store.memberships.filter(
+          (m) => m.companyId === companyId && m.employeeId === employeeId && m.endedAt === null,
+        ),
+      create: async (d) => {
+        const m = {
+          id: genId(),
+          version: 0,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          endedAt: null,
+          ...d,
+          startedAt: d.startedAt ?? new Date(),
+          department: store.departments.find((dept) => dept.id === d.departmentId) ?? null,
+          employee: store.employees.find((emp) => emp.id === d.employeeId) ?? null,
+        };
+        store.memberships.push(m);
+        return m;
+      },
+      setPrimary: async (companyId, employeeId, id, version) => {
+        const row = store.memberships.find(
+          (m) =>
+            m.id === id &&
+            m.companyId === companyId &&
+            m.employeeId === employeeId &&
+            m.endedAt === null &&
+            m.version === version,
+        );
+        if (!row) return { count: 0 };
+        row.isPrimary = true;
+        row.version++;
+        return { count: 1 };
+      },
+      demoteOthers: async (companyId, employeeId, exceptId) => {
+        let count = 0;
+        for (const m of store.memberships) {
+          if (
+            m.companyId === companyId &&
+            m.employeeId === employeeId &&
+            m.endedAt === null &&
+            m.isPrimary &&
+            m.id !== exceptId
+          ) {
+            m.isPrimary = false;
+            m.version++;
+            count++;
+          }
+        }
+        return { count };
+      },
+      end: async (companyId, employeeId, id, version) => {
+        const row = store.memberships.find(
+          (m) =>
+            m.id === id &&
+            m.companyId === companyId &&
+            m.employeeId === employeeId &&
+            m.endedAt === null &&
+            m.version === version,
+        );
+        if (!row) return { count: 0 };
+        row.endedAt = new Date();
+        row.version++;
+        return { count: 1 };
+      },
     },
   };
 }

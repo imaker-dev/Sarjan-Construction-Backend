@@ -2,7 +2,11 @@ import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { passwordService } from '../identity/password.js';
 import { OWNER_ROLE_KEY, TENANT_OWNER_PERMISSIONS } from '../setup/bootstrap.js';
 import { HO_ADMIN_PERMISSIONS } from '../setup/role-templates.js';
-import { OrgEntityNotFoundError, OrgValidationError, VersionConflictError } from '../organization/errors.js';
+import {
+  OrgEntityNotFoundError,
+  OrgValidationError,
+  VersionConflictError,
+} from '../organization/errors.js';
 import { AppError, UnauthorizedError } from '../../common/errors/app-error.js';
 import { assertTransition, COMPANY_TRANSITIONS } from '../organization/lifecycle.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
@@ -223,7 +227,8 @@ export class PlatformService {
   /** Consume a claim code: set the admin's real password + activate. One tx.
    *  The audit actor is the claimed principal themselves (a real USER). */
   async consumeClaim(rawToken: string, password: string) {
-    if (!password || password.length === 0) throw new OrgValidationError('password', 'password is required');
+    if (!password || password.length === 0)
+      throw new OrgValidationError('password', 'password is required');
     const tokenHash = hashToken(rawToken);
     return this.uow.run(async (repos) => {
       const token = await repos.claimTokens.consume(tokenHash, new Date());
@@ -607,7 +612,11 @@ export class PlatformService {
     return this.uow.run(async (repos) => {
       const existing = await repos.operations.find(key);
       if (existing) {
-        throw new AppError(409, 'OPERATION_EXISTS', `Operation '${key}' already exists in catalogue`);
+        throw new AppError(
+          409,
+          'OPERATION_EXISTS',
+          `Operation '${key}' already exists in catalogue`,
+        );
       }
       const created = await repos.operations.create({
         key,

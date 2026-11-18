@@ -73,9 +73,7 @@ const OnboardBody = Type.Object({
   loginId: OptStringOrNull,
   displayName: OptStringOrNull,
   company: Type.Optional(
-    Type.Object(
-      Object.fromEntries(Object.keys(ProfileFields).map((k) => [k, OptStringOrNull])),
-    ),
+    Type.Object(Object.fromEntries(Object.keys(ProfileFields).map((k) => [k, OptStringOrNull]))),
   ),
   // Shared field set with POST /org/head-offices.
   // isPrimary is intentionally NOT client-controlled: the service forces the
@@ -153,11 +151,7 @@ const UpdateCompanyBody = Type.Object({
 });
 
 const CompanyStatusBody = Type.Object({
-  to: Type.Union([
-    Type.Literal('ACTIVE'),
-    Type.Literal('SUSPENDED'),
-    Type.Literal('ARCHIVED'),
-  ]),
+  to: Type.Union([Type.Literal('ACTIVE'), Type.Literal('SUSPENDED'), Type.Literal('ARCHIVED')]),
   expectedVersion: Type.Optional(Type.Integer()),
 });
 
@@ -266,10 +260,8 @@ export function platformRoutes(
       },
     );
 
-    app.get(
-      '/platform/operations',
-      { preHandler: guard('PLATFORM_COMPANY_READ') },
-      async () => service.listCatalogueOperations(),
+    app.get('/platform/operations', { preHandler: guard('PLATFORM_COMPANY_READ') }, async () =>
+      service.listCatalogueOperations(),
     );
 
     app.post(

@@ -42,20 +42,22 @@ export interface EmployeeRowRepository {
   endActiveMemberships(companyId: string, employeeId: string): Promise<{ id: string }[]>;
 }
 
+export type DepartmentMembershipWithDepartment = import('@prisma/client').DepartmentMembership & {
+  department?: import('@prisma/client').Department | null;
+  employee?: import('@prisma/client').Employee | null;
+};
+
 export interface EmployeeRepos extends DepartmentRepos {
   employees: EmployeeRowRepository & {
     findById(companyId: string, id: string): Promise<Employee | null>;
   };
   memberships: {
-    list(
-      companyId: string,
-      employeeId: string,
-    ): Promise<import('@prisma/client').DepartmentMembership[]>;
+    list(companyId: string, employeeId: string): Promise<DepartmentMembershipWithDepartment[]>;
     findById(
       companyId: string,
       employeeId: string,
       id: string,
-    ): Promise<import('@prisma/client').DepartmentMembership | null>;
+    ): Promise<DepartmentMembershipWithDepartment | null>;
     activeForEmployee(
       companyId: string,
       employeeId: string,
@@ -66,7 +68,7 @@ export interface EmployeeRepos extends DepartmentRepos {
       departmentId: string;
       isPrimary: boolean;
       startedAt?: Date;
-    }): Promise<import('@prisma/client').DepartmentMembership>;
+    }): Promise<DepartmentMembershipWithDepartment>;
     setPrimary(
       companyId: string,
       employeeId: string,
@@ -222,10 +224,20 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
     list: (companyId: string, employeeId: string) =>
       tx.departmentMembership.findMany({
         where: { companyId, employeeId },
+        include: {
+          department: true,
+          employee: true,
+        },
         orderBy: [{ endedAt: 'desc' as const }, { startedAt: 'desc' as const }],
       }),
     findById: (companyId: string, employeeId: string, id: string) =>
-      tx.departmentMembership.findFirst({ where: { id, companyId, employeeId } }),
+      tx.departmentMembership.findFirst({
+        where: { id, companyId, employeeId },
+        include: {
+          department: true,
+          employee: true,
+        },
+      }),
     activeForEmployee: (companyId: string, employeeId: string) =>
       tx.departmentMembership.findMany({ where: { companyId, employeeId, endedAt: null } }),
     create: async (data: {
@@ -236,7 +248,10 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
       startedAt?: Date;
     }) => {
       try {
-        return await tx.departmentMembership.create({ data });
+        return await tx.departmentMembership.create({
+          data,
+          include: { department: true, employee: true },
+        });
       } catch (error) {
         // Partial-unique violations (active dup / concurrent primary) -> 409.
         mapOrgWriteError(error, 'DEPARTMENT_MEMBERSHIP');

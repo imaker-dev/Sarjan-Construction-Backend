@@ -1,0 +1,95 @@
+export class AttendanceError extends Error {
+  public readonly statusCode: number;
+  public readonly code: string;
+
+  constructor(message: string, statusCode = 400, code = 'ATTENDANCE_ERROR') {
+    super(message);
+    this.name = 'AttendanceError';
+    this.statusCode = statusCode;
+    this.code = code;
+  }
+}
+
+export class GeofenceBreachError extends AttendanceError {
+  public readonly distanceMeters: number;
+  public readonly allowedRadiusMeters: number;
+
+  constructor(distanceMeters: number, allowedRadiusMeters: number) {
+    super(
+      `Location is outside site geofence: ${distanceMeters}m away (allowed: ${allowedRadiusMeters}m)`,
+      422,
+      'GEOFENCE_BREACH',
+    );
+    this.name = 'GeofenceBreachError';
+    this.distanceMeters = distanceMeters;
+    this.allowedRadiusMeters = allowedRadiusMeters;
+  }
+}
+
+export class ActiveSessionExistsError extends AttendanceError {
+  public readonly sessionId: string;
+
+  constructor(sessionId: string) {
+    super(
+      `Employee already has an active attendance session in progress (${sessionId})`,
+      409,
+      'ACTIVE_SESSION_EXISTS',
+    );
+    this.name = 'ActiveSessionExistsError';
+    this.sessionId = sessionId;
+  }
+}
+
+export class NoActiveSessionError extends AttendanceError {
+  constructor(employeeId: string) {
+    super(
+      `No active attendance session found for employee ${employeeId}`,
+      404,
+      'NO_ACTIVE_SESSION',
+    );
+    this.name = 'NoActiveSessionError';
+  }
+}
+
+export class BreakAlreadyActiveError extends AttendanceError {
+  public readonly breakId: string;
+
+  constructor(breakId: string) {
+    super(`A break is already active for this session (${breakId})`, 409, 'BREAK_ALREADY_ACTIVE');
+    this.name = 'BreakAlreadyActiveError';
+    this.breakId = breakId;
+  }
+}
+
+export class NoActiveBreakError extends AttendanceError {
+  constructor(sessionId: string) {
+    super(`No active break found for session ${sessionId}`, 404, 'NO_ACTIVE_BREAK');
+    this.name = 'NoActiveBreakError';
+  }
+}
+
+export class PunchNotAllowedError extends AttendanceError {
+  constructor(reason: string) {
+    super(`Punch not permitted: ${reason}`, 403, 'PUNCH_NOT_ALLOWED');
+    this.name = 'PunchNotAllowedError';
+  }
+}
+
+export class AttendanceEntityNotFoundError extends AttendanceError {
+  constructor(entity: string, id: string) {
+    super(`${entity} ${id} not found`, 404, 'NOT_FOUND');
+    this.name = 'AttendanceEntityNotFoundError';
+  }
+}
+
+export class TvtSafetyBriefingRequiredError extends AttendanceError {
+  constructor(employeeId: string, businessDate: string) {
+    super(
+      `Employee ${employeeId} has not attended the required Safety Toolbox Talk (TVT) for business date ${businessDate}`,
+      422,
+      'TVT_SAFETY_BRIEFING_REQUIRED',
+    );
+    this.name = 'TvtSafetyBriefingRequiredError';
+  }
+}
+

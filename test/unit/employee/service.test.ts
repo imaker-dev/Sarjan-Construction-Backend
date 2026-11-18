@@ -170,3 +170,31 @@ describe('audit rollback', () => {
     expect(store.auditLog).toHaveLength(0);
   });
 });
+
+describe('memberships', () => {
+  it('returns populated department and employee objects on addMembership and listMemberships', async () => {
+    adminHolder();
+    const emp = fakeEmployee({ companyId: 'c1', id: 'emp-101', displayName: 'Jane Builder' });
+    store.employees.push(emp);
+    const dept = fakeDepartment({ companyId: 'c1', id: 'dept-202', name: 'Finance & Accounts', code: 'FIN', status: 'ACTIVE' });
+    store.departments.push(dept);
+
+    const created = await svc.addMembership(actor, 'c1', emp.id, {
+      departmentId: dept.id,
+      isPrimary: true,
+    });
+    expect(created.employeeId).toBe(emp.id);
+    expect(created.departmentId).toBe(dept.id);
+    expect(created.department).toBeDefined();
+    expect(created.department?.name).toBe('Finance & Accounts');
+    expect(created.employee).toBeDefined();
+    expect(created.employee?.displayName).toBe('Jane Builder');
+
+    const list = await svc.listMemberships('c1', emp.id);
+    expect(list).toHaveLength(1);
+    expect(list[0]?.department?.id).toBe(dept.id);
+    expect(list[0]?.department?.name).toBe('Finance & Accounts');
+    expect(list[0]?.employee?.id).toBe(emp.id);
+    expect(list[0]?.employee?.displayName).toBe('Jane Builder');
+  });
+});

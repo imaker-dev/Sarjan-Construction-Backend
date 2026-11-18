@@ -181,8 +181,7 @@ export class EmployeeAccessService {
         const site = await tx.site.findFirst({
           where: { id: input.scopeId ?? '', companyId },
         });
-        if (!site)
-          throw new OrgValidationError('scopeId', 'must be a valid site in this company');
+        if (!site) throw new OrgValidationError('scopeId', 'must be a valid site in this company');
         scopeData.siteId = input.scopeId;
         scopeFilter.siteId = input.scopeId;
       } else if (input.scopeType === 'COMPANY') {

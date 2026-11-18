@@ -51,6 +51,7 @@ export const TENANT_OWNER_PERMISSIONS: readonly string[] = [
   'FORM_READ',
   'FORM_CONFIGURE',
   'FORM_PUBLISH',
+  'AUDIT_LOG_VIEW',
 ];
 export const PLATFORM_ADMIN_PERMISSIONS: readonly string[] = [
   'PLATFORM_COMPANY_CREATE',

@@ -11,10 +11,7 @@ import authorizationPlugin from './plugins/authorization.js';
 import healthRoutes from './modules/health/routes.js';
 import authRoutes from './modules/auth/routes.js';
 import cors from '@fastify/cors';
-import {
-  RedisUserProfileCache,
-  InMemoryUserProfileCache,
-} from './modules/auth/cache.js';
+import { RedisUserProfileCache, InMemoryUserProfileCache } from './modules/auth/cache.js';
 import websocketPlugin from '@fastify/websocket';
 import { PrismaNotificationUnitOfWork } from './modules/notification/repository.js';
 import { NotificationService } from './modules/notification/service.js';
@@ -49,6 +46,14 @@ import { OperationAssignmentService } from './modules/operation/assignment.js';
 import { FormService } from './modules/form/service.js';
 import { formRoutes } from './modules/form/routes.js';
 import { PrismaFormUnitOfWork } from './modules/form/repository.js';
+import { AttendanceService } from './modules/attendance/service.js';
+import { attendanceRoutes } from './modules/attendance/routes.js';
+import { PrismaAttendanceUnitOfWork } from './modules/attendance/repository.js';
+import { LeaveService } from './modules/leave/service.js';
+import { leaveRoutes } from './modules/leave/routes.js';
+import { PrismaLeaveUnitOfWork } from './modules/leave/repository.js';
+import { AuditService } from './modules/audit/service.js';
+import { auditRoutes } from './modules/audit/routes.js';
 import { AuthService } from './modules/auth/service.js';
 import { makeAuthRepos, PrismaAuthUnitOfWork } from './modules/auth/repository.js';
 import { AccessControlService } from './modules/access-control/service.js';
@@ -71,7 +76,8 @@ const OPERATION_DOCS: Record<
   'POST /auth/refresh': { summary: 'Rotate refresh token' },
   'POST /auth/logout': { summary: 'Invalidate the current session', permission: 'authenticated' },
   'GET /auth/me': {
-    summary: 'Get current authenticated user profile, roles, permissions, and scope assignments (cached)',
+    summary:
+      'Get current authenticated user profile, roles, permissions, and scope assignments (cached)',
     permission: 'authenticated',
   },
   'POST /auth/claim': {
@@ -348,6 +354,150 @@ const OPERATION_DOCS: Record<
     summary: 'List published revisions of a form',
     permission: 'FORM_READ',
   },
+  'GET /attendance/policies': {
+    summary: 'List attendance policies',
+    permission: 'ATTENDANCE_READ',
+  },
+  'POST /attendance/policies': {
+    summary: 'Create attendance policy',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'GET /attendance/policies/effective': {
+    summary: 'Resolve effective attendance policy',
+    permission: 'ATTENDANCE_READ',
+  },
+  'GET /attendance/policies/:id': {
+    summary: 'Get attendance policy by ID',
+    permission: 'ATTENDANCE_READ',
+  },
+  'PATCH /attendance/policies/:id': {
+    summary: 'Update attendance policy',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'POST /attendance/punch-in': {
+    summary: 'Punch In session with geofence validation',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'POST /attendance/punch-out': {
+    summary: 'Punch Out session and calculate work units',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'POST /attendance/breaks/start': {
+    summary: 'Start dynamic break',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'POST /attendance/breaks/end': {
+    summary: 'End active dynamic break',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'GET /attendance/sessions/active': {
+    summary: 'Get active in-progress attendance session',
+    permission: 'ATTENDANCE_READ',
+  },
+  'GET /attendance/sessions': {
+    summary: 'List attendance sessions',
+    permission: 'ATTENDANCE_READ',
+  },
+  'GET /attendance/sessions/:id': {
+    summary: 'Get attendance session details',
+    permission: 'ATTENDANCE_READ',
+  },
+  'POST /attendance/sessions/:id/regularize': {
+    summary: 'Regularize attendance session',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'GET /attendance/daily-summary': {
+    summary: 'Daily muster roll / hazri summary',
+    permission: 'ATTENDANCE_READ',
+  },
+  'POST /attendance/kiosk/batch-punch-in': {
+    summary: 'Batch punch in workers via kiosk',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'POST /attendance/kiosk/batch-punch-out': {
+    summary: 'Batch punch out workers via kiosk',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'POST /attendance/kiosk/sync': {
+    summary: 'Sync offline kiosk attendance sessions',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'POST /attendance/tvt': {
+    summary: 'Create Safety Toolbox Talk session',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'GET /attendance/tvt': {
+    summary: 'List Safety Toolbox Talk sessions',
+    permission: 'ATTENDANCE_READ',
+  },
+  'GET /attendance/tvt/:id': {
+    summary: 'Get Safety Toolbox Talk session details',
+    permission: 'ATTENDANCE_READ',
+  },
+  'POST /attendance/tvt/:id/attendees': {
+    summary: 'Add attendees to Safety Toolbox Talk session',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'GET /attendance/muster-roll': {
+    summary: 'Range muster roll period settlement export',
+    permission: 'ATTENDANCE_READ',
+  },
+  'POST /leave/policies': {
+    summary: 'Create leave policy',
+    permission: 'LEAVE_MANAGE',
+  },
+  'GET /leave/policies': {
+    summary: 'List leave policies',
+    permission: 'LEAVE_READ',
+  },
+  'PATCH /leave/policies/:id': {
+    summary: 'Update leave policy',
+    permission: 'LEAVE_MANAGE',
+  },
+  'GET /leave/policies/effective': {
+    summary: 'Resolve effective leave policy',
+    permission: 'LEAVE_READ',
+  },
+  'POST /leave/allocations': {
+    summary: 'Allocate leave balance',
+    permission: 'LEAVE_MANAGE',
+  },
+  'GET /leave/balances': {
+    summary: 'List leave balances',
+    permission: 'LEAVE_READ',
+  },
+  'GET /leave/balances/:employeeId': {
+    summary: 'Get employee leave balance',
+    permission: 'LEAVE_READ',
+  },
+  'POST /leave/requests': {
+    summary: 'Submit leave request',
+    permission: 'LEAVE_APPLY',
+  },
+  'GET /leave/requests': {
+    summary: 'List leave requests',
+    permission: 'LEAVE_READ',
+  },
+  'GET /leave/requests/:id': {
+    summary: 'Get leave request details',
+    permission: 'LEAVE_READ',
+  },
+  'POST /leave/requests/:id/review': {
+    summary: 'Review leave request (approve/reject)',
+    permission: 'LEAVE_APPROVE',
+  },
+  'POST /leave/requests/:id/cancel': {
+    summary: 'Cancel leave request',
+    permission: 'LEAVE_APPLY',
+  },
+  'GET /audit-logs': {
+    summary: 'List company audit logs with filtering and actor resolution',
+    permission: 'AUDIT_LOG_VIEW',
+  },
+  'GET /audit-logs/:id': {
+    summary: 'Get details of a company audit log entry',
+    permission: 'AUDIT_LOG_VIEW',
+  },
 };
 
 export interface BuildAppOptions {
@@ -362,6 +512,8 @@ export interface BuildAppOptions {
     complianceService?: ComplianceService;
     platformService?: PlatformService;
     formService?: FormService;
+    attendanceService?: AttendanceService;
+    leaveService?: LeaveService;
     // Test hook: inject the sentinel platform-company id (null = none).
     platformCompanyId?: string | null;
   };
@@ -519,6 +671,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           ['/compliance-records', 'compliance'],
           ['/notifications', 'notification'],
           ['/forms', 'form'],
+          ['/audit-logs', 'audit'],
         ];
         if (PUBLIC.has(methodPath)) {
           s.security = []; // explicitly unauthenticated
@@ -603,15 +756,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
             ...(isPublic
               ? { 429: err('Rate limited') }
               : {
-                401: err('Missing/invalid Bearer token'),
-                403: err('Permission denied or platform/tenant boundary violation'),
-              }),
+                  401: err('Missing/invalid Bearer token'),
+                  403: err('Permission denied or platform/tenant boundary violation'),
+                }),
             ...(hasPathParam ? { 404: err('Entity not found in company scope') } : {}),
             ...(isWrite
               ? {
-                409: err('Conflict (duplicate or stale version)'),
-                422: err('Domain validation error'),
-              }
+                  409: err('Conflict (duplicate or stale version)'),
+                  422: err('Domain validation error'),
+                }
               : {}),
             500: err('Unexpected server error'),
           };
@@ -652,8 +805,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       refreshTokenTtlS: app.config.REFRESH_TOKEN_TTL_S,
     },
     () => new Date(),
-    (companyId, employeeId) =>
-      opAssignment.getEffectiveOperations(companyId, employeeId),
+    (companyId, employeeId) => opAssignment.getEffectiveOperations(companyId, employeeId),
     userProfileCache,
   );
   accessControl ??= new AccessControlService({
@@ -736,18 +888,19 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     employeeRoutes(
       services.employeeService ??
-      new EmployeeService(new PrismaEmployeeUnitOfWork(app.prisma), {
-        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-          accessControl.assertPermission(pid, key, target),
-      }, userProfileCache),
+        new EmployeeService(
+          new PrismaEmployeeUnitOfWork(app.prisma),
+          {
+            assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.assertPermission(pid, key, target),
+          },
+          userProfileCache,
+        ),
       services.employeeAccessService ?? new EmployeeAccessService(app.prisma, userProfileCache),
     ),
     { prefix: '/api/v1' },
   );
-  await app.register(
-    operationAssignmentRoutes(opAssignment),
-    { prefix: '/api/v1' },
-  );
+  await app.register(operationAssignmentRoutes(opAssignment), { prefix: '/api/v1' });
   await app.register(
     complianceRoutes(services.complianceService ?? new ComplianceService(app.prisma)),
     { prefix: '/api/v1' },
@@ -755,7 +908,36 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     formRoutes(
       services.formService ??
-      new FormService(new PrismaFormUnitOfWork(app.prisma), {
+        new FormService(new PrismaFormUnitOfWork(app.prisma), {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+        }),
+    ),
+    { prefix: '/api/v1' },
+  );
+  await app.register(
+    attendanceRoutes(
+      services.attendanceService ??
+        new AttendanceService(new PrismaAttendanceUnitOfWork(app.prisma), {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+        }),
+    ),
+    { prefix: '/api/v1' },
+  );
+  await app.register(
+    leaveRoutes(
+      services.leaveService ??
+        new LeaveService(new PrismaLeaveUnitOfWork(app.prisma), {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+        }),
+    ),
+    { prefix: '/api/v1' },
+  );
+  await app.register(
+    auditRoutes(
+      new AuditService(app.prisma, {
         assertPermission: (pid: string, key: string, target: ScopeTarget) =>
           accessControl.assertPermission(pid, key, target),
       }),
@@ -765,7 +947,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     platformRoutes(
       services.platformService ??
-      new PlatformService(new PrismaPlatformUnitOfWork(app.prisma), app.config.APP_BASE_URL),
+        new PlatformService(new PrismaPlatformUnitOfWork(app.prisma), app.config.APP_BASE_URL),
       platformResolver,
     ),
     { prefix: '/api/v1' },

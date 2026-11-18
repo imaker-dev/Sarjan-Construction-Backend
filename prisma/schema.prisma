@@ -105,6 +105,14 @@ model Company {
   complianceRecords     ComplianceRecord[]
   departmentOperations  DepartmentOperation[]
   employeeOperations    EmployeeOperation[]
+  attendancePolicies    AttendancePolicy[]
+  attendanceSessions    AttendanceSession[]
+  attendanceBreaks      AttendanceBreak[]
+  leavePolicies         LeavePolicy[]
+  leaveBalances         LeaveBalance[]
+  leaveRequests         LeaveRequest[]
+  safetyTvtSessions     SafetyTvtSession[]
+  safetyTvtAttendees    SafetyTvtAttendee[]
 }
 
 model HeadOffice {
@@ -170,10 +178,12 @@ model Project {
 
   company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
   headOffice      HeadOffice       @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
-  sites           Site[]
-  roleAssignments RoleAssignment[]
-  departments     Department[]
-  documents       Document[]
+  sites              Site[]
+  roleAssignments    RoleAssignment[]
+  departments        Department[]
+  documents          Document[]
+  attendancePolicies AttendancePolicy[]
+  leavePolicies      LeavePolicy[]
 
   @@unique([companyId, code])
   // Referenced by Site's composite FK (projectId, companyId).
@@ -212,9 +222,13 @@ model Site {
 
   company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
   project         Project          @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  roleAssignments RoleAssignment[]
-  departments     Department[]
-  documents       Document[]
+  roleAssignments    RoleAssignment[]
+  departments        Department[]
+  documents          Document[]
+  attendancePolicies AttendancePolicy[]
+  leavePolicies      LeavePolicy[]
+  attendanceSessions AttendanceSession[]
+  safetyTvtSessions  SafetyTvtSession[]
 
   // Site codes are unique within a project (approved decision).
   @@unique([projectId, code])
@@ -375,6 +389,12 @@ model Employee {
   headedDepartments  Department[]
   memberships        DepartmentMembership[]
   employeeOperations EmployeeOperation[]
+  attendancePolicies AttendancePolicy[]
+  attendanceSessions AttendanceSession[]
+  leavePolicies      LeavePolicy[]
+  leaveBalances      LeaveBalance[]
+  leaveRequests      LeaveRequest[]
+  safetyTvtAttendees SafetyTvtAttendee[]
 
   // Employee code is unique within a company.
   @@unique([companyId, employeeCode])
@@ -1443,6 +1463,7 @@ model DepartmentOperation {
   companyId    String   @db.Uuid
   departmentId String   @db.Uuid
   operationKey String
+  status       String   @default("ACTIVE")
   createdAt    DateTime @default(now()) @db.Timestamptz
 
   company    Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
@@ -1460,6 +1481,7 @@ model EmployeeOperation {
   companyId    String   @db.Uuid
   employeeId   String   @db.Uuid
   operationKey String
+  status       String   @default("ACTIVE")
   createdAt    DateTime @default(now()) @db.Timestamptz
 
   company   Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
@@ -1469,3 +1491,352 @@ model EmployeeOperation {
   @@unique([companyId, employeeId, operationKey])
   @@index([companyId, employeeId])
 }
+
+// ---------------------------------------------------------------------------
+// Attendance Management (Milestone Phase 1)
+// ---------------------------------------------------------------------------
+
+enum AttendanceSessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  AUTO_CLOSED
+  REJECTED
+}
+
+enum AttendanceSource {
+  MOBILE_SELF
+  SUPERVISOR_KIOSK
+  BIOMETRIC_DEVICE
+  MANUAL_CORRECTION
+}
+
+enum BreakMode {
+  FIXED
+  DYNAMIC
+}
+
+enum OvertimeMode {
+  HOURLY
+  P_MULTIPLIER
+}
+
+enum AttendancePolicyScope {
+  COMPANY
+  PROJECT
+  SITE
+  EMPLOYEE
+}
+
+model AttendancePolicy {
+  id                   String                @id @default(uuid()) @db.Uuid
+  companyId            String                @db.Uuid
+  scope                AttendancePolicyScope @default(COMPANY)
+  projectId            String?               @db.Uuid
+  siteId               String?               @db.Uuid
+  employeeId           String?               @db.Uuid
+  name                 String
+  description          String?
+
+  // 8:00 AM - 8:00 AM Construction cycle anchor
+  dayStartHour         Int                   @default(8)
+  dayStartMinute       Int                   @default(0)
+
+  // Shift & Work thresholds in minutes
+  shiftDurationMins    Int                   @default(480) // 8 hours
+  halfDayThresholdMins Int                   @default(240) // 4 hours
+  fullDayThresholdMins Int                   @default(480) // 8 hours
+
+  // Break Policy
+  breakMode            BreakMode             @default(FIXED)
+  fixedBreakMins       Int                   @default(60)
+  minWorkForBreakMins  Int                   @default(240)
+  maxDynamicBreakMins  Int                   @default(90)
+
+  // Overtime Policy
+  overtimeMode         OvertimeMode          @default(HOURLY)
+  minOvertimeMins      Int                   @default(30)
+  otSlabMins           Int                   @default(30)
+  // Dynamic P Multiplier Slabs (JSON array):
+  // e.g. [{"minExtraMins": 120, "pUnit": 0.5}, {"minExtraMins": 240, "pUnit": 1.0}, {"minExtraMins": 480, "pUnit": 2.0}]
+  pMultiplierSlabs     Json?
+
+  // Geofence & Punch Controls
+  geofenceStrict       Boolean               @default(true)
+  allowMobilePunch     Boolean               @default(true)
+  allowKioskPunch      Boolean               @default(true)
+  allowBiometric       Boolean               @default(true)
+
+  // Safety Toolbox Talk (TVT) Gate
+  requireTvtGate       Boolean               @default(false)
+  tvtGateAction        String                @default("FLAG") // "BLOCK" | "FLAG"
+
+  status               OrgNodeStatus         @default(ACTIVE)
+  version              Int                   @default(0)
+  createdAt            DateTime              @default(now()) @db.Timestamptz
+  updatedAt            DateTime              @updatedAt @db.Timestamptz
+
+  company              Company               @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project              Project?              @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site                 Site?                 @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  employee             Employee?             @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  sessions             AttendanceSession[]
+
+  @@unique([id, companyId])
+  @@index([companyId, scope])
+  @@index([companyId, siteId])
+  @@index([companyId, projectId])
+  @@index([companyId, employeeId])
+}
+
+model AttendanceSession {
+  id                     String                  @id @default(uuid()) @db.Uuid
+  companyId              String                  @db.Uuid
+  employeeId             String                  @db.Uuid
+  siteId                 String                  @db.Uuid
+  policyId               String                  @db.Uuid
+
+  // Business date for the 8 AM - 8 AM construction cycle, e.g. "2026-11-17"
+  businessDate           String                  @db.VarChar(10)
+  status                 AttendanceSessionStatus @default(IN_PROGRESS)
+  source                 AttendanceSource        @default(MOBILE_SELF)
+
+  // Punch In details
+  punchInAt              DateTime                @db.Timestamptz
+  punchInLat             Decimal?                @db.Decimal(10, 7)
+  punchInLng             Decimal?                @db.Decimal(10, 7)
+  punchInDistanceM       Int?
+  punchInWithinGeofence   Boolean                 @default(true)
+  punchInRemarks         String?
+  punchInSupervisorId    String?                 @db.Uuid
+
+  // Punch Out details
+  punchOutAt             DateTime?               @db.Timestamptz
+  punchOutLat            Decimal?                @db.Decimal(10, 7)
+  punchOutLng            Decimal?                @db.Decimal(10, 7)
+  punchOutDistanceM      Int?
+  punchOutWithinGeofence  Boolean?
+  punchOutRemarks        String?
+  punchOutSupervisorId   String?                 @db.Uuid
+
+  // Computed durations (minutes)
+  grossDurationMins      Int                     @default(0)
+  breakDurationMins      Int                     @default(0)
+  netDurationMins        Int                     @default(0)
+
+  // Present & Overtime Units
+  presentUnits           Decimal                 @default(0) @db.Decimal(3, 1)
+  overtimePUnits         Decimal                 @default(0) @db.Decimal(3, 1)
+  totalPUnits            Decimal                 @default(0) @db.Decimal(3, 1)
+  overtimeHours          Decimal                 @default(0) @db.Decimal(4, 2)
+
+  // Anomaly / Flags
+  isFlagged              Boolean                 @default(false)
+  flagReason             String?
+  approvedBy             String?                 @db.Uuid
+  approvedAt             DateTime?               @db.Timestamptz
+
+  // Offline Kiosk & Sync Support
+  clientSessionId        String?                 @db.Uuid
+  syncBatchId            String?                 @db.Uuid
+  isSyncedOffline        Boolean                 @default(false)
+
+  version                Int                     @default(0)
+  createdAt              DateTime                @default(now()) @db.Timestamptz
+  updatedAt              DateTime                @updatedAt @db.Timestamptz
+
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee               Employee                @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  site                   Site                    @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  policy                 AttendancePolicy        @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
+  breaks                 AttendanceBreak[]
+
+  @@unique([id, companyId])
+  @@index([companyId, businessDate])
+  @@index([companyId, employeeId, businessDate])
+  @@index([companyId, siteId, businessDate])
+  @@index([companyId, status])
+  @@index([companyId, clientSessionId])
+}
+
+model AttendanceBreak {
+  id           String            @id @default(uuid()) @db.Uuid
+  companyId    String            @db.Uuid
+  sessionId    String            @db.Uuid
+  breakType    String            @default("LUNCH")
+  startedAt    DateTime          @db.Timestamptz
+  endedAt      DateTime?         @db.Timestamptz
+  durationMins Int               @default(0)
+  isApproved   Boolean           @default(true)
+  remarks      String?
+  createdAt    DateTime          @default(now()) @db.Timestamptz
+  updatedAt    DateTime          @updatedAt @db.Timestamptz
+
+  company      Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  session      AttendanceSession @relation(fields: [sessionId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([id, companyId])
+  @@index([companyId, sessionId])
+}
+
+// ---------------------------------------------------------------------------
+// Leave Management (Milestone Phase 2)
+// ---------------------------------------------------------------------------
+
+enum LeaveType {
+  CASUAL
+  SICK
+  PRIVILEGE
+  COMP_OFF
+  LOSS_OF_PAY
+  SPECIAL
+}
+
+enum LeaveAccrualFrequency {
+  ANNUAL
+  MONTHLY
+  QUARTERLY
+  NONE
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum HalfDayPortion {
+  FIRST_HALF
+  SECOND_HALF
+}
+
+model LeavePolicy {
+  id                    String                @id @default(uuid()) @db.Uuid
+  companyId             String                @db.Uuid
+  scopeType             AttendancePolicyScope @default(COMPANY)
+  projectId             String?               @db.Uuid
+  siteId                String?               @db.Uuid
+  employeeId            String?               @db.Uuid
+  leaveType             LeaveType
+  name                  String
+  description           String?
+  annualAllowance       Decimal               @default(12) @db.Decimal(4, 1)
+  accrualFrequency      LeaveAccrualFrequency @default(ANNUAL)
+  maxConsecutiveDays    Int?
+  minNoticeDays         Int                   @default(0)
+  allowHalfDay          Boolean               @default(true)
+  sandwichRule          Boolean               @default(false)
+  carryoverMaxDays      Decimal               @default(0) @db.Decimal(4, 1)
+  encashable            Boolean               @default(false)
+  requiresDocAboveDays  Int?
+  isActive              Boolean               @default(true)
+  version               Int                   @default(0)
+  createdAt             DateTime              @default(now()) @db.Timestamptz
+  updatedAt             DateTime              @updatedAt @db.Timestamptz
+
+  company               Company               @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project               Project?              @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site                  Site?                 @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  employee              Employee?             @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([id, companyId])
+  @@index([companyId, scopeType, leaveType])
+  @@index([companyId, projectId])
+  @@index([companyId, siteId])
+  @@index([companyId, employeeId])
+}
+
+model LeaveBalance {
+  id               String    @id @default(uuid()) @db.Uuid
+  companyId        String    @db.Uuid
+  employeeId       String    @db.Uuid
+  leaveType        LeaveType
+  year             Int
+  allocatedDays    Decimal   @default(0) @db.Decimal(4, 1)
+  usedDays         Decimal   @default(0) @db.Decimal(4, 1)
+  pendingDays      Decimal   @default(0) @db.Decimal(4, 1)
+  carriedOverDays  Decimal   @default(0) @db.Decimal(4, 1)
+  version          Int       @default(0)
+  createdAt        DateTime  @default(now()) @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @db.Timestamptz
+
+  company          Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee         Employee  @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([id, companyId])
+  @@unique([companyId, employeeId, leaveType, year])
+  @@index([companyId, employeeId])
+}
+
+model LeaveRequest {
+  id               String             @id @default(uuid()) @db.Uuid
+  companyId        String             @db.Uuid
+  employeeId       String             @db.Uuid
+  leaveType        LeaveType
+  startDate        DateTime           @db.Date
+  endDate          DateTime           @db.Date
+  isHalfDay        Boolean            @default(false)
+  halfDayPortion   HalfDayPortion?
+  totalDays        Decimal            @db.Decimal(4, 1)
+  reason           String
+  documentId       String?            @db.Uuid
+  status           LeaveRequestStatus @default(PENDING)
+  reviewedBy       String?            @db.Uuid
+  reviewedAt       DateTime?          @db.Timestamptz
+  reviewRemarks    String?
+  version          Int                @default(0)
+  createdAt        DateTime           @default(now()) @db.Timestamptz
+  updatedAt        DateTime           @updatedAt @db.Timestamptz
+
+  company          Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee         Employee           @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([id, companyId])
+  @@index([companyId, employeeId, status])
+  @@index([companyId, startDate, endDate])
+}
+
+// ---------------------------------------------------------------------------
+// Safety Toolbox Talk (TVT) Gate (Milestone Phase 3)
+// ---------------------------------------------------------------------------
+
+model SafetyTvtSession {
+  id           String              @id @default(uuid()) @db.Uuid
+  companyId    String              @db.Uuid
+  siteId       String              @db.Uuid
+  businessDate String              @db.VarChar(10) // YYYY-MM-DD
+  topic        String
+  conductedAt  DateTime            @default(now()) @db.Timestamptz
+  conductedBy  String              @db.Uuid // Employee ID / Supervisor
+  remarks      String?
+  version      Int                 @default(0)
+  createdAt    DateTime            @default(now()) @db.Timestamptz
+  updatedAt    DateTime            @updatedAt @db.Timestamptz
+
+  company      Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  site         Site                @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  attendees    SafetyTvtAttendee[]
+
+  @@unique([id, companyId])
+  @@index([companyId, siteId, businessDate])
+}
+
+model SafetyTvtAttendee {
+  id         String           @id @default(uuid()) @db.Uuid
+  companyId  String           @db.Uuid
+  sessionId  String           @db.Uuid
+  employeeId String           @db.Uuid
+  attendedAt DateTime         @default(now()) @db.Timestamptz
+  createdAt  DateTime         @default(now()) @db.Timestamptz
+
+  company    Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  session    SafetyTvtSession @relation(fields: [sessionId, companyId], references: [id, companyId], onDelete: Cascade)
+  employee   Employee         @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([id, companyId])
+  @@unique([sessionId, employeeId])
+  @@index([companyId, employeeId])
+}
+
+
+

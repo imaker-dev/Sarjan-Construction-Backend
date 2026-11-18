@@ -176,4 +176,87 @@ describe('employee routes', () => {
       await app.close();
     }
   });
+
+  it('GET /api/v1/employees/:id/memberships returns populated department and employee objects', async () => {
+    const { app, store } = await makeApp({ allow: true });
+    try {
+      const token = app.tokenService.signAccessToken('admin1', 's1');
+      const headers = { authorization: `Bearer ${token}`, 'x-company-id': CID };
+
+      // Create employee
+      const empRes = await app.inject({
+        method: 'POST',
+        url: '/api/v1/employees',
+        headers,
+        payload: { employeeCode: 'EMP-M1', displayName: 'Member Emp', engagementType: 'DIRECT_EMPLOYEE' },
+      });
+      expect(empRes.statusCode).toBe(200);
+      const emp = empRes.json<{ id: string }>();
+
+      // Seed an active department
+      const deptId = '00000000-0000-4000-8000-0000000000d1';
+      store.departments.push({
+        id: deptId,
+        companyId: CID,
+        scopeType: 'COMPANY',
+        projectId: null,
+        siteId: null,
+        code: 'ACCOUNTS',
+        category: 'FINANCE',
+        categoryLabel: null,
+        name: 'Finance & Accounts',
+        capabilityKey: 'FINANCE',
+        headEmployeeId: null,
+        baseHeadOfficeId: null,
+        status: 'ACTIVE',
+        version: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      // Add membership
+      const addRes = await app.inject({
+        method: 'POST',
+        url: `/api/v1/employees/${emp.id}/memberships`,
+        headers,
+        payload: { departmentId: deptId, isPrimary: true },
+      });
+      expect(addRes.statusCode).toBe(200);
+      const created = addRes.json<{
+        id: string;
+        department: { id: string; name: string };
+        employee: { id: string; displayName: string };
+      }>();
+      expect(created.department).toBeDefined();
+      expect(created.department.id).toBe(deptId);
+      expect(created.department.name).toBe('Finance & Accounts');
+      expect(created.employee).toBeDefined();
+      expect(created.employee.id).toBe(emp.id);
+      expect(created.employee.displayName).toBe('Member Emp');
+
+      // Get memberships
+      const getRes = await app.inject({
+        method: 'GET',
+        url: `/api/v1/employees/${emp.id}/memberships`,
+        headers,
+      });
+      expect(getRes.statusCode).toBe(200);
+      const memberships = getRes.json<
+        {
+          id: string;
+          department: { id: string; name: string };
+          employee: { id: string; displayName: string };
+        }[]
+      >();
+      expect(memberships).toHaveLength(1);
+      expect(memberships[0]?.department).toBeDefined();
+      expect(memberships[0]?.department.id).toBe(deptId);
+      expect(memberships[0]?.department.name).toBe('Finance & Accounts');
+      expect(memberships[0]?.employee).toBeDefined();
+      expect(memberships[0]?.employee.id).toBe(emp.id);
+      expect(memberships[0]?.employee.displayName).toBe('Member Emp');
+    } finally {
+      await app.close();
+    }
+  });
 });

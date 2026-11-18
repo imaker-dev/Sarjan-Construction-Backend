@@ -8,6 +8,14 @@ const OpKeyBody = Type.Object({
   operationKey: Type.String({ minLength: 1, maxLength: 80 }),
 });
 
+const StatusBody = Type.Object({
+  status: Type.Union([Type.Literal('ACTIVE'), Type.Literal('INACTIVE')]),
+});
+
+const PatchStatusBody = Type.Object({
+  status: Type.Optional(Type.Union([Type.Literal('ACTIVE'), Type.Literal('INACTIVE')])),
+});
+
 function companyIdOf(request: FastifyRequest): string {
   const companyId = request.headers['x-company-id'];
   if (typeof companyId !== 'string' || companyId.length === 0) {
@@ -62,6 +70,35 @@ export function operationAssignmentRoutes(service: OperationAssignmentService) {
         return service.disableDeptOperation(actorOf(req), companyIdOf(req), id, operationKey);
       },
     );
+    app.post(
+      '/departments/:id/operations/:operationKey/status',
+      { schema: { body: StatusBody }, ...perm('OPERATION_CONFIGURE') },
+      async (req) => {
+        const { id, operationKey } = req.params as { id: string; operationKey: string };
+        const { status } = req.body as { status: 'ACTIVE' | 'INACTIVE' };
+        return status === 'ACTIVE'
+          ? service.enableDeptOperation(actorOf(req), companyIdOf(req), id, operationKey)
+          : service.disableDeptOperation(actorOf(req), companyIdOf(req), id, operationKey);
+      },
+    );
+    app.patch(
+      '/departments/:id/operations/:operationKey',
+      { schema: { body: PatchStatusBody }, ...perm('OPERATION_CONFIGURE') },
+      async (req) => {
+        const { id, operationKey } = req.params as { id: string; operationKey: string };
+        const body = (req.body ?? {}) as { status?: 'ACTIVE' | 'INACTIVE' };
+        return service.toggleDeptOperationStatus(actorOf(req), companyIdOf(req), id, operationKey, body.status);
+      },
+    );
+    app.patch(
+      '/departments/:id/operations/:operationKey/status',
+      { schema: { body: PatchStatusBody }, ...perm('OPERATION_CONFIGURE') },
+      async (req) => {
+        const { id, operationKey } = req.params as { id: string; operationKey: string };
+        const body = (req.body ?? {}) as { status?: 'ACTIVE' | 'INACTIVE' };
+        return service.toggleDeptOperationStatus(actorOf(req), companyIdOf(req), id, operationKey, body.status);
+      },
+    );
 
     // Employee assignment — subset of the employee's active-dept enabled ops.
     app.get('/employees/:id/operations', { ...perm('EMPLOYEE_READ') }, async (req) =>
@@ -88,6 +125,35 @@ export function operationAssignmentRoutes(service: OperationAssignmentService) {
       async (req) => {
         const { id, operationKey } = req.params as { id: string; operationKey: string };
         return service.revokeEmployeeOperation(actorOf(req), companyIdOf(req), id, operationKey);
+      },
+    );
+    app.post(
+      '/employees/:id/operations/:operationKey/status',
+      { schema: { body: StatusBody }, ...perm('OPERATION_EMPLOYEE_ASSIGN') },
+      async (req) => {
+        const { id, operationKey } = req.params as { id: string; operationKey: string };
+        const { status } = req.body as { status: 'ACTIVE' | 'INACTIVE' };
+        return status === 'ACTIVE'
+          ? service.assignEmployeeOperation(actorOf(req), companyIdOf(req), id, operationKey)
+          : service.revokeEmployeeOperation(actorOf(req), companyIdOf(req), id, operationKey);
+      },
+    );
+    app.patch(
+      '/employees/:id/operations/:operationKey',
+      { schema: { body: PatchStatusBody }, ...perm('OPERATION_EMPLOYEE_ASSIGN') },
+      async (req) => {
+        const { id, operationKey } = req.params as { id: string; operationKey: string };
+        const body = (req.body ?? {}) as { status?: 'ACTIVE' | 'INACTIVE' };
+        return service.toggleEmployeeOperationStatus(actorOf(req), companyIdOf(req), id, operationKey, body.status);
+      },
+    );
+    app.patch(
+      '/employees/:id/operations/:operationKey/status',
+      { schema: { body: PatchStatusBody }, ...perm('OPERATION_EMPLOYEE_ASSIGN') },
+      async (req) => {
+        const { id, operationKey } = req.params as { id: string; operationKey: string };
+        const body = (req.body ?? {}) as { status?: 'ACTIVE' | 'INACTIVE' };
+        return service.toggleEmployeeOperationStatus(actorOf(req), companyIdOf(req), id, operationKey, body.status);
       },
     );
   };

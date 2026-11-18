@@ -48,7 +48,11 @@ function makeUow(store: Store): PlatformUnitOfWork {
       update: async (cid, data) => {
         const c = store.companies.find((x) => x.id === cid);
         if (!c) throw new Error('company not found');
-        if (typeof data.version === 'object' && data.version !== null && 'increment' in data.version) {
+        if (
+          typeof data.version === 'object' &&
+          data.version !== null &&
+          'increment' in data.version
+        ) {
           data.version = Number(c.version ?? 0) + 1;
         }
         Object.assign(c, data);
@@ -459,7 +463,9 @@ describe('platform management operations', () => {
     expect(reactivated.status).toBe('ACTIVE');
 
     // Invalid transition throws
-    await expect(svc.transitionCompanyStatus(actor, created.companyId, 'UNKNOWN')).rejects.toThrow();
+    await expect(
+      svc.transitionCompanyStatus(actor, created.companyId, 'UNKNOWN'),
+    ).rejects.toThrow();
 
     // 4. Catalogue Operations
     const op = (await svc.createCatalogueOperation(actor, {

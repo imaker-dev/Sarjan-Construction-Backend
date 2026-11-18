@@ -113,7 +113,9 @@ export function departmentRoutes(service: DepartmentService) {
         actorOf(req),
         companyIdOf(req),
         (req.params as { id: string }).id,
-        ((req.body as { to: string }).to === 'SUSPENDED' ? 'INACTIVE' : (req.body as { to: string }).to) as never,
+        ((req.body as { to: string }).to === 'SUSPENDED'
+          ? 'INACTIVE'
+          : (req.body as { to: string }).to) as never,
         (req.body as { expectedVersion?: number }).expectedVersion,
       ),
     );

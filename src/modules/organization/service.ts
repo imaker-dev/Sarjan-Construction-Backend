@@ -501,18 +501,18 @@ export class OrganizationService {
         code,
         name,
         ...(input.address ? { address: input.address.trim() } : {}),
-        ...(input.addressLine1 !== undefined ? { addressLine1: input.addressLine1?.trim() } : {}),
-        ...(input.addressLine2 !== undefined ? { addressLine2: input.addressLine2?.trim() } : {}),
-        ...(input.locality !== undefined ? { locality: input.locality?.trim() } : {}),
-        ...(input.city !== undefined ? { city: input.city?.trim() } : {}),
-        ...(input.district !== undefined ? { district: input.district?.trim() } : {}),
-        ...(input.state !== undefined ? { state: input.state?.trim() } : {}),
-        ...(input.pinCode !== undefined ? { pinCode: input.pinCode?.trim() } : {}),
-        ...(input.country !== undefined ? { country: input.country?.trim() } : {}),
+        ...(input.addressLine1 !== undefined ? { addressLine1: input.addressLine1.trim() } : {}),
+        ...(input.addressLine2 !== undefined ? { addressLine2: input.addressLine2.trim() } : {}),
+        ...(input.locality !== undefined ? { locality: input.locality.trim() } : {}),
+        ...(input.city !== undefined ? { city: input.city.trim() } : {}),
+        ...(input.district !== undefined ? { district: input.district.trim() } : {}),
+        ...(input.state !== undefined ? { state: input.state.trim() } : {}),
+        ...(input.pinCode !== undefined ? { pinCode: input.pinCode.trim() } : {}),
+        ...(input.country !== undefined ? { country: input.country.trim() } : {}),
         ...(input.geoLatitude !== undefined ? { geoLatitude: input.geoLatitude } : {}),
         ...(input.geoLongitude !== undefined ? { geoLongitude: input.geoLongitude } : {}),
         ...(input.geoFenceRadiusM !== undefined ? { geoFenceRadiusM: input.geoFenceRadiusM } : {}),
-        timezone: timezone !== undefined ? timezone : project.timezone,
+        timezone: timezone ?? project.timezone,
       });
       await this.recordMutation(
         audit,
@@ -566,7 +566,7 @@ export class OrganizationService {
     ] as const) {
       if (patch[key] !== undefined) {
         const v = patch[key];
-        data[key] = typeof v === 'string' ? (v.trim() || null) : v;
+        data[key] = typeof v === 'string' ? v.trim() || null : v;
       }
     }
 
