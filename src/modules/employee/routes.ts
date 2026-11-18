@@ -64,11 +64,18 @@ const AssignmentBody = Type.Object({
     Type.Literal('PROJECT'),
     Type.Literal('SITE'),
   ]),
-  scopeId: Type.Optional(Type.String({ format: 'uuid' })),
+  scopeId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
 });
 const StatusBody = Type.Object({
   to: Type.Union([Type.Literal('ACTIVE'), Type.Literal('INACTIVE')]),
   expectedVersion: Type.Integer(),
+});
+const EmployeeParams = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 60 }),
+});
+const AssignmentParams = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 60 }),
+  assignmentId: Type.String({ minLength: 1, maxLength: 60 }),
 });
 const ListQuery = Type.Object({
   status: Type.Optional(Type.String()),
@@ -239,7 +246,7 @@ export function employeeRoutes(service: EmployeeService, accessService?: Employe
     if (accessService !== undefined) {
       app.post(
         '/employees/:id/invite',
-        { schema: { body: InviteBody }, ...perm('EMPLOYEE_INVITE') },
+        { schema: { params: EmployeeParams, body: InviteBody }, ...perm('EMPLOYEE_INVITE') },
         async (req) => {
           const { loginId, loginIdType } = req.body as {
             loginId: string;
@@ -254,15 +261,21 @@ export function employeeRoutes(service: EmployeeService, accessService?: Employe
           );
         },
       );
-      app.post('/employees/:id/invite/resend', { ...perm('EMPLOYEE_INVITE') }, async (req) =>
-        accessService.resend(actorOf(req), companyIdOf(req), (req.params as { id: string }).id),
+      app.post(
+        '/employees/:id/invite/resend',
+        { schema: { params: EmployeeParams }, ...perm('EMPLOYEE_INVITE') },
+        async (req) =>
+          accessService.resend(actorOf(req), companyIdOf(req), (req.params as { id: string }).id),
       );
-      app.get('/employees/:id/assignments', { ...perm('ROLE_ASSIGNMENT_READ') }, async (req) =>
-        accessService.listAssignments(companyIdOf(req), (req.params as { id: string }).id),
+      app.get(
+        '/employees/:id/assignments',
+        { schema: { params: EmployeeParams }, ...perm('ROLE_ASSIGNMENT_READ') },
+        async (req) =>
+          accessService.listAssignments(companyIdOf(req), (req.params as { id: string }).id),
       );
       app.post(
         '/employees/:id/assignments',
-        { schema: { body: AssignmentBody }, ...perm('ACCESS_ROLE_ASSIGN') },
+        { schema: { params: EmployeeParams, body: AssignmentBody }, ...perm('ACCESS_ROLE_ASSIGN') },
         async (req) =>
           accessService.grant(actorOf(req), companyIdOf(req), {
             employeeId: (req.params as { id: string }).id,
@@ -271,7 +284,7 @@ export function employeeRoutes(service: EmployeeService, accessService?: Employe
       );
       app.delete(
         '/employees/:id/assignments/:assignmentId',
-        { ...perm('ACCESS_ROLE_REVOKE') },
+        { schema: { params: AssignmentParams }, ...perm('ACCESS_ROLE_REVOKE') },
         async (req) =>
           accessService.revoke(
             actorOf(req),

@@ -72,10 +72,17 @@ export interface CreateCompanyResult {
   claimExpiresAt: Date;
 }
 
+export type ImpersonationHandler = (
+  superAdminActor: ActorContext,
+  targetPrincipalId: string,
+  meta: Record<string, unknown>,
+) => Promise<unknown>;
+
 export class PlatformService {
   constructor(
     private readonly uow: PlatformUnitOfWork,
     private readonly appBaseUrl = 'http://localhost:3000',
+    private readonly impersonationHandler?: ImpersonationHandler | undefined,
   ) {}
 
   /** Create a customer Company + pending first admin + claim code. One tx. */
@@ -675,5 +682,52 @@ export class PlatformService {
 
   async listCatalogueOperations() {
     return this.uow.run((repos) => repos.operations.list());
+  }
+
+  /**
+   * Super Admin Impersonation: login as tenant company owner with audit records.
+   */
+  async impersonateCompany(
+    actor: ActorContext,
+    companyId: string,
+    meta: Record<string, unknown>,
+  ) {
+    return this.uow.run(async (repos) => {
+      const company = await repos.companies.findById(companyId, companyId);
+      if (!company || company.isPlatform) {
+        throw new OrgEntityNotFoundError('COMPANY');
+      }
+      if (company.status === 'SUSPENDED' || company.status === 'ARCHIVED') {
+        throw new AppError(400, 'COMPANY_INACTIVE', 'Cannot impersonate suspended or archived company');
+      }
+
+      const principalId = repos.companies.findOwnerPrincipalId
+        ? await repos.companies.findOwnerPrincipalId(companyId)
+        : null;
+
+      if (!principalId) {
+        throw new AppError(404, 'NO_TENANT_ADMIN_FOUND', 'Company has no active administrator user');
+      }
+
+      if (!this.impersonationHandler) {
+        throw new AppError(500, 'IMPERSONATION_NOT_CONFIGURED', 'Impersonation handler not configured');
+      }
+
+      await repos.audit.record(
+        auditEntry(actor, {
+          action: 'SUPER_ADMIN_IMPERSONATION_STARTED',
+          entityType: 'COMPANY',
+          entityId: companyId,
+          companyId,
+          metadata: {
+            targetPrincipalId: principalId,
+            companyCode: company.code,
+            companyName: company.name,
+          },
+        }),
+      );
+
+      return this.impersonationHandler(actor, principalId, meta);
+    });
   }
 }

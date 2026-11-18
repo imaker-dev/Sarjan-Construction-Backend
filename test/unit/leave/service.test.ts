@@ -161,6 +161,7 @@ describe('LeaveService', () => {
         employeeCode: 'E01',
         displayName: 'Ramesh',
         designation: 'Engineer',
+        principalId: 'p-1',
       },
     };
 
@@ -299,7 +300,7 @@ describe('LeaveService', () => {
       version: 0,
       createdAt: new Date(),
       updatedAt: new Date(),
-      employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng' },
+      employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng', principalId: 'p-1' },
     };
 
     const updatedReq: LeaveRequestWithDetails = {
@@ -358,7 +359,7 @@ describe('LeaveService', () => {
       version: 0,
       createdAt: new Date(),
       updatedAt: new Date(),
-      employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng' },
+      employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng', principalId: 'p-1' },
     };
 
     const updatedReq: LeaveRequestWithDetails = {
@@ -418,7 +419,7 @@ describe('LeaveService', () => {
       version: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
-      employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng' },
+      employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng', principalId: 'p-1' },
     };
 
     const cancelledReq: LeaveRequestWithDetails = {
@@ -473,7 +474,7 @@ describe('LeaveService', () => {
       version: 2,
       createdAt: new Date(),
       updatedAt: new Date(),
-      employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng' },
+      employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng', principalId: 'p-1' },
     };
 
     const mockRepos: Partial<LeaveRepos> = {

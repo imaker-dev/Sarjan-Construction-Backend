@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { LeaveBalance, LeavePolicy, LeaveRequestStatus, LeaveType } from '@prisma/client';
 import type { ScopeTarget } from '../access-control/service.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
+import type { RoleNotificationDispatcher } from '../notification/role-dispatcher.js';
 import {
   InsufficientLeaveBalanceError,
   LeaveDateConflictError,
@@ -58,6 +59,7 @@ export class LeaveService {
   constructor(
     private readonly uow: LeaveUnitOfWork,
     private readonly authorizer: Authorizer,
+    private readonly dispatcher?: RoleNotificationDispatcher | undefined,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -337,6 +339,22 @@ export class LeaveService {
         }),
       );
 
+      if (this.dispatcher) {
+        void this.dispatcher.notifyRoles({
+          companyId,
+          roleKeys: ['HO_ADMIN', 'COMPANY_OWNER', 'PROJECT_MANAGER', 'DEPT_HEAD'],
+          eventType: 'LEAVE_REQUEST_SUBMITTED',
+          title: `New Leave Request: ${input.leaveType} (${String(totalDays)} day${totalDays > 1 ? 's' : ''})`,
+          body: `Leave submitted from ${input.startDate} to ${input.endDate}`,
+          resourceType: 'LEAVE_REQUEST',
+          resourceId: created.id,
+          email: {
+            subject: `New Leave Application: ${input.leaveType}`,
+            text: `An employee has applied for ${input.leaveType} leave from ${input.startDate} to ${input.endDate}. Reason: ${input.reason}`,
+          },
+        });
+      }
+
       return created;
     });
   }
@@ -390,6 +408,22 @@ export class LeaveService {
           metadata: { remarks: input.remarks },
         }),
       );
+
+      if (this.dispatcher && existing.employee.principalId) {
+        void this.dispatcher.notifyUser({
+          companyId,
+          recipientPrincipalId: existing.employee.principalId,
+          eventType: input.action === 'APPROVE' ? 'LEAVE_REQUEST_APPROVED' : 'LEAVE_REQUEST_REJECTED',
+          title: `Your Leave Request has been ${newStatus}`,
+          body: `${existing.leaveType} leave from ${existing.startDate.toISOString().slice(0, 10)} to ${existing.endDate.toISOString().slice(0, 10)} was ${newStatus}. ${input.remarks ? `Remarks: ${input.remarks}` : ''}`.trim(),
+          resourceType: 'LEAVE_REQUEST',
+          resourceId: id,
+          email: {
+            subject: `Leave Request ${newStatus}: ${existing.leaveType}`,
+            text: `Your ${existing.leaveType} leave request from ${existing.startDate.toISOString().slice(0, 10)} to ${existing.endDate.toISOString().slice(0, 10)} has been ${newStatus}. ${input.remarks ? `Remarks: ${input.remarks}` : ''}`.trim(),
+          },
+        });
+      }
 
       return updated;
     });

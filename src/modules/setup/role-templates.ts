@@ -114,8 +114,35 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
     ],
   },
 ];
+const ROLE_KEY_ALIASES: Record<string, string> = {
+  'HEAD OFFICE ADMIN': 'HO_ADMIN',
+  'HEAD_OFFICE_ADMIN': 'HO_ADMIN',
+  'HO ADMIN': 'HO_ADMIN',
+  'HO_ADMIN': 'HO_ADMIN',
+  'COMPANY OWNER': 'COMPANY_OWNER',
+  'COMPANY_OWNER': 'COMPANY_OWNER',
+  'PROJECT MANAGER': 'PROJECT_MANAGER',
+  'PROJECT_MANAGER': 'PROJECT_MANAGER',
+  'SITE ENGINEER': 'SITE_ENGINEER',
+  'SITE_ENGINEER': 'SITE_ENGINEER',
+  'DEPARTMENT HEAD': 'DEPT_HEAD',
+  'DEPT HEAD': 'DEPT_HEAD',
+  'DEPT_HEAD': 'DEPT_HEAD',
+  EMPLOYEE: 'EMPLOYEE',
+};
+
 export function findRoleTemplate(key: string): TenantRoleTemplate | undefined {
-  return TENANT_ROLE_TEMPLATES.find((t) => t.key === key);
+  const normalized = key.trim().toUpperCase().replace(/\s+/g, ' ');
+  const resolvedKey =
+    ROLE_KEY_ALIASES[normalized] ??
+    ROLE_KEY_ALIASES[normalized.replace(/\s+/g, '_')] ??
+    key.trim();
+  return (
+    TENANT_ROLE_TEMPLATES.find((t) => t.key === resolvedKey) ??
+    TENANT_ROLE_TEMPLATES.find(
+      (t) => t.key === key || t.name.toLowerCase() === key.trim().toLowerCase(),
+    )
+  );
 }
 
 interface TemplateTx {

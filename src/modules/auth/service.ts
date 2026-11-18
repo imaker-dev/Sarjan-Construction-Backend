@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import { passwordService } from '../identity/password.js';
 import { generateRefreshToken, hashRefreshToken, type TokenService } from './tokens.js';
-import type { AuthUnitOfWork } from './repository.js';
+import type { AuthUnitOfWork, PrincipalDetails } from './repository.js';
 import type { ActorContext } from '../organization/types.js';
+import type { MfaService, MfaChallengeResult } from './mfa.js';
+import { OrgEntityNotFoundError } from '../organization/errors.js';
 import {
   type UserProfileCache,
   type UserProfileResponse,
@@ -37,7 +39,10 @@ export interface AuthResult {
   role?: string;
   roles?: string[];
   user?: AuthenticatedUser;
+  impersonated?: boolean;
 }
+
+export type LoginResult = AuthResult | MfaChallengeResult;
 
 export interface RequestMeta {
   ip?: string | undefined;
@@ -55,13 +60,12 @@ export class AuthService {
     private readonly now: () => Date = () => new Date(),
     private readonly resolveOperations?: (companyId: string, employeeId: string) => Promise<string[]>,
     private readonly cache: UserProfileCache = new InMemoryUserProfileCache(),
+    readonly mfaService?: MfaService | undefined,
   ) { }
-
 
   get userCache(): UserProfileCache {
     return this.cache;
   }
-
 
   /**
    * Authenticate a human principal. Returns generic INVALID_CREDENTIALS for
@@ -71,7 +75,7 @@ export class AuthService {
   async login(
     input: { loginId: string; password: string },
     meta: RequestMeta,
-  ): Promise<AuthResult> {
+  ): Promise<LoginResult> {
     const loginId = normalizeLoginId(input.loginId);
 
     const principal = await this.uow.run(({ principals }) =>
@@ -89,11 +93,75 @@ export class AuthService {
       throw INVALID();
     }
 
+    if (this.mfaService && (await this.mfaService.isMfaEnabled(principal.id))) {
+      return this.mfaService.createChallenge(principal.id, principal.loginId ?? loginId);
+    }
+
+    return this.completeSessionForPrincipal(principal, meta);
+  }
+
+  async completeMfaLogin(mfaToken: string, code: string, meta: RequestMeta): Promise<AuthResult> {
+    if (!this.mfaService) {
+      throw new UnauthorizedError('MFA_NOT_CONFIGURED', 'MFA service not configured');
+    }
+    const { principalId } = await this.mfaService.verifyChallenge(mfaToken, code);
+    const principal = await this.uow.run(({ principals }) =>
+      principals.findById(principalId),
+    );
+    if (principal?.status !== 'ACTIVE' || principal.type !== 'USER') {
+      throw INVALID();
+    }
+    const withDetails = await this.uow.run(async ({ principals }) => {
+      if (principal.loginId && principals.findWithDetailsByLoginId) {
+        return principals.findWithDetailsByLoginId(principal.loginId);
+      }
+      return principal;
+    });
+    return this.completeSessionForPrincipal(withDetails ?? principal, meta);
+  }
+
+  async createImpersonationSession(
+    superAdminActor: ActorContext,
+    targetPrincipalId: string,
+    meta: RequestMeta,
+  ): Promise<AuthResult & { impersonated: true }> {
+    const principal = await this.uow.run(({ principals }) =>
+      principals.findById(targetPrincipalId),
+    );
+    if (principal?.status !== 'ACTIVE' || principal.type !== 'USER') {
+      throw new OrgEntityNotFoundError('PRINCIPAL');
+    }
+    const withDetails = await this.uow.run(async ({ principals }) => {
+      if (principal.loginId && principals.findWithDetailsByLoginId) {
+        return principals.findWithDetailsByLoginId(principal.loginId);
+      }
+      return principal;
+    });
+    const res = await this.completeSessionForPrincipal(
+      withDetails ?? principal,
+      meta,
+      superAdminActor.actorId,
+    );
+    return {
+      ...res,
+      impersonated: true,
+    };
+  }
+
+  async completeSessionForPrincipal(
+    principal: PrincipalDetails | Record<string, unknown>,
+    meta: RequestMeta,
+    impersonatedBy?: string,
+  ): Promise<AuthResult> {
+    const pId = 'id' in principal && typeof principal.id === 'string' ? principal.id : '';
+    const pLoginId =
+      'loginId' in principal && typeof principal.loginId === 'string' ? principal.loginId : '';
+
     return this.uow.run(async ({ sessions, refreshTokens, audit }) => {
       const familyId = randomUUID();
       const refreshTtlMs = this.cfg.refreshTokenTtlS * 1000;
       const session = await sessions.create({
-        principalId: principal.id,
+        principalId: pId,
         familyId,
         expiresAt: new Date(this.now().getTime() + refreshTtlMs),
         ...(meta.ip !== undefined ? { ip: meta.ip } : {}),
@@ -105,18 +173,25 @@ export class AuthService {
         tokenHash: hashRefreshToken(refreshToken),
         expiresAt: session.expiresAt,
       });
+
+      const auditAction = impersonatedBy
+        ? 'SUPER_ADMIN_IMPERSONATION_LOGIN'
+        : 'AUTH_LOGIN_SUCCEEDED';
+
       await audit.record({
         eventKey: randomUUID(),
-        action: 'AUTH_LOGIN_SUCCEEDED',
+        action: auditAction,
         entityType: 'PRINCIPAL',
-        entityId: principal.id,
-        actorId: principal.id,
+        entityId: pId,
+        actorId: impersonatedBy ?? pId,
         actorType: 'USER',
         ...(meta.correlationId !== undefined ? { correlationId: meta.correlationId } : {}),
         statusAfter: 'ACTIVE',
+        ...(impersonatedBy ? { metadata: { impersonatedBy } } : {}),
       });
+
       const roles: string[] = [];
-      const details = principal as typeof principal & {
+      const details = principal as {
         employees?: {
           displayName?: string;
           employeeCode?: string;
@@ -132,12 +207,10 @@ export class AuthService {
           }
         }
       }
-      const emp = details.employees?.[0] as
-        | ({ id?: string } & NonNullable<typeof details.employees>[number])
-        | undefined;
+      const emp = details.employees?.[0];
       const userInfo: AuthenticatedUser = {
-        id: principal.id,
-        loginId: principal.loginId ?? loginId,
+        id: pId,
+        loginId: pLoginId,
         ...(emp?.displayName !== undefined ? { displayName: emp.displayName } : {}),
         ...(emp?.employeeCode !== undefined ? { employeeCode: emp.employeeCode } : {}),
         ...(emp?.companyId !== undefined ? { companyId: emp.companyId } : {}),
@@ -147,14 +220,22 @@ export class AuthService {
         ...(roles[0] !== undefined ? { role: roles[0] } : {}),
         roles,
       };
-      // Effective operations = employee grants ∩ enabled ops on active
-      // membership depts (empty when the resolver or employee is absent).
+
       const operations =
-        emp?.id !== undefined && emp.companyId !== undefined && this.resolveOperations !== undefined
-          ? await this.resolveOperations(emp.companyId, emp.id)
+        emp && 'id' in emp && emp.companyId !== undefined && this.resolveOperations !== undefined
+          ? await this.resolveOperations(emp.companyId, (emp as { id: string }).id)
           : undefined;
       if (operations !== undefined) userInfo.operations = operations;
-      return this.issueTokens(principal, session.id, refreshToken, userInfo);
+
+      return {
+        accessToken: this.tokens.signAccessToken(pId, session.id),
+        refreshToken,
+        expiresIn: this.cfg.accessTokenTtlS,
+        tokenType: 'Bearer',
+        roles,
+        user: userInfo,
+        ...(impersonatedBy ? { impersonated: true } : {}),
+      };
     });
   }
 

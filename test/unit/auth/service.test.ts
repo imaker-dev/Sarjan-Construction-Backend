@@ -1,11 +1,21 @@
 import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
 import Fastify from 'fastify';
 import fastifyJwt from '@fastify/jwt';
-import { AuthService, normalizeLoginId } from '../../../src/modules/auth/service.js';
+import {
+  AuthService,
+  normalizeLoginId,
+  type AuthResult,
+  type LoginResult,
+} from '../../../src/modules/auth/service.js';
 import { createTokenService, type TokenService } from '../../../src/modules/auth/tokens.js';
 import { passwordService } from '../../../src/modules/identity/password.js';
 import { UnauthorizedError } from '../../../src/common/errors/app-error.js';
 import { emptyAuthStore, fakePrincipal, FakeAuthUoW, type AuthStore } from './fakes.js';
+
+function asAuth(res: LoginResult): AuthResult {
+  if ('mfaRequired' in res) throw new Error('Expected AuthResult, got MfaChallengeResult');
+  return res;
+}
 
 const CFG = {
   issuer: 'sarjan-erp',
@@ -48,7 +58,7 @@ async function seedPrincipal(over: Parameters<typeof fakePrincipal>[0] = {}) {
 describe('login', () => {
   it('succeeds with valid credentials and audits the login', async () => {
     const p = await seedPrincipal({ loginId: 'a@b.com' });
-    const res = await service.login({ loginId: 'A@b.com ', password: 'secret-pw' }, {});
+    const res = asAuth(await service.login({ loginId: 'A@b.com ', password: 'secret-pw' }, {}));
     expect(res.tokenType).toBe('Bearer');
     expect(res.expiresIn).toBe(900);
     expect(res.refreshToken.length).toBeGreaterThanOrEqual(60);
@@ -96,7 +106,7 @@ describe('login', () => {
 describe('refresh rotation and replay', () => {
   it('rotates the refresh token and consumes the old one', async () => {
     await seedPrincipal({ loginId: 'a@b.com' });
-    const first = await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {});
+    const first = asAuth(await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {}));
     const second = await service.refresh({ refreshToken: first.refreshToken }, {});
     expect(second.refreshToken).not.toBe(first.refreshToken);
     const oldRow = store.refreshTokens.find((t) => t.consumedAt !== null);
@@ -106,7 +116,7 @@ describe('refresh rotation and replay', () => {
 
   it('detects replay of a consumed token and revokes the family', async () => {
     await seedPrincipal({ loginId: 'a@b.com' });
-    const first = await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {});
+    const first = asAuth(await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {}));
     await service.refresh({ refreshToken: first.refreshToken }, {});
     // Reuse the consumed token — replay.
     await expect(service.refresh({ refreshToken: first.refreshToken }, {})).rejects.toThrow(
@@ -127,7 +137,7 @@ describe('refresh rotation and replay', () => {
 describe('logout', () => {
   it('revokes the session and its token family', async () => {
     const p = await seedPrincipal({ loginId: 'a@b.com' });
-    const res = await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {});
+    const res = asAuth(await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {}));
     const claims = tokens.verifyAccessToken(res.accessToken);
     await service.logout({
       actorId: p.id,
@@ -141,7 +151,7 @@ describe('logout', () => {
 
   it('rejects logout for a foreign session', async () => {
     await seedPrincipal({ loginId: 'a@b.com' });
-    const res = await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {});
+    const res = asAuth(await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {}));
     const claims = tokens.verifyAccessToken(res.accessToken);
     await expect(
       service.logout({ actorId: 'someone-else', actorType: 'USER', sessionId: claims.sid }),
@@ -152,7 +162,7 @@ describe('logout', () => {
 describe('buildActorContext', () => {
   it('returns actor context for a live session and rejects revoked/suspended', async () => {
     const p = await seedPrincipal({ loginId: 'a@b.com' });
-    const res = await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {});
+    const res = asAuth(await service.login({ loginId: 'a@b.com', password: 'secret-pw' }, {}));
     const claims = tokens.verifyAccessToken(res.accessToken);
 
     const ctx = await service.buildActorContext(claims);
@@ -219,7 +229,7 @@ describe('login operations resolver', () => {
       employeeCode: 'E-OPS',
       company: { id: 'c1', code: 'C1', name: 'Co', isPlatform: false },
     });
-    const result = await opsSvc.login({ loginId: 'ops@t.test', password: 'secret-pw' }, {});
+    const result = asAuth(await opsSvc.login({ loginId: 'ops@t.test', password: 'secret-pw' }, {}));
     expect(result.user?.operations).toEqual([
       'PETTY_CASH_REQUEST_APPROVE',
       'EMPLOYEE_PAYROLL_PREPARE',
