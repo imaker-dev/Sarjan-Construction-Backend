@@ -25,6 +25,7 @@ export interface PlatformRepos {
     create(data: Record<string, unknown>): Promise<Company>;
     update(id: string, data: Record<string, unknown>): Promise<Company>;
     getDetails(id: string): Promise<Record<string, unknown> | null>;
+    findOwnerPrincipalId?(companyId: string): Promise<string | null>;
   };
   headOffices: {
     create(data: Record<string, unknown>): Promise<{ id: string; code: string; name: string }>;
@@ -109,6 +110,18 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
             },
           },
         }),
+      findOwnerPrincipalId: async (companyId: string) => {
+        const ownerAssignment = await tx.roleAssignment.findFirst({
+          where: { companyId, role: { key: 'COMPANY_OWNER' }, revokedAt: null },
+          select: { principalId: true },
+        });
+        if (ownerAssignment) return ownerAssignment.principalId;
+        const emp = await tx.employee.findFirst({
+          where: { companyId, status: 'ACTIVE', principalId: { not: null } },
+          select: { principalId: true },
+        });
+        return emp?.principalId ?? null;
+      },
     },
     headOffices: {
       create: (data) => tx.headOffice.create({ data: data as never }),

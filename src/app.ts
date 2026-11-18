@@ -21,6 +21,7 @@ import {
   RedisNotificationPublisher,
   RedisTicketStore,
 } from './modules/notification/redis-adapters.js';
+import { RoleNotificationDispatcher } from './modules/notification/role-dispatcher.js';
 import { notificationRoutes } from './modules/notification/routes.js';
 import notificationWorkerPlugin from './plugins/notification-worker.js';
 import { OrganizationService } from './modules/organization/service.js';
@@ -54,7 +55,10 @@ import { leaveRoutes } from './modules/leave/routes.js';
 import { PrismaLeaveUnitOfWork } from './modules/leave/repository.js';
 import { AuditService } from './modules/audit/service.js';
 import { auditRoutes } from './modules/audit/routes.js';
+import { MailService } from './modules/mail/service.js';
+import { mailRoutes } from './modules/mail/routes.js';
 import { AuthService } from './modules/auth/service.js';
+import { MfaService, type MfaTokenPayload } from './modules/auth/mfa.js';
 import { makeAuthRepos, PrismaAuthUnitOfWork } from './modules/auth/repository.js';
 import { AccessControlService } from './modules/access-control/service.js';
 import { makeAccessRepository } from './modules/access-control/repository.js';
@@ -75,6 +79,26 @@ const OPERATION_DOCS: Record<
   },
   'POST /auth/refresh': { summary: 'Rotate refresh token' },
   'POST /auth/logout': { summary: 'Invalidate the current session', permission: 'authenticated' },
+  'POST /auth/mfa/verify': {
+    summary: 'Verify 2FA OTP code and complete login',
+    description: 'Unauthenticated; completes login using challenge mfaToken and 6-digit OTP code.',
+  },
+  'POST /auth/mfa/send-otp': {
+    summary: 'Resend 2FA verification code',
+    description: 'Unauthenticated; rate-limited. Generates and sends a new OTP for the challenge.',
+  },
+  'GET /auth/mfa/status': {
+    summary: 'Get 2FA status for authenticated user',
+    permission: 'authenticated',
+  },
+  'POST /auth/mfa/enable': {
+    summary: 'Enable 2FA (Email OTP) for authenticated user',
+    permission: 'authenticated',
+  },
+  'POST /auth/mfa/disable': {
+    summary: 'Disable 2FA for authenticated user',
+    permission: 'authenticated',
+  },
   'GET /auth/me': {
     summary:
       'Get current authenticated user profile, roles, permissions, and scope assignments (cached)',
@@ -326,6 +350,11 @@ const OPERATION_DOCS: Record<
     summary: 'Transition customer company status (ACTIVE/SUSPENDED/ARCHIVED)',
     permission: 'PLATFORM_COMPANY_CREATE',
   },
+  'POST /platform/companies/:companyId/impersonate': {
+    summary: 'Impersonate company owner (Platform Admin only)',
+    description: 'Creates an impersonated session as the tenant company administrator. Records audit trail.',
+    permission: 'PLATFORM_COMPANY_READ',
+  },
   'GET /platform/operations': {
     summary: 'List global operations catalogue (Platform Admin)',
     permission: 'PLATFORM_COMPANY_READ',
@@ -498,6 +527,15 @@ const OPERATION_DOCS: Record<
     summary: 'Get details of a company audit log entry',
     permission: 'AUDIT_LOG_VIEW',
   },
+  'GET /mail/config': {
+    summary: 'Get active mail server configuration',
+  },
+  'POST /mail/verify': {
+    summary: 'Verify SMTP mail server connectivity and credentials',
+  },
+  'POST /mail/send': {
+    summary: 'Send an email via SMTP server',
+  },
 };
 
 export interface BuildAppOptions {
@@ -505,6 +543,7 @@ export interface BuildAppOptions {
   // Test hooks: substitute service boundaries without touching Prisma/Redis.
   services?: {
     authService?: AuthService;
+    mfaService?: MfaService;
     accessControl?: AccessControlService;
     notificationService?: NotificationService;
     employeeService?: EmployeeService;
@@ -659,6 +698,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           'GET /ready',
           'POST /auth/login',
           'POST /auth/refresh',
+          'POST /auth/mfa/verify',
+          'POST /auth/mfa/send-otp',
           'POST /auth/claim',
           'GET /auth/claim/verify',
           'POST /auth/claim/onboard',
@@ -797,6 +838,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     },
   });
 
+  const mailService = new MailService();
+  const mfaService =
+    services.mfaService ??
+    new MfaService(
+      app.redis,
+      mailService,
+      (payload) => app.jwt.sign(payload, { expiresIn: '5m' }),
+      (token) => app.jwt.verify<MfaTokenPayload>(token),
+    );
+
   authService ??= new AuthService(
     new PrismaAuthUnitOfWork(app.prisma),
     app.tokenService,
@@ -807,6 +858,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     () => new Date(),
     (companyId, employeeId) => opAssignment.getEffectiveOperations(companyId, employeeId),
     userProfileCache,
+    mfaService,
   );
   accessControl ??= new AccessControlService({
     principals: makeAuthRepos(app.prisma).principals,
@@ -896,7 +948,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           },
           userProfileCache,
         ),
-      services.employeeAccessService ?? new EmployeeAccessService(app.prisma, userProfileCache),
+      services.employeeAccessService ??
+        new EmployeeAccessService(
+          app.prisma,
+          userProfileCache,
+          mailService,
+          app.config.APP_BASE_URL,
+        ),
     ),
     { prefix: '/api/v1' },
   );
@@ -925,13 +983,23 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     ),
     { prefix: '/api/v1' },
   );
+  await app.register(mailRoutes(mailService), { prefix: '/api/v1' });
+  const roleDispatcher = new RoleNotificationDispatcher(
+    app.prisma,
+    new RedisNotificationPublisher(app.redis),
+    mailService,
+  );
   await app.register(
     leaveRoutes(
       services.leaveService ??
-        new LeaveService(new PrismaLeaveUnitOfWork(app.prisma), {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-        }),
+        new LeaveService(
+          new PrismaLeaveUnitOfWork(app.prisma),
+          {
+            assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.assertPermission(pid, key, target),
+          },
+          roleDispatcher,
+        ),
     ),
     { prefix: '/api/v1' },
   );
@@ -947,7 +1015,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     platformRoutes(
       services.platformService ??
-        new PlatformService(new PrismaPlatformUnitOfWork(app.prisma), app.config.APP_BASE_URL),
+        new PlatformService(
+          new PrismaPlatformUnitOfWork(app.prisma),
+          app.config.APP_BASE_URL,
+          (actor, principalId, meta) =>
+            authService.createImpersonationSession(actor, principalId, meta),
+        ),
       platformResolver,
     ),
     { prefix: '/api/v1' },

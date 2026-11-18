@@ -105,6 +105,17 @@ const ReissueBody = Type.Object({ adminPrincipalId: Type.String({ format: 'uuid'
 
 const CompanyParams = Type.Object({ companyId: Type.String({ format: 'uuid' }) });
 
+const ImpersonateResponse = Type.Object({
+  accessToken: Type.String(),
+  refreshToken: Type.String(),
+  tokenType: Type.Literal('Bearer'),
+  expiresIn: Type.Number(),
+  role: Type.Optional(Type.String()),
+  roles: Type.Optional(Type.Array(Type.String())),
+  user: Type.Optional(Type.Any()),
+  impersonated: Type.Optional(Type.Boolean()),
+});
+
 const UpdateCompanyBody = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   legalName: OptStringOrNull,
@@ -257,6 +268,22 @@ export function platformRoutes(
         const { companyId } = req.params as { companyId: string };
         const { to, expectedVersion } = req.body as { to: string; expectedVersion?: number };
         return service.transitionCompanyStatus(actorOf(req), companyId, to, expectedVersion);
+      },
+    );
+
+    app.post(
+      '/platform/companies/:companyId/impersonate',
+      {
+        schema: { params: CompanyParams, response: { 200: ImpersonateResponse } },
+        preHandler: guard('PLATFORM_COMPANY_READ'),
+      },
+      async (req) => {
+        const { companyId } = req.params as { companyId: string };
+        return service.impersonateCompany(actorOf(req), companyId, {
+          ip: req.ip,
+          userAgent: req.headers['user-agent'],
+          correlationId: req.correlationId,
+        });
       },
     );
 

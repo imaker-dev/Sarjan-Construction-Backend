@@ -135,7 +135,7 @@ function fakePrisma(store: FakeStore) {
         return (
           store.headOffices.find(
             (h) =>
-              h.id === w.id &&
+              (w.id === undefined || h.id === w.id) &&
               h.companyId === w.companyId &&
               h.isPrimary === w.isPrimary &&
               h.status === w.status,
@@ -308,6 +308,30 @@ describe('EmployeeAccessService.grant', () => {
       scopeId: 'ho-1',
     });
     expect((asg as Record<string, unknown>).headOfficeId).toBe('ho-1');
+  });
+
+  it('accepts role name aliases like "Head Office Admin" and auto-resolves primary HO when scopeId omitted or null', async () => {
+    const svc = new EmployeeAccessService(fakePrisma(linkedStore()));
+    const asg = await svc.grant(ACTOR, COMPANY, {
+      employeeId: 'e-1',
+      roleKey: 'Head Office Admin',
+      scopeType: 'HEAD_OFFICE',
+      scopeId: null,
+    });
+    expect((asg as Record<string, unknown>).headOfficeId).toBe('ho-1');
+  });
+
+  it('accepts scopeId: null for COMPANY scope without error', async () => {
+    const s = linkedStore();
+    s.roles.push({ id: 'r-own', companyId: COMPANY, key: 'COMPANY_OWNER', isSystem: true });
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    const asg = await svc.grant(ACTOR, COMPANY, {
+      employeeId: 'e-1',
+      roleKey: 'COMPANY_OWNER',
+      scopeType: 'COMPANY',
+      scopeId: null,
+    });
+    expect((asg as Record<string, unknown>).companyId).toBe(COMPANY);
   });
 
   it('rejects unlinked employee and duplicate assignment', async () => {

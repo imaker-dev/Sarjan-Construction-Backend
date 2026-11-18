@@ -7,14 +7,23 @@ import { AppError } from '../../common/errors/app-error.js';
 import { findRoleTemplate, PROJECT_LEADERSHIP_KEYS } from '../setup/role-templates.js';
 import { AccessDeniedError } from '../access-control/errors.js';
 import { passwordService } from '../identity/password.js';
+import type { MailService } from '../mail/service.js';
 
 const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
 const hashToken = (raw: string) => createHash('sha256').update(raw).digest('hex');
+
+function assertValidId(id: string, name = 'employeeId'): void {
+  if (!id || id === 'undefined' || id === 'null' || id.trim() === '') {
+    throw new OrgValidationError(name, `Valid ${name} required`);
+  }
+}
 
 export class EmployeeAccessService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly cache?: import('../auth/cache.js').UserProfileCache,
+    private readonly mailService?: MailService,
+    private readonly appBaseUrl = 'http://localhost:3000',
   ) {}
 
   /** Invite a profile-only employee — suspended principal + one-time code. */
@@ -25,6 +34,7 @@ export class EmployeeAccessService {
     loginId: string,
     loginIdType = 'EMAIL',
   ) {
+    assertValidId(employeeId, 'employeeId');
     const email = loginId.toLowerCase().trim();
     if (loginIdType !== 'EMAIL' || email.length < 3 || email.length > 320) {
       throw new OrgValidationError('loginId', 'valid EMAIL required');
@@ -66,17 +76,49 @@ export class EmployeeAccessService {
           companyId,
         }) as never,
       });
+
+      if (this.mailService) {
+        const companyName =
+          'company' in tx &&
+          typeof (tx as { company: { findUnique: (args: unknown) => Promise<{ name: string } | null> } })
+            .company.findUnique === 'function'
+            ? (
+                await (
+                  tx as { company: { findUnique: (args: unknown) => Promise<{ name: string } | null> } }
+                ).company.findUnique({
+                  where: { id: companyId },
+                  select: { name: true },
+                })
+              )?.name ?? 'Sarjan Construction'
+            : 'Sarjan Construction';
+        void this.mailService
+          .sendEmployeeInvitation({
+            to: email,
+            employeeName: emp.displayName,
+            companyName,
+            claimCode: raw,
+            claimUrl: `${this.appBaseUrl}/auth/claim?token=${raw}`,
+          })
+          .catch(() => undefined);
+      }
+
       return { claimCode: raw, expiresAt };
     });
   }
 
   /** Reissue — revoke prior unused codes, mint a new one-time code. */
   async resend(actor: ActorContext, companyId: string, employeeId: string) {
+    assertValidId(employeeId, 'employeeId');
     return this.prisma.$transaction(async (tx) => {
       const emp = await tx.employee.findFirst({
         where: { id: employeeId, companyId, principalId: { not: null } },
       });
       if (!emp?.principalId) throw new OrgEntityNotFoundError('EMPLOYEE');
+      const principal = await tx.principal.findUnique({
+        where: { id: emp.principalId },
+      });
+      const recipientEmail = (principal as { loginId?: string } | null)?.loginId;
+
       await tx.claimToken.updateMany({
         where: { principalId: emp.principalId, consumedAt: null },
         data: { consumedAt: new Date() },
@@ -94,11 +136,38 @@ export class EmployeeAccessService {
           companyId,
         }) as never,
       });
+
+      if (this.mailService && recipientEmail) {
+        const companyName =
+          'company' in tx &&
+          typeof (tx as { company: { findUnique: (args: unknown) => Promise<{ name: string } | null> } })
+            .company.findUnique === 'function'
+            ? (
+                await (
+                  tx as { company: { findUnique: (args: unknown) => Promise<{ name: string } | null> } }
+                ).company.findUnique({
+                  where: { id: companyId },
+                  select: { name: true },
+                })
+              )?.name ?? 'Sarjan Construction'
+            : 'Sarjan Construction';
+        void this.mailService
+          .sendEmployeeInvitation({
+            to: recipientEmail,
+            employeeName: emp.displayName,
+            companyName,
+            claimCode: raw,
+            claimUrl: `${this.appBaseUrl}/auth/claim?token=${raw}`,
+          })
+          .catch(() => undefined);
+      }
+
       return { claimCode: raw, expiresAt };
     });
   }
 
   async listAssignments(companyId: string, employeeId: string) {
+    assertValidId(employeeId, 'employeeId');
     const emp = await this.prisma.employee.findFirst({ where: { id: employeeId, companyId } });
     if (!emp) throw new OrgEntityNotFoundError('EMPLOYEE');
     if (!emp.principalId) return [];
@@ -112,8 +181,9 @@ export class EmployeeAccessService {
   async grant(
     actor: ActorContext,
     companyId: string,
-    input: { employeeId: string; roleKey: string; scopeType: string; scopeId?: string },
+    input: { employeeId: string; roleKey: string; scopeType: string; scopeId?: string | null },
   ) {
+    assertValidId(input.employeeId, 'employeeId');
     const tpl = findRoleTemplate(input.roleKey);
     if (!tpl) throw new OrgValidationError('roleKey', 'not an assignable tenant role template');
     if (tpl.scopeShape !== input.scopeType) {
@@ -171,12 +241,16 @@ export class EmployeeAccessService {
       };
       let project: { id: string; status: string } | null = null;
       if (input.scopeType === 'HEAD_OFFICE') {
-        const ho = await tx.headOffice.findFirst({
-          where: { id: input.scopeId ?? '', companyId, isPrimary: true, status: 'ACTIVE' },
-        });
+        const ho = input.scopeId
+          ? await tx.headOffice.findFirst({
+              where: { id: input.scopeId, companyId, isPrimary: true, status: 'ACTIVE' },
+            })
+          : await tx.headOffice.findFirst({
+              where: { companyId, isPrimary: true, status: 'ACTIVE' },
+            });
         if (!ho) throw new OrgValidationError('scopeId', 'must be the company primary head office');
-        scopeData.headOfficeId = input.scopeId;
-        scopeFilter.headOfficeId = input.scopeId;
+        scopeData.headOfficeId = ho.id;
+        scopeFilter.headOfficeId = ho.id;
       } else if (input.scopeType === 'PROJECT') {
         project = await tx.project.findFirst({
           where: { id: input.scopeId ?? '', companyId },
@@ -197,7 +271,7 @@ export class EmployeeAccessService {
         scopeData.siteId = input.scopeId;
         scopeFilter.siteId = input.scopeId;
       } else if (input.scopeType === 'COMPANY') {
-        if (input.scopeId !== undefined)
+        if (input.scopeId !== undefined && input.scopeId !== null)
           throw new OrgValidationError('scopeId', 'COMPANY scope has no scopeId');
       }
       const dup = await tx.roleAssignment.findFirst({

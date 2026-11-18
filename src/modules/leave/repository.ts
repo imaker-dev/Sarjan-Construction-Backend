@@ -19,7 +19,10 @@ import type {
 type Tx = Prisma.TransactionClient;
 
 export type LeaveRequestWithDetails = LeaveRequest & {
-  employee: Pick<Employee, 'id' | 'employeeCode' | 'displayName' | 'designation'>;
+  employee: Pick<
+    Employee,
+    'id' | 'employeeCode' | 'displayName' | 'designation' | 'principalId'
+  >;
 };
 
 export interface LeaveRepos {
@@ -411,7 +414,7 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         where: { id, companyId },
         include: {
           employee: {
-            select: { id: true, employeeCode: true, displayName: true, designation: true },
+            select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
           },
         },
       }),
@@ -427,7 +430,7 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         },
         include: {
           employee: {
-            select: { id: true, employeeCode: true, displayName: true, designation: true },
+            select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
           },
         },
         orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
@@ -441,7 +444,7 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         },
         include: {
           employee: {
-            select: { id: true, employeeCode: true, displayName: true, designation: true },
+            select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
           },
         },
       }),
@@ -469,7 +472,7 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
             where: { id, companyId },
             include: {
               employee: {
-                select: { id: true, employeeCode: true, displayName: true, designation: true },
+                select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
               },
             },
           }),

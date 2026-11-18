@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import { UnauthorizedError } from '../../common/errors/app-error.js';
+import { UnauthorizedError, AppError } from '../../common/errors/app-error.js';
 import type { AuthService } from './service.js';
 
 const LoginBody = Type.Object({
@@ -14,16 +14,17 @@ const RefreshBody = Type.Object({
 });
 
 const UserProfile = Type.Object({
-  id: Type.String({ format: 'uuid' }),
+  id: Type.String(),
   loginId: Type.String(),
   displayName: Type.Optional(Type.String()),
   employeeCode: Type.Optional(Type.String()),
-  companyId: Type.Optional(Type.String({ format: 'uuid' })),
+  companyId: Type.Optional(Type.String()),
   companyCode: Type.Optional(Type.String()),
   companyName: Type.Optional(Type.String()),
   isPlatform: Type.Optional(Type.Boolean()),
   role: Type.Optional(Type.String()),
   roles: Type.Array(Type.String()),
+  operations: Type.Optional(Type.Array(Type.String())),
 });
 
 const TokenResponse = Type.Object({
@@ -34,6 +35,37 @@ const TokenResponse = Type.Object({
   role: Type.Optional(Type.String()),
   roles: Type.Optional(Type.Array(Type.String())),
   user: Type.Optional(UserProfile),
+  impersonated: Type.Optional(Type.Boolean()),
+});
+
+const MfaChallengeResponse = Type.Object({
+  mfaRequired: Type.Literal(true),
+  mfaToken: Type.String(),
+  mfaType: Type.Literal('EMAIL_OTP'),
+  maskedEmail: Type.String(),
+  expiresInSeconds: Type.Integer(),
+});
+
+const LoginResponse = Type.Union([TokenResponse, MfaChallengeResponse]);
+
+const MfaVerifyBody = Type.Object({
+  mfaToken: Type.String({ minLength: 1 }),
+  code: Type.String({ minLength: 6, maxLength: 6 }),
+});
+
+const MfaSendOtpBody = Type.Object({
+  mfaToken: Type.String({ minLength: 1 }),
+});
+
+const MfaStatusResponse = Type.Object({
+  mfaEnabled: Type.Boolean(),
+  mfaType: Type.Union([Type.String(), Type.Null()]),
+});
+
+const MfaToggleResponse = Type.Object({
+  success: Type.Boolean(),
+  mfaEnabled: Type.Boolean(),
+  mfaType: Type.Optional(Type.String()),
 });
 
 const EmptyResponse = Type.Object({});
@@ -106,7 +138,7 @@ export default function authRoutes(opts: AuthRoutesOptions) {
     app.post(
       '/auth/login',
       {
-        schema: { body: LoginBody, response: { 200: TokenResponse } },
+        schema: { body: LoginBody, response: { 200: LoginResponse } },
         config: {
           rateLimit: {
             max: rateLimit.max,
@@ -125,6 +157,102 @@ export default function authRoutes(opts: AuthRoutesOptions) {
           userAgent: request.headers['user-agent'],
           correlationId: request.correlationId,
         }),
+    );
+
+    app.post(
+      '/auth/mfa/verify',
+      {
+        schema: { body: MfaVerifyBody, response: { 200: TokenResponse } },
+        config: {
+          rateLimit: {
+            max: rateLimit.max,
+            timeWindow: rateLimit.timeWindow,
+            keyGenerator: (req) => req.ip,
+          },
+        },
+      },
+      async (request) => {
+        const body = request.body as { mfaToken: string; code: string };
+        return service.completeMfaLogin(body.mfaToken, body.code, {
+          ip: request.ip,
+          userAgent: request.headers['user-agent'],
+          correlationId: request.correlationId,
+        });
+      },
+    );
+
+    app.post(
+      '/auth/mfa/send-otp',
+      {
+        schema: { body: MfaSendOtpBody, response: { 200: MfaChallengeResponse } },
+        config: {
+          rateLimit: {
+            max: 5,
+            timeWindow: 60_000,
+            keyGenerator: (req) => req.ip,
+          },
+        },
+      },
+      async (request) => {
+        const body = request.body as { mfaToken: string };
+        if (!service.mfaService) {
+          throw new AppError(400, 'MFA_NOT_CONFIGURED', 'MFA service not configured');
+        }
+        return service.mfaService.resendOtp(body.mfaToken);
+      },
+    );
+
+    app.get(
+      '/auth/mfa/status',
+      {
+        schema: { response: { 200: MfaStatusResponse } },
+        preHandler: [app.authenticate],
+      },
+      async (request) => {
+        if (!request.principal) {
+          throw new UnauthorizedError();
+        }
+        if (!service.mfaService) {
+          return { mfaEnabled: false, mfaType: null };
+        }
+        return service.mfaService.getStatus(request.principal.actorId);
+      },
+    );
+
+    app.post(
+      '/auth/mfa/enable',
+      {
+        schema: { response: { 200: MfaToggleResponse } },
+        preHandler: [app.authenticate],
+      },
+      async (request) => {
+        if (!request.principal) {
+          throw new UnauthorizedError();
+        }
+        if (!service.mfaService) {
+          throw new AppError(400, 'MFA_NOT_CONFIGURED', 'MFA service not configured');
+        }
+        await service.mfaService.enableMfa(request.principal.actorId, 'EMAIL_OTP');
+        return { success: true, mfaEnabled: true, mfaType: 'EMAIL_OTP' };
+      },
+    );
+
+    app.post(
+      '/auth/mfa/disable',
+      {
+        schema: { response: { 200: MfaToggleResponse } },
+        preHandler: [app.authenticate],
+      },
+      async (request) => {
+        if (!request.principal) {
+          throw new UnauthorizedError();
+        }
+        if (!service.mfaService) {
+          throw new AppError(400, 'MFA_NOT_CONFIGURED', 'MFA service not configured');
+        }
+        await service.mfaService.disableMfa(request.principal.actorId);
+        return { success: true, mfaEnabled: false };
+      },
     );
 
     app.post(

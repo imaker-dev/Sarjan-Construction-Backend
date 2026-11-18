@@ -138,6 +138,8 @@ describe('openapi document', () => {
       'GET /api/v1/ready',
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/refresh',
+      'POST /api/v1/auth/mfa/verify',
+      'POST /api/v1/auth/mfa/send-otp',
       'POST /api/v1/auth/claim',
       'GET /api/v1/auth/claim/verify',
       'POST /api/v1/auth/claim/onboard',
@@ -199,6 +201,11 @@ describe('openapi document', () => {
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/refresh',
       'POST /api/v1/auth/logout',
+      'POST /api/v1/auth/mfa/verify',
+      'POST /api/v1/auth/mfa/send-otp',
+      'GET /api/v1/auth/mfa/status',
+      'POST /api/v1/auth/mfa/enable',
+      'POST /api/v1/auth/mfa/disable',
       'GET /api/v1/auth/me',
       'POST /api/v1/auth/claim',
       'GET /api/v1/auth/claim/verify',
@@ -263,6 +270,7 @@ describe('openapi document', () => {
       'GET /api/v1/platform/companies/{companyId}',
       'PATCH /api/v1/platform/companies/{companyId}',
       'POST /api/v1/platform/companies/{companyId}/status',
+      'POST /api/v1/platform/companies/{companyId}/impersonate',
       'GET /api/v1/platform/operations',
       'POST /api/v1/platform/operations',
       'DELETE /api/v1/platform/operations/{key}',
@@ -309,6 +317,9 @@ describe('openapi document', () => {
       'POST /api/v1/leave/requests/{id}/cancel',
       'GET /api/v1/audit-logs',
       'GET /api/v1/audit-logs/{id}',
+      'GET /api/v1/mail/config',
+      'POST /api/v1/mail/verify',
+      'POST /api/v1/mail/send',
     ];
     const missing = EXPECTED.filter((r) => !documented.has(r));
     const extra = [...documented].filter(
