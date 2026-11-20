@@ -93,3 +93,17 @@ export class TvtSafetyBriefingRequiredError extends AttendanceError {
   }
 }
 
+export class InvalidDateRangeError extends AttendanceError {
+  constructor(message: string) {
+    super(message, 400, 'INVALID_DATE_RANGE');
+    this.name = 'InvalidDateRangeError';
+  }
+}
+
+export class AttendanceValidationError extends AttendanceError {
+  constructor(message: string) {
+    super(message, 400, 'ATTENDANCE_VALIDATION_ERROR');
+    this.name = 'AttendanceValidationError';
+  }
+}
+

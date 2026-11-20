@@ -36,7 +36,19 @@ const auditEntry = (
   ...base,
 });
 
-const hashToken = (raw: string): string => createHash('sha256').update(raw).digest('hex');
+export function normalizeClaimToken(raw: string): string {
+  const trimmed = raw.trim();
+  const match = /^(?:token[:=_-\s]*)?([0-9a-f]{64})$/i.exec(trimmed);
+  if (match?.[1]) {
+    return match[1].toLowerCase();
+  }
+  return trimmed;
+}
+
+const hashToken = (raw: string): string => {
+  const normalized = normalizeClaimToken(raw);
+  return createHash('sha256').update(normalized).digest('hex');
+};
 const keyToUuid = (key: string): string => {
   const hash = createHash('sha256').update(`OPERATION_CATALOGUE:${key}`).digest('hex');
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;

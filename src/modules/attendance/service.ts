@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import type { AttendancePolicy, AttendancePolicyScope, AttendanceSession } from '@prisma/client';
+import type { AttendanceBreak, AttendancePolicy, AttendancePolicyScope, AttendanceSession } from '@prisma/client';
 import type { ScopeTarget } from '../access-control/service.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import {
   ActiveSessionExistsError,
   AttendanceEntityNotFoundError,
+  AttendanceValidationError,
   BreakAlreadyActiveError,
   GeofenceBreachError,
+  InvalidDateRangeError,
   NoActiveBreakError,
   NoActiveSessionError,
   PunchNotAllowedError,
@@ -19,7 +21,9 @@ import type {
 import {
   calculateHaversineDistanceMeters,
   calculateWorkAndOvertime,
+  DEFAULT_ATTENDANCE_POLICY,
   getBusinessDate,
+  MAX_MUSTER_ROLL_DAYS,
   type AddTvtAttendeesInput,
   type CreatePolicyInput,
   type CreateTvtSessionInput,
@@ -68,6 +72,21 @@ const siteTarget = (companyId: string, siteId: string): ScopeTarget => ({
   scopeType: 'SITE',
   scopeId: siteId,
 });
+
+export const createDefaultPolicyFallback = (companyId?: string): AttendancePolicy =>
+  ({
+    id: 'default-fallback',
+    companyId: companyId ?? 'default-company',
+    scope: 'COMPANY',
+    projectId: null,
+    siteId: null,
+    employeeId: null,
+    name: 'Default Construction Policy',
+    description: 'Auto-fallback policy (8:00 AM to 8:00 AM cycle)',
+    ...DEFAULT_ATTENDANCE_POLICY,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }) as unknown as AttendancePolicy;
 
 export class AttendanceService {
   constructor(
@@ -274,39 +293,7 @@ export class AttendanceService {
       if (policy) return policy;
 
       // Safe default fallback
-      return {
-        id: 'default-fallback',
-        companyId,
-        scope: 'COMPANY',
-        projectId: null,
-        siteId: null,
-        employeeId: null,
-        name: 'Default Construction Policy',
-        description: 'Auto-fallback policy (8:00 AM to 8:00 AM cycle)',
-        dayStartHour: 8,
-        dayStartMinute: 0,
-        shiftDurationMins: 480,
-        halfDayThresholdMins: 240,
-        fullDayThresholdMins: 480,
-        breakMode: 'FIXED',
-        fixedBreakMins: 60,
-        minWorkForBreakMins: 240,
-        maxDynamicBreakMins: 90,
-        overtimeMode: 'HOURLY',
-        minOvertimeMins: 30,
-        otSlabMins: 30,
-        pMultiplierSlabs: null,
-        geofenceStrict: true,
-        allowMobilePunch: true,
-        allowKioskPunch: true,
-        allowBiometric: true,
-        requireTvtGate: false,
-        tvtGateAction: 'FLAG',
-        status: 'ACTIVE',
-        version: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+      return createDefaultPolicyFallback(companyId);
     });
   }
 
@@ -319,23 +306,35 @@ export class AttendanceService {
     companyId: string,
     input: PunchInInput,
   ): Promise<AttendanceSession> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_RECORD,
-      siteTarget(companyId, input.siteId),
-    );
-
     return this.uow.run(async (repos) => {
-      // 1. Resolve employee
+      // 1. Resolve employee and supervisor context
       let employeeId = input.employeeId;
       let supervisorId: string | undefined;
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
       if (!employeeId) {
-        const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
         if (!callerEmp)
           throw new AttendanceEntityNotFoundError('Employee for caller', actor.actorId);
         employeeId = callerEmp.id;
-      } else {
+      } else if (callerEmp && callerEmp.id !== employeeId) {
+        supervisorId = callerEmp.id;
+      } else if (!callerEmp) {
         supervisorId = actor.actorId;
+      }
+
+      // Assert permission: supervisor punch or privileged source requires ATTENDANCE_MANAGE
+      const isPrivilegedSource = input.source !== undefined && input.source !== 'MOBILE_SELF';
+      if (supervisorId || isPrivilegedSource) {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_MANAGE,
+          siteTarget(companyId, input.siteId),
+        );
+      } else {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_RECORD,
+          siteTarget(companyId, input.siteId),
+        );
       }
 
       const emp = await repos.employees.findById(companyId, employeeId);
@@ -359,51 +358,21 @@ export class AttendanceService {
           employeeId,
           siteId: site.id,
           projectId: site.projectId,
-        })) ??
-        ({
-          id: 'default-fallback',
-          dayStartHour: 8,
-          dayStartMinute: 0,
-          shiftDurationMins: 480,
-          halfDayThresholdMins: 240,
-          fullDayThresholdMins: 480,
-          breakMode: 'FIXED',
-          fixedBreakMins: 60,
-          minWorkForBreakMins: 240,
-          overtimeMode: 'HOURLY',
-          minOvertimeMins: 30,
-          otSlabMins: 30,
-          geofenceStrict: true,
-          allowMobilePunch: true,
-          allowKioskPunch: true,
-          allowBiometric: true,
-        } as unknown as AttendancePolicy);
+        })) ?? createDefaultPolicyFallback(companyId);
 
       // If policy id was default-fallback, make sure we persist or connect a real company policy
       let policyIdToPersist = policy.id;
       if (policyIdToPersist === 'default-fallback') {
-        // Find or create default company policy
-        let compPolicy = await repos.policies.findEffective(companyId, {});
-        compPolicy ??= await repos.policies.create(companyId, {
-          name: 'Company Default Policy',
-          scope: 'COMPANY',
-          dayStartHour: 8,
-          dayStartMinute: 0,
-          shiftDurationMins: 480,
-          halfDayThresholdMins: 240,
-          fullDayThresholdMins: 480,
-          breakMode: 'FIXED',
-          fixedBreakMins: 60,
-          minWorkForBreakMins: 240,
-          overtimeMode: 'HOURLY',
-          minOvertimeMins: 30,
-          otSlabMins: 30,
-          geofenceStrict: true,
-        });
+        const compPolicy = repos.policies.ensureDefaultPolicy
+          ? await repos.policies.ensureDefaultPolicy(companyId)
+          : await repos.policies.create(companyId, {
+              name: 'Company Default Policy',
+              scope: 'COMPANY',
+            });
         policyIdToPersist = compPolicy.id;
       }
 
-      const source = input.source ?? 'MOBILE_SELF';
+      const source = input.source ?? (supervisorId ? 'SUPERVISOR_KIOSK' : 'MOBILE_SELF');
       if (source === 'MOBILE_SELF' && !policy.allowMobilePunch) {
         throw new PunchNotAllowedError('Mobile self-punch disabled by policy');
       }
@@ -514,14 +483,11 @@ export class AttendanceService {
     return this.uow.run(async (repos) => {
       // 1. Resolve employee
       let employeeId = input.employeeId;
-      let supervisorId: string | undefined;
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
       if (!employeeId) {
-        const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
         if (!callerEmp)
           throw new AttendanceEntityNotFoundError('Employee for caller', actor.actorId);
         employeeId = callerEmp.id;
-      } else {
-        supervisorId = actor.actorId;
       }
 
       // 2. Find active session
@@ -533,11 +499,27 @@ export class AttendanceService {
         throw new NoActiveSessionError(employeeId);
       }
 
-      await this.authorizer.assertPermission(
-        actor.actorId,
-        ATTENDANCE_RECORD,
-        siteTarget(companyId, session.siteId),
-      );
+      // Resolve supervisor & assert permissions
+      let supervisorId: string | undefined;
+      if (callerEmp && callerEmp.id !== session.employeeId) {
+        supervisorId = callerEmp.id;
+      } else if (!callerEmp) {
+        supervisorId = actor.actorId;
+      }
+
+      if (supervisorId) {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_MANAGE,
+          siteTarget(companyId, session.siteId),
+        );
+      } else {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_RECORD,
+          siteTarget(companyId, session.siteId),
+        );
+      }
 
       const site = await repos.sites.findById(companyId, session.siteId);
       if (!site) throw new AttendanceEntityNotFoundError('Site', session.siteId);
@@ -559,6 +541,9 @@ export class AttendanceService {
       // 4. Geofence Verification
       let distanceM: number | null = null;
       let isWithinGeofence = true;
+      let isFlagged = session.isFlagged;
+      let flagReason = session.flagReason;
+
       if (site.geoLatitude !== null && site.geoLongitude !== null) {
         distanceM = calculateHaversineDistanceMeters(
           input.latitude,
@@ -569,23 +554,16 @@ export class AttendanceService {
         const radiusM = site.geoFenceRadiusM ?? 100;
         if (distanceM > radiusM) {
           isWithinGeofence = false;
+          isFlagged = true;
+          const outReason = `Punch-out outside geofence (${distanceM}m vs ${radiusM}m)`;
+          flagReason = flagReason ? `${flagReason}; ${outReason}` : outReason;
         }
       }
 
       // 5. Calculate Durations & Work/Overtime Units
       const policy =
         (await repos.policies.findById(companyId, session.policyId)) ??
-        ({
-          shiftDurationMins: 480,
-          halfDayThresholdMins: 240,
-          fullDayThresholdMins: 480,
-          breakMode: 'FIXED',
-          fixedBreakMins: 60,
-          minWorkForBreakMins: 240,
-          overtimeMode: 'HOURLY',
-          minOvertimeMins: 30,
-          otSlabMins: 30,
-        } as unknown as AttendancePolicy);
+        createDefaultPolicyFallback(companyId);
 
       const grossDurationMins = Math.max(
         0,
@@ -622,6 +600,8 @@ export class AttendanceService {
         overtimePUnits: calc.overtimePUnits,
         totalPUnits: calc.totalPUnits,
         overtimeHours: calc.overtimeHours,
+        isFlagged,
+        flagReason,
       });
 
       await repos.audit.record(
@@ -656,8 +636,8 @@ export class AttendanceService {
   async startBreak(actor: ActorContext, companyId: string, input: StartBreakInput) {
     return this.uow.run(async (repos) => {
       let employeeId = input.employeeId;
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
       if (!employeeId) {
-        const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
         if (!callerEmp)
           throw new AttendanceEntityNotFoundError('Employee for caller', actor.actorId);
         employeeId = callerEmp.id;
@@ -671,11 +651,20 @@ export class AttendanceService {
         throw new NoActiveSessionError(employeeId);
       }
 
-      await this.authorizer.assertPermission(
-        actor.actorId,
-        ATTENDANCE_RECORD,
-        siteTarget(companyId, session.siteId),
-      );
+      const isSupervisor = callerEmp?.id !== session.employeeId;
+      if (isSupervisor) {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_MANAGE,
+          siteTarget(companyId, session.siteId),
+        );
+      } else {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_RECORD,
+          siteTarget(companyId, session.siteId),
+        );
+      }
 
       const activeBreak = await repos.breaks.findActive(companyId, session.id);
       if (activeBreak) {
@@ -705,28 +694,57 @@ export class AttendanceService {
 
   async endBreak(actor: ActorContext, companyId: string, input: EndBreakInput) {
     return this.uow.run(async (repos) => {
-      let employeeId = input.employeeId;
-      if (!employeeId && !input.breakId && !input.sessionId) {
-        const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
-        if (!callerEmp)
-          throw new AttendanceEntityNotFoundError('Employee for caller', actor.actorId);
-        employeeId = callerEmp.id;
-      }
+      let brk: AttendanceBreak | null = null;
+      if (input.breakId) {
+        brk = await repos.breaks.findById(companyId, input.breakId);
+        if (brk?.endedAt !== null) {
+          throw new NoActiveBreakError(input.breakId);
+        }
+      } else {
+        let employeeId = input.employeeId;
+        if (!employeeId && !input.sessionId) {
+          const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+          if (!callerEmp)
+            throw new AttendanceEntityNotFoundError('Employee for caller', actor.actorId);
+          employeeId = callerEmp.id;
+        }
 
-      let sessionId = input.sessionId;
-      if (!sessionId && employeeId) {
-        const session = await repos.sessions.findActive(companyId, employeeId);
-        if (session) sessionId = session.id;
-      }
+        let sessionId = input.sessionId;
+        if (!sessionId && employeeId) {
+          const session = await repos.sessions.findActive(companyId, employeeId);
+          if (session) sessionId = session.id;
+        }
 
-      const brk = input.breakId
-        ? await repos.breaks.findActive(companyId, sessionId ?? '')
-        : sessionId
-          ? await repos.breaks.findActive(companyId, sessionId)
-          : null;
+        if (!sessionId) {
+          throw new NoActiveBreakError('unknown');
+        }
+
+        brk = await repos.breaks.findActive(companyId, sessionId);
+      }
 
       if (!brk) {
-        throw new NoActiveBreakError(sessionId ?? 'unknown');
+        throw new NoActiveBreakError(input.breakId ?? input.sessionId ?? 'unknown');
+      }
+
+      const session = await repos.sessions.findById(companyId, brk.sessionId);
+      if (!session) {
+        throw new AttendanceEntityNotFoundError('AttendanceSession', brk.sessionId);
+      }
+
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isSupervisor = callerEmp?.id !== session.employeeId;
+      if (isSupervisor) {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_MANAGE,
+          siteTarget(companyId, session.siteId),
+        );
+      } else {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_RECORD,
+          siteTarget(companyId, session.siteId),
+        );
       }
 
       const now = new Date();
@@ -775,17 +793,59 @@ export class AttendanceService {
         siteTarget(companyId, session.siteId),
       );
 
-      const presentUnits = input.presentUnits ?? Number(session.presentUnits);
-      const overtimePUnits = input.overtimePUnits ?? Number(session.overtimePUnits);
+      const effectivePunchInAt = input.punchInAt ? new Date(input.punchInAt) : session.punchInAt;
+      const effectivePunchOutAt = input.punchOutAt
+        ? new Date(input.punchOutAt)
+        : session.punchOutAt;
+
+      if (!effectivePunchOutAt) {
+        throw new AttendanceValidationError(
+          'Cannot regularize session to completed without punch out timestamp',
+        );
+      }
+
+      if (effectivePunchOutAt.getTime() <= effectivePunchInAt.getTime()) {
+        throw new AttendanceValidationError(
+          'Punch out timestamp must be strictly after punch in timestamp',
+        );
+      }
+
+      const grossDurationMins = Math.max(
+        0,
+        Math.round((effectivePunchOutAt.getTime() - effectivePunchInAt.getTime()) / 60000),
+      );
+
+      const policy =
+        (await repos.policies.findById(companyId, session.policyId)) ??
+        createDefaultPolicyFallback(companyId);
+
+      let dynamicBreaksMins = 0;
+      if (policy.breakMode === 'DYNAMIC') {
+        const allBreaks = await repos.breaks.listForSession(companyId, session.id);
+        dynamicBreaksMins = allBreaks.reduce((acc, b) => acc + (b.durationMins || 0), 0);
+      }
+
+      const calc = calculateWorkAndOvertime({
+        grossMinutes: grossDurationMins,
+        breakMinutes: dynamicBreaksMins,
+        policy,
+      });
+
+      const presentUnits = input.presentUnits ?? calc.presentUnits;
+      const overtimePUnits = input.overtimePUnits ?? calc.overtimePUnits;
       const totalPUnits = Number((presentUnits + overtimePUnits).toFixed(1));
+      const overtimeHours = input.overtimeHours ?? calc.overtimeHours;
 
       const updated = await repos.sessions.update(companyId, sessionId, {
-        ...(input.punchInAt ? { punchInAt: new Date(input.punchInAt) } : {}),
-        ...(input.punchOutAt ? { punchOutAt: new Date(input.punchOutAt) } : {}),
+        punchInAt: effectivePunchInAt,
+        punchOutAt: effectivePunchOutAt,
+        grossDurationMins,
+        breakDurationMins: calc.breakDurationMins,
+        netDurationMins: calc.netDurationMins,
         presentUnits,
         overtimePUnits,
         totalPUnits,
-        ...(input.overtimeHours !== undefined ? { overtimeHours: input.overtimeHours } : {}),
+        overtimeHours,
         status: 'COMPLETED',
         source: 'MANUAL_CORRECTION',
         approvedBy: actor.actorId,
@@ -806,12 +866,24 @@ export class AttendanceService {
             presentUnits,
             overtimePUnits,
             totalPUnits,
-            overtimeHours: input.overtimeHours,
+            overtimeHours,
+            grossDurationMins,
+            netDurationMins: calc.netDurationMins,
           },
         }),
       );
 
       return updated;
+    });
+  }
+
+  async sweepStaleSessions(companyId?: string, maxShiftDurationHours = 24): Promise<number> {
+    const cutoff = new Date(Date.now() - maxShiftDurationHours * 60 * 60 * 1000);
+    return this.uow.run(async (repos) => {
+      if (repos.sessions.autoCloseStaleSessions) {
+        return repos.sessions.autoCloseStaleSessions(cutoff, companyId);
+      }
+      return 0;
     });
   }
 
@@ -834,13 +906,25 @@ export class AttendanceService {
 
   async getActiveSession(actor: ActorContext, companyId: string, employeeId?: string) {
     return this.uow.run(async (repos) => {
-      let empId = employeeId;
-      if (!empId) {
-        const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
-        if (!callerEmp) return null;
-        empId = callerEmp.id;
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isTargetingOther =
+        employeeId !== undefined && callerEmp?.id !== employeeId;
+
+      const targetEmpId = employeeId ?? callerEmp?.id;
+      if (!targetEmpId) return null;
+
+      const session = await repos.sessions.findActive(companyId, targetEmpId);
+      if (!session) return null;
+
+      if (isTargetingOther) {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_MANAGE,
+          siteTarget(companyId, session.siteId),
+        );
       }
-      return repos.sessions.findActive(companyId, empId);
+
+      return session;
     });
   }
 
@@ -905,6 +989,95 @@ export class AttendanceService {
         }
       }
 
+      // 1. Pre-batch active employees
+      const employees = repos.employees.findManyByIds
+        ? await repos.employees.findManyByIds(companyId, input.employeeIds)
+        : await Promise.all(
+            input.employeeIds.map(async (id) => {
+              const e = await repos.employees.findById(companyId, id);
+              return e ? { id: e.id, displayName: e.displayName, status: e.status } : null;
+            }),
+          ).then((list) =>
+            list.filter((e): e is { id: string; displayName: string; status: string } => e !== null),
+          );
+      const employeeMap = new Map(employees.map((e) => [e.id, e]));
+
+      // 2. Pre-batch active sessions
+      const activeSessions = repos.sessions.findActiveMany
+        ? await repos.sessions.findActiveMany(companyId, input.employeeIds)
+        : await Promise.all(
+            input.employeeIds.map(async (id) => {
+              const s = await repos.sessions.findActive(companyId, id);
+              return s
+                ? {
+                    ...s,
+                    employeeId:
+                      'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
+                        ? s.employeeId
+                        : id,
+                  }
+                : null;
+            }),
+          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+      const activeSessionEmployeeIds = new Set(activeSessions.map((s) => s.employeeId));
+
+      // 3. Resolve site/project policy ONCE upfront
+      const basePolicy =
+        (await repos.policies.findEffective(companyId, {
+          siteId: site.id,
+          projectId: site.projectId,
+        })) ?? createDefaultPolicyFallback(companyId);
+
+      const employeePolicies = repos.policies.findEmployeePolicies
+        ? await repos.policies.findEmployeePolicies(companyId, input.employeeIds)
+        : [];
+      const employeePolicyMap = new Map<string, AttendancePolicy>();
+      for (const p of employeePolicies) {
+        if (p.employeeId) {
+          employeePolicyMap.set(p.employeeId, p);
+        }
+      }
+
+      let fallbackPersistedPolicyId: string | null = null;
+      if (basePolicy.id === 'default-fallback') {
+        const compPolicy = repos.policies.ensureDefaultPolicy
+          ? await repos.policies.ensureDefaultPolicy(companyId)
+          : await repos.policies.create(companyId, {
+              name: 'Company Default Policy',
+              scope: 'COMPANY',
+            });
+        fallbackPersistedPolicyId = compPolicy.id;
+      }
+
+      // 4. Pre-batch TVT attendance if required
+      const anyRequiresTvt =
+        basePolicy.requireTvtGate || employeePolicies.some((p) => p.requireTvtGate);
+      let attendedTvtSet = new Set<string>();
+      if (anyRequiresTvt) {
+        const businessDate = getBusinessDate(
+          punchInAt,
+          timezone,
+          basePolicy.dayStartHour,
+          basePolicy.dayStartMinute,
+        );
+        if (repos.tvt.findAttendeesForSiteAndDate) {
+          const attendees = await repos.tvt.findAttendeesForSiteAndDate(
+            companyId,
+            site.id,
+            businessDate,
+            input.employeeIds,
+          );
+          attendedTvtSet = new Set(attendees);
+        } else {
+          await Promise.all(
+            input.employeeIds.map(async (id) => {
+              const has = await repos.tvt.hasAttended(companyId, site.id, id, businessDate);
+              if (has) attendedTvtSet.add(id);
+            }),
+          );
+        }
+      }
+
       const results: {
         employeeId: string;
         sessionId?: string;
@@ -918,117 +1091,62 @@ export class AttendanceService {
       let failureCount = 0;
 
       for (const employeeId of input.employeeIds) {
-        try {
-          const emp = await repos.employees.findById(companyId, employeeId);
-          if (emp?.status !== 'ACTIVE') {
-            results.push({ employeeId, success: false, error: 'EMPLOYEE_NOT_ACTIVE' });
-            failureCount++;
-            continue;
-          }
+        const emp = employeeMap.get(employeeId);
+        if (emp?.status !== 'ACTIVE') {
+          results.push({ employeeId, success: false, error: 'EMPLOYEE_NOT_ACTIVE' });
+          failureCount++;
+          continue;
+        }
 
-          const existingSession = await repos.sessions.findActive(companyId, employeeId);
-          if (existingSession) {
-            results.push({ employeeId, success: false, error: 'ACTIVE_SESSION_EXISTS' });
-            failureCount++;
-            continue;
-          }
+        if (activeSessionEmployeeIds.has(employeeId)) {
+          results.push({ employeeId, success: false, error: 'ACTIVE_SESSION_EXISTS' });
+          failureCount++;
+          continue;
+        }
 
-          const policy =
-            (await repos.policies.findEffective(companyId, {
-              employeeId,
-              siteId: site.id,
-              projectId: site.projectId,
-            })) ??
-            ({
-              id: 'default-fallback',
-              dayStartHour: 8,
-              dayStartMinute: 0,
-              shiftDurationMins: 480,
-              halfDayThresholdMins: 240,
-              fullDayThresholdMins: 480,
-              breakMode: 'FIXED',
-              fixedBreakMins: 60,
-              minWorkForBreakMins: 240,
-              maxDynamicBreakMins: 90,
-              overtimeMode: 'HOURLY',
-              minOvertimeMins: 30,
-              otSlabMins: 30,
-              pMultiplierSlabs: null,
-              geofenceStrict: true,
-              allowMobilePunch: true,
-              allowKioskPunch: true,
-              allowBiometric: true,
-              requireTvtGate: false,
-              tvtGateAction: 'FLAG',
-              status: 'ACTIVE',
-              version: 0,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            } as unknown as AttendancePolicy);
+        const policy = employeePolicyMap.get(employeeId) ?? basePolicy;
+        const policyIdToPersist =
+          policy.id === 'default-fallback'
+            ? (fallbackPersistedPolicyId ?? policy.id)
+            : policy.id;
 
-          let policyIdToPersist = policy.id;
-          if (policyIdToPersist === 'default-fallback') {
-            let compPolicy = await repos.policies.findEffective(companyId, {});
-            compPolicy ??= await repos.policies.create(companyId, {
-              name: 'Company Default Policy',
-              scope: 'COMPANY',
-              dayStartHour: 8,
-              dayStartMinute: 0,
-              shiftDurationMins: 480,
-              halfDayThresholdMins: 240,
-              fullDayThresholdMins: 480,
-              breakMode: 'FIXED',
-              fixedBreakMins: 60,
-              minWorkForBreakMins: 240,
-              overtimeMode: 'HOURLY',
-              minOvertimeMins: 30,
-              otSlabMins: 30,
-              geofenceStrict: true,
-            });
-            policyIdToPersist = compPolicy.id;
-          }
+        if (!isWithinGeofence && policy.geofenceStrict) {
+          results.push({ employeeId, success: false, error: 'GEOFENCE_BREACH' });
+          failureCount++;
+          continue;
+        }
 
-          if (!isWithinGeofence && policy.geofenceStrict) {
-            results.push({ employeeId, success: false, error: 'GEOFENCE_BREACH' });
-            failureCount++;
-            continue;
-          }
+        const businessDate = getBusinessDate(
+          punchInAt,
+          timezone,
+          policy.dayStartHour,
+          policy.dayStartMinute,
+        );
 
-          const businessDate = getBusinessDate(
-            punchInAt,
-            timezone,
-            policy.dayStartHour,
-            policy.dayStartMinute,
-          );
+        let isFlagged = !isWithinGeofence;
+        let flagReason = !isWithinGeofence ? 'Geofence breach on punch in' : null;
 
-          let isFlagged = !isWithinGeofence;
-          let flagReason = !isWithinGeofence ? 'Geofence breach on punch in' : null;
-
-          if (policy.requireTvtGate) {
-            const hasAttendedTvt = await repos.tvt.hasAttended(
-              companyId,
-              site.id,
-              employeeId,
-              businessDate,
-            );
-            if (!hasAttendedTvt) {
-              if (policy.tvtGateAction === 'BLOCK') {
-                results.push({
-                  employeeId,
-                  success: false,
-                  error: 'TVT_SAFETY_BRIEFING_REQUIRED',
-                });
-                failureCount++;
-                continue;
-              } else {
-                isFlagged = true;
-                flagReason = flagReason
-                  ? `${flagReason}; Safety TVT briefing missed`
-                  : 'Safety TVT briefing missed';
-              }
+        if (policy.requireTvtGate) {
+          const hasAttendedTvt = attendedTvtSet.has(employeeId);
+          if (!hasAttendedTvt) {
+            if (policy.tvtGateAction === 'BLOCK') {
+              results.push({
+                employeeId,
+                success: false,
+                error: 'TVT_SAFETY_BRIEFING_REQUIRED',
+              });
+              failureCount++;
+              continue;
+            } else {
+              isFlagged = true;
+              flagReason = flagReason
+                ? `${flagReason}; Safety TVT briefing missed`
+                : 'Safety TVT briefing missed';
             }
           }
+        }
 
+        try {
           const session = await repos.sessions.create(companyId, {
             employee: { connect: { id: employeeId } },
             site: { connect: { id: site.id } },
@@ -1046,6 +1164,8 @@ export class AttendanceService {
             isFlagged,
             flagReason,
           });
+
+          activeSessionEmployeeIds.add(employeeId);
 
           results.push({
             employeeId,
@@ -1122,6 +1242,26 @@ export class AttendanceService {
         }
       }
 
+      // Pre-batch active sessions
+      const activeSessions = repos.sessions.findActiveMany
+        ? await repos.sessions.findActiveMany(companyId, input.employeeIds)
+        : await Promise.all(
+            input.employeeIds.map(async (id) => {
+              const s = await repos.sessions.findActive(companyId, id);
+              return s
+                ? {
+                    ...s,
+                    employeeId:
+                      'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
+                        ? s.employeeId
+                        : id,
+                  }
+                : null;
+            }),
+          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+
+      const sessionMap = new Map(activeSessions.map((s) => [s.employeeId, s]));
+
       const results: {
         employeeId: string;
         sessionId?: string;
@@ -1138,47 +1278,53 @@ export class AttendanceService {
       let failureCount = 0;
 
       for (const employeeId of input.employeeIds) {
+        const session = sessionMap.get(employeeId);
+        if (!session) {
+          results.push({ employeeId, success: false, error: 'NO_ACTIVE_SESSION' });
+          failureCount++;
+          continue;
+        }
+
+        if (session.siteId && session.siteId !== input.siteId) {
+          results.push({ employeeId, success: false, error: 'SESSION_SITE_MISMATCH' });
+          failureCount++;
+          continue;
+        }
+
+        const sessionPolicy =
+          'policy' in session && session.policy ? (session.policy as AttendancePolicy) : null;
+        const policy: AttendancePolicy =
+          sessionPolicy ??
+          (await repos.policies.findById(companyId, session.policyId)) ??
+          createDefaultPolicyFallback(companyId);
+
+        const grossDurationMins = Math.max(
+          0,
+          Math.round((punchOutAt.getTime() - session.punchInAt.getTime()) / 60000),
+        );
+
+        let dynamicBreaksMins = 0;
+        if (policy.breakMode === 'DYNAMIC') {
+          const allBreaks = session.breaks;
+          dynamicBreaksMins = allBreaks.reduce((acc, b) => acc + (b.durationMins || 0), 0);
+        }
+
+        const calc = calculateWorkAndOvertime({
+          grossMinutes: grossDurationMins,
+          breakMinutes: dynamicBreaksMins,
+          policy,
+        });
+
+        let isFlagged = session.isFlagged;
+        let flagReason = session.flagReason;
+        if (!isWithinGeofence) {
+          isFlagged = true;
+          const radiusM = site.geoFenceRadiusM ?? 100;
+          const outReason = `Punch-out outside geofence (${distanceM}m vs ${radiusM}m)`;
+          flagReason = flagReason ? `${flagReason}; ${outReason}` : outReason;
+        }
+
         try {
-          const session = await repos.sessions.findActive(companyId, employeeId);
-          if (!session) {
-            results.push({ employeeId, success: false, error: 'NO_ACTIVE_SESSION' });
-            failureCount++;
-            continue;
-          }
-
-          const policy =
-            (await repos.policies.findById(companyId, session.policyId)) ??
-            ({
-              id: session.policyId,
-              breakMode: 'FIXED',
-              fixedBreakMins: 60,
-              minWorkForBreakMins: 240,
-              shiftDurationMins: 480,
-              halfDayThresholdMins: 240,
-              fullDayThresholdMins: 480,
-              overtimeMode: 'HOURLY',
-              minOvertimeMins: 30,
-              otSlabMins: 30,
-              pMultiplierSlabs: null,
-            } as unknown as AttendancePolicy);
-
-          const grossDurationMins = Math.max(
-            0,
-            Math.round((punchOutAt.getTime() - session.punchInAt.getTime()) / 60000),
-          );
-
-          let dynamicBreaksMins = 0;
-          if (policy.breakMode === 'DYNAMIC') {
-            const allBreaks = await repos.breaks.listForSession(companyId, session.id);
-            dynamicBreaksMins = allBreaks.reduce((acc, b) => acc + (b.durationMins || 0), 0);
-          }
-
-          const calc = calculateWorkAndOvertime({
-            grossMinutes: grossDurationMins,
-            breakMinutes: dynamicBreaksMins,
-            policy,
-          });
-
           await repos.sessions.update(companyId, session.id, {
             punchOutAt,
             punchOutLat: input.latitude,
@@ -1195,6 +1341,8 @@ export class AttendanceService {
             totalPUnits: calc.totalPUnits,
             overtimeHours: calc.overtimeHours,
             status: 'COMPLETED',
+            isFlagged,
+            flagReason,
           });
 
           results.push({
@@ -1260,20 +1408,78 @@ export class AttendanceService {
 
       const timezone = site.timezone ?? site.project.timezone;
 
+      // Pre-batch check existing client session IDs
+      const clientSessionIds = input.sessions.map((s) => s.clientSessionId);
+      const existingSessions = repos.sessions.findManyByClientSessionIds
+        ? await repos.sessions.findManyByClientSessionIds(companyId, clientSessionIds)
+        : await Promise.all(
+            clientSessionIds.map((cid) => repos.sessions.findByClientSessionId(companyId, cid)),
+          ).then((list) => list.filter((s): s is AttendanceSession => s !== null));
+      const existingSessionMap = new Map<string, AttendanceSession>();
+      for (const s of existingSessions) {
+        if (s.clientSessionId) {
+          existingSessionMap.set(s.clientSessionId, s);
+        }
+      }
+
+      // Resolve base policy once
+      const basePolicy =
+        (await repos.policies.findEffective(companyId, {
+          siteId: site.id,
+          projectId: site.projectId,
+        })) ?? createDefaultPolicyFallback(companyId);
+
+      const distinctEmployeeIds = [...new Set(input.sessions.map((s) => s.employeeId))];
+      const employeePolicies = repos.policies.findEmployeePolicies
+        ? await repos.policies.findEmployeePolicies(companyId, distinctEmployeeIds)
+        : [];
+      const employeePolicyMap = new Map<string, AttendancePolicy>();
+      for (const p of employeePolicies) {
+        if (p.employeeId) {
+          employeePolicyMap.set(p.employeeId, p);
+        }
+      }
+
+      // Pre-batch employees to verify ACTIVE status
+      const employees = repos.employees.findManyByIds
+        ? await repos.employees.findManyByIds(companyId, distinctEmployeeIds)
+        : await Promise.all(
+            distinctEmployeeIds.map(async (id) => repos.employees.findById(companyId, id)),
+          ).then((list) => list.filter((e): e is NonNullable<typeof e> => e !== null));
+      const employeeMap = new Map(employees.map((e) => [e.id, e]));
+
+      // Pre-batch active sessions to detect duplicate active sessions
+      const activeSessions = repos.sessions.findActiveMany
+        ? await repos.sessions.findActiveMany(companyId, distinctEmployeeIds)
+        : await Promise.all(
+            distinctEmployeeIds.map(async (id) => repos.sessions.findActive(companyId, id)),
+          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+      const activeEmployeeSet = new Set<string>(activeSessions.map((s) => s.employeeId));
+
+      let fallbackPersistedPolicyId: string | null = null;
+      if (basePolicy.id === 'default-fallback') {
+        const compPolicy = repos.policies.ensureDefaultPolicy
+          ? await repos.policies.ensureDefaultPolicy(companyId)
+          : await repos.policies.create(companyId, {
+              name: 'Company Default Policy',
+              scope: 'COMPANY',
+            });
+        fallbackPersistedPolicyId = compPolicy.id;
+      }
+
       const results: {
         clientSessionId: string;
-        status: 'SYNCED' | 'ALREADY_SYNCED';
+        status: 'SYNCED' | 'ALREADY_SYNCED' | 'FAILED';
         sessionId?: string;
+        error?: string;
       }[] = [];
 
       let syncedCount = 0;
       let alreadySyncedCount = 0;
+      let failedCount = 0;
 
       for (const item of input.sessions) {
-        const existing = await repos.sessions.findByClientSessionId(
-          companyId,
-          item.clientSessionId,
-        );
+        const existing = existingSessionMap.get(item.clientSessionId);
         if (existing) {
           results.push({
             clientSessionId: item.clientSessionId,
@@ -1284,61 +1490,34 @@ export class AttendanceService {
           continue;
         }
 
-        const punchInAt = new Date(item.punchInAt);
-        const policy =
-          (await repos.policies.findEffective(companyId, {
-            employeeId: item.employeeId,
-            siteId: site.id,
-            projectId: site.projectId,
-          })) ??
-          ({
-            id: 'default-fallback',
-            dayStartHour: 8,
-            dayStartMinute: 0,
-            shiftDurationMins: 480,
-            halfDayThresholdMins: 240,
-            fullDayThresholdMins: 480,
-            breakMode: 'FIXED',
-            fixedBreakMins: 60,
-            minWorkForBreakMins: 240,
-            maxDynamicBreakMins: 90,
-            overtimeMode: 'HOURLY',
-            minOvertimeMins: 30,
-            otSlabMins: 30,
-            pMultiplierSlabs: null,
-            geofenceStrict: false,
-            allowMobilePunch: true,
-            allowKioskPunch: true,
-            allowBiometric: true,
-            requireTvtGate: false,
-            tvtGateAction: 'FLAG',
-            status: 'ACTIVE',
-            version: 0,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          } as unknown as AttendancePolicy);
-
-        let policyIdToPersist = policy.id;
-        if (policyIdToPersist === 'default-fallback') {
-          let compPolicy = await repos.policies.findEffective(companyId, {});
-          compPolicy ??= await repos.policies.create(companyId, {
-            name: 'Company Default Policy',
-            scope: 'COMPANY',
-            dayStartHour: 8,
-            dayStartMinute: 0,
-            shiftDurationMins: 480,
-            halfDayThresholdMins: 240,
-            fullDayThresholdMins: 480,
-            breakMode: 'FIXED',
-            fixedBreakMins: 60,
-            minWorkForBreakMins: 240,
-            overtimeMode: 'HOURLY',
-            minOvertimeMins: 30,
-            otSlabMins: 30,
-            geofenceStrict: false,
+        const emp = employeeMap.get(item.employeeId);
+        if (emp?.status !== 'ACTIVE') {
+          results.push({
+            clientSessionId: item.clientSessionId,
+            status: 'FAILED',
+            error: 'EMPLOYEE_NOT_ACTIVE',
           });
-          policyIdToPersist = compPolicy.id;
+          failedCount++;
+          continue;
         }
+
+        const isStartingNewSession = !item.punchOutAt;
+        if (isStartingNewSession && activeEmployeeSet.has(item.employeeId)) {
+          results.push({
+            clientSessionId: item.clientSessionId,
+            status: 'FAILED',
+            error: 'ACTIVE_SESSION_EXISTS',
+          });
+          failedCount++;
+          continue;
+        }
+
+        const punchInAt = new Date(item.punchInAt);
+        const policy = employeePolicyMap.get(item.employeeId) ?? basePolicy;
+        const policyIdToPersist =
+          policy.id === 'default-fallback'
+            ? (fallbackPersistedPolicyId ?? policy.id)
+            : policy.id;
 
         const businessDate = getBusinessDate(
           punchInAt,
@@ -1349,6 +1528,41 @@ export class AttendanceService {
 
         let isFlagged = false;
         let flagReason: string | null = null;
+        let punchInDistanceM: number | null = null;
+        let punchInWithinGeofence = true;
+        let punchOutDistanceM: number | null = null;
+        let punchOutWithinGeofence = true;
+        const radiusM = site.geoFenceRadiusM ?? 100;
+
+        if (site.geoLatitude !== null && site.geoLongitude !== null) {
+          if (item.punchInLat !== undefined && item.punchInLng !== undefined) {
+            punchInDistanceM = calculateHaversineDistanceMeters(
+              item.punchInLat,
+              item.punchInLng,
+              Number(site.geoLatitude),
+              Number(site.geoLongitude),
+            );
+            if (punchInDistanceM > radiusM) {
+              punchInWithinGeofence = false;
+              isFlagged = true;
+              flagReason = `Punch-in outside geofence (${punchInDistanceM}m vs ${radiusM}m)`;
+            }
+          }
+          if (item.punchOutLat !== undefined && item.punchOutLng !== undefined) {
+            punchOutDistanceM = calculateHaversineDistanceMeters(
+              item.punchOutLat,
+              item.punchOutLng,
+              Number(site.geoLatitude),
+              Number(site.geoLongitude),
+            );
+            if (punchOutDistanceM > radiusM) {
+              punchOutWithinGeofence = false;
+              isFlagged = true;
+              const outReason = `Punch-out outside geofence (${punchOutDistanceM}m vs ${radiusM}m)`;
+              flagReason = flagReason ? `${flagReason}; ${outReason}` : outReason;
+            }
+          }
+        }
 
         if (policy.requireTvtGate) {
           const hasAttended = await repos.tvt.hasAttended(
@@ -1358,8 +1572,20 @@ export class AttendanceService {
             businessDate,
           );
           if (!hasAttended) {
-            isFlagged = true;
-            flagReason = 'Safety TVT briefing missed';
+            if (policy.tvtGateAction === 'BLOCK') {
+              results.push({
+                clientSessionId: item.clientSessionId,
+                status: 'FAILED',
+                error: 'TVT_SAFETY_BRIEFING_REQUIRED',
+              });
+              failedCount++;
+              continue;
+            } else {
+              isFlagged = true;
+              flagReason = flagReason
+                ? `${flagReason}; Safety TVT briefing missed`
+                : 'Safety TVT briefing missed';
+            }
           }
         }
 
@@ -1393,42 +1619,70 @@ export class AttendanceService {
           overtimeHours = calc.overtimeHours;
         }
 
-        const session = await repos.sessions.create(companyId, {
-          employee: { connect: { id: item.employeeId } },
-          site: { connect: { id: site.id } },
-          policy: { connect: { id: policyIdToPersist } },
-          businessDate,
-          status,
-          source: 'SUPERVISOR_KIOSK',
-          punchInAt,
-          ...(item.punchInLat !== undefined ? { punchInLat: item.punchInLat } : {}),
-          ...(item.punchInLng !== undefined ? { punchInLng: item.punchInLng } : {}),
-          punchInSupervisorId: actor.actorId,
-          punchInRemarks: item.remarks ?? null,
-          punchOutAt,
-          ...(item.punchOutLat !== undefined ? { punchOutLat: item.punchOutLat } : {}),
-          ...(item.punchOutLng !== undefined ? { punchOutLng: item.punchOutLng } : {}),
-          punchOutSupervisorId: punchOutAt ? actor.actorId : null,
-          grossDurationMins,
-          breakDurationMins,
-          netDurationMins,
-          presentUnits,
-          overtimePUnits,
-          totalPUnits,
-          overtimeHours,
-          isFlagged,
-          flagReason,
-          clientSessionId: item.clientSessionId,
-          syncBatchId: input.syncBatchId,
-          isSyncedOffline: true,
-        });
+        try {
+          const session = await repos.sessions.create(companyId, {
+            employee: { connect: { id: item.employeeId } },
+            site: { connect: { id: site.id } },
+            policy: { connect: { id: policyIdToPersist } },
+            businessDate,
+            status,
+            source: 'SUPERVISOR_KIOSK',
+            punchInAt,
+            ...(item.punchInLat !== undefined ? { punchInLat: item.punchInLat } : {}),
+            ...(item.punchInLng !== undefined ? { punchInLng: item.punchInLng } : {}),
+            punchInDistanceM,
+            punchInWithinGeofence,
+            punchInSupervisorId: actor.actorId,
+            punchInRemarks: item.remarks ?? null,
+            punchOutAt,
+            ...(item.punchOutLat !== undefined ? { punchOutLat: item.punchOutLat } : {}),
+            ...(item.punchOutLng !== undefined ? { punchOutLng: item.punchOutLng } : {}),
+            punchOutDistanceM,
+            punchOutWithinGeofence,
+            punchOutSupervisorId: punchOutAt ? actor.actorId : null,
+            grossDurationMins,
+            breakDurationMins,
+            netDurationMins,
+            presentUnits,
+            overtimePUnits,
+            totalPUnits,
+            overtimeHours,
+            isFlagged,
+            flagReason,
+            clientSessionId: item.clientSessionId,
+            syncBatchId: input.syncBatchId,
+            isSyncedOffline: true,
+          });
 
-        results.push({
-          clientSessionId: item.clientSessionId,
-          status: 'SYNCED',
-          sessionId: session.id,
-        });
-        syncedCount++;
+          if (status === 'IN_PROGRESS') {
+            activeEmployeeSet.add(item.employeeId);
+          }
+
+          existingSessionMap.set(item.clientSessionId, session);
+
+          results.push({
+            clientSessionId: item.clientSessionId,
+            status: 'SYNCED',
+            sessionId: session.id,
+          });
+          syncedCount++;
+        } catch (err: unknown) {
+          if (err instanceof ActiveSessionExistsError) {
+            results.push({
+              clientSessionId: item.clientSessionId,
+              status: 'FAILED',
+              error: 'ACTIVE_SESSION_EXISTS',
+            });
+            failedCount++;
+          } else {
+            // Concurrent collision or duplicate
+            results.push({
+              clientSessionId: item.clientSessionId,
+              status: 'ALREADY_SYNCED',
+            });
+            alreadySyncedCount++;
+          }
+        }
       }
 
       await repos.audit.record(
@@ -1443,6 +1697,7 @@ export class AttendanceService {
             totalSubmitted: input.sessions.length,
             syncedCount,
             alreadySyncedCount,
+            failedCount,
           },
         }),
       );
@@ -1453,6 +1708,7 @@ export class AttendanceService {
         totalSubmitted: input.sessions.length,
         syncedCount,
         alreadySyncedCount,
+        failedCount,
         results,
       };
     });
@@ -1596,6 +1852,25 @@ export class AttendanceService {
       ATTENDANCE_READ,
       siteTarget(companyId, filter.siteId),
     );
+
+    const fromDate = new Date(`${filter.from}T00:00:00.000Z`);
+    const toDate = new Date(`${filter.to}T00:00:00.000Z`);
+
+    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+      throw new InvalidDateRangeError('Invalid date format. Expected YYYY-MM-DD');
+    }
+
+    if (fromDate.getTime() > toDate.getTime()) {
+      throw new InvalidDateRangeError("'from' date must be on or before 'to' date");
+    }
+
+    const diffDays =
+      Math.round((toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    if (diffDays > MAX_MUSTER_ROLL_DAYS) {
+      throw new InvalidDateRangeError(
+        `Date range cannot exceed ${MAX_MUSTER_ROLL_DAYS} days (requested ${diffDays} days)`,
+      );
+    }
 
     return this.uow.run((repos) => repos.sessions.getMusterRollRange(companyId, filter));
   }

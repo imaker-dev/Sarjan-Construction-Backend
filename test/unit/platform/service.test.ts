@@ -383,7 +383,7 @@ describe('claim lifecycle', () => {
       adminLoginId: 'a@a.test',
       adminDisplayName: 'A',
     });
-    const r = await svc.consumeClaim(created.claimCode, 'new-password-1234');
+    const r = await svc.consumeClaim(`token${created.claimCode}`, 'new-password-1234');
     expect(r.status).toBe('CLAIMED');
     const admin = store.principals[0];
     expect(admin?.status).toBe('ACTIVE');

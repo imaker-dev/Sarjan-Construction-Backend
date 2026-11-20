@@ -252,20 +252,37 @@ export function employeeRoutes(service: EmployeeService, accessService?: Employe
             loginId: string;
             loginIdType?: string;
           };
+          const frontendUrl =
+            (req.headers['x-frontend-url'] as string | undefined) ??
+            (typeof req.headers.origin === 'string' && req.headers.origin !== 'null'
+              ? req.headers.origin
+              : undefined);
           return accessService.invite(
             actorOf(req),
             companyIdOf(req),
             (req.params as { id: string }).id,
             loginId,
             loginIdType,
+            frontendUrl,
           );
         },
       );
       app.post(
         '/employees/:id/invite/resend',
         { schema: { params: EmployeeParams }, ...perm('EMPLOYEE_INVITE') },
-        async (req) =>
-          accessService.resend(actorOf(req), companyIdOf(req), (req.params as { id: string }).id),
+        async (req) => {
+          const frontendUrl =
+            (req.headers['x-frontend-url'] as string | undefined) ??
+            (typeof req.headers.origin === 'string' && req.headers.origin !== 'null'
+              ? req.headers.origin
+              : undefined);
+          return accessService.resend(
+            actorOf(req),
+            companyIdOf(req),
+            (req.params as { id: string }).id,
+            frontendUrl,
+          );
+        },
       );
       app.get(
         '/employees/:id/assignments',

@@ -10,7 +10,19 @@ import { passwordService } from '../identity/password.js';
 import type { MailService } from '../mail/service.js';
 
 const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
-const hashToken = (raw: string) => createHash('sha256').update(raw).digest('hex');
+export function normalizeClaimToken(raw: string): string {
+  const trimmed = raw.trim();
+  const match = /^(?:token[:=_-\s]*)?([0-9a-f]{64})$/i.exec(trimmed);
+  if (match?.[1]) {
+    return match[1].toLowerCase();
+  }
+  return trimmed;
+}
+
+const hashToken = (raw: string) => {
+  const normalized = normalizeClaimToken(raw);
+  return createHash('sha256').update(normalized).digest('hex');
+};
 
 function assertValidId(id: string, name = 'employeeId'): void {
   if (!id || id === 'undefined' || id === 'null' || id.trim() === '') {
@@ -33,6 +45,7 @@ export class EmployeeAccessService {
     employeeId: string,
     loginId: string,
     loginIdType = 'EMAIL',
+    frontendUrl?: string,
   ) {
     assertValidId(employeeId, 'employeeId');
     const email = loginId.toLowerCase().trim();
@@ -77,6 +90,9 @@ export class EmployeeAccessService {
         }) as never,
       });
 
+      const baseUrl = (frontendUrl ?? this.appBaseUrl).replace(/\/+$/, '');
+      const claimUrl = `${baseUrl}/verify-employee?token=${raw}`;
+
       if (this.mailService) {
         const companyName =
           'company' in tx &&
@@ -97,17 +113,17 @@ export class EmployeeAccessService {
             employeeName: emp.displayName,
             companyName,
             claimCode: raw,
-            claimUrl: `${this.appBaseUrl}/auth/claim?token=${raw}`,
+            claimUrl,
           })
           .catch(() => undefined);
       }
 
-      return { claimCode: raw, expiresAt };
+      return { claimCode: raw, claimUrl, expiresAt };
     });
   }
 
   /** Reissue — revoke prior unused codes, mint a new one-time code. */
-  async resend(actor: ActorContext, companyId: string, employeeId: string) {
+  async resend(actor: ActorContext, companyId: string, employeeId: string, frontendUrl?: string) {
     assertValidId(employeeId, 'employeeId');
     return this.prisma.$transaction(async (tx) => {
       const emp = await tx.employee.findFirst({
@@ -137,6 +153,9 @@ export class EmployeeAccessService {
         }) as never,
       });
 
+      const baseUrl = (frontendUrl ?? this.appBaseUrl).replace(/\/+$/, '');
+      const claimUrl = `${baseUrl}/verify-employee?token=${raw}`;
+
       if (this.mailService && recipientEmail) {
         const companyName =
           'company' in tx &&
@@ -157,12 +176,12 @@ export class EmployeeAccessService {
             employeeName: emp.displayName,
             companyName,
             claimCode: raw,
-            claimUrl: `${this.appBaseUrl}/auth/claim?token=${raw}`,
+            claimUrl,
           })
           .catch(() => undefined);
       }
 
-      return { claimCode: raw, expiresAt };
+      return { claimCode: raw, claimUrl, expiresAt };
     });
   }
 
@@ -171,9 +190,97 @@ export class EmployeeAccessService {
     const emp = await this.prisma.employee.findFirst({ where: { id: employeeId, companyId } });
     if (!emp) throw new OrgEntityNotFoundError('EMPLOYEE');
     if (!emp.principalId) return [];
-    return this.prisma.roleAssignment.findMany({
+    const assignments = await this.prisma.roleAssignment.findMany({
       where: { companyId, principalId: emp.principalId, revokedAt: null },
-      include: { role: { select: { key: true, name: true } } },
+      include: {
+        role: { select: { key: true, name: true } },
+        headOffice: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            isPrimary: true,
+            status: true,
+          },
+        },
+        project: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            status: true,
+            headOfficeId: true,
+            headOffice: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+              },
+            },
+          },
+        },
+        site: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            projectId: true,
+            status: true,
+            project: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+                status: true,
+                headOfficeId: true,
+                headOffice: {
+                  select: {
+                    id: true,
+                    code: true,
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return assignments.map((a) => {
+      const headOffice =
+        a.headOffice ??
+        a.project?.headOffice ??
+        a.site?.project.headOffice ??
+        null;
+      const headOfficeId = a.headOfficeId ?? headOffice?.id ?? null;
+
+      const project = a.project ?? a.site?.project ?? null;
+      const projectId = a.projectId ?? a.site?.projectId ?? null;
+
+      const site = a.site ?? null;
+      const siteId = a.siteId ?? null;
+
+      const scopeId =
+        a.scopeType === 'HEAD_OFFICE'
+          ? headOfficeId
+          : a.scopeType === 'PROJECT'
+            ? projectId
+            : a.scopeType === 'SITE'
+              ? siteId
+              : null;
+
+      return {
+        ...a,
+        headOfficeId,
+        headOffice,
+        projectId,
+        project,
+        siteId,
+        site,
+        scopeId,
+      };
     });
   }
 

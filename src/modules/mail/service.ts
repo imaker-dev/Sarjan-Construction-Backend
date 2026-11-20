@@ -120,7 +120,7 @@ export class MailService {
    * Send an employee onboarding / invitation email with claim code.
    */
   async sendEmployeeInvitation(options: EmployeeInvitationMailOptions): Promise<SendMailResult> {
-    const claimUrl = options.claimUrl ?? 'https://sarjan.imaker.in/claim';
+    const claimUrl = options.claimUrl ?? 'https://sarjan.imaker.in/verify-employee';
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e0e0e0; border-radius: 8px;">
         <div style="text-align: center; margin-bottom: 24px;">

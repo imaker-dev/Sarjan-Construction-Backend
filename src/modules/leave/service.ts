@@ -11,6 +11,7 @@ import {
   LeavePolicyNotFoundError,
   LeaveRequestStateError,
   MaxConsecutiveLeaveDaysExceededError,
+  SelfApprovalNotAllowedError,
 } from './errors.js';
 import type {
   LeaveRequestWithDetails,
@@ -61,6 +62,34 @@ export class LeaveService {
     private readonly authorizer: Authorizer,
     private readonly dispatcher?: RoleNotificationDispatcher | undefined,
   ) {}
+
+  private async isSupervisorOrManager(
+    actorId: string,
+    companyId: string,
+  ): Promise<boolean> {
+    try {
+      await this.authorizer.assertPermission(actorId, LEAVE_MANAGE, companyTarget(companyId));
+      return true;
+    } catch {
+      try {
+        await this.authorizer.assertPermission(actorId, LEAVE_APPROVE, companyTarget(companyId));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  private async assertSupervisorOrManager(
+    actorId: string,
+    companyId: string,
+  ): Promise<void> {
+    try {
+      await this.authorizer.assertPermission(actorId, LEAVE_MANAGE, companyTarget(companyId));
+    } catch {
+      await this.authorizer.assertPermission(actorId, LEAVE_APPROVE, companyTarget(companyId));
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Leave Policies
@@ -215,7 +244,23 @@ export class LeaveService {
     filter?: ListLeaveBalancesFilter,
   ): Promise<LeaveBalance[]> {
     await this.authorizer.assertPermission(actor.actorId, LEAVE_READ, companyTarget(companyId));
-    return this.uow.run((repos) => repos.balances.list(companyId, filter));
+    return this.uow.run(async (repos) => {
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isManagerOrSupervisor = await this.isSupervisorOrManager(actor.actorId, companyId);
+
+      if (!isManagerOrSupervisor) {
+        if (filter?.employeeId !== undefined && callerEmp && filter.employeeId !== callerEmp.id) {
+          await this.assertSupervisorOrManager(actor.actorId, companyId);
+        }
+        const effectiveFilter: ListLeaveBalancesFilter = {
+          ...filter,
+          employeeId: callerEmp ? callerEmp.id : '00000000-0000-0000-0000-000000000000',
+        };
+        return repos.balances.list(companyId, effectiveFilter);
+      }
+
+      return repos.balances.list(companyId, filter);
+    });
   }
 
   async getEmployeeBalance(
@@ -226,7 +271,14 @@ export class LeaveService {
     year: number,
   ): Promise<LeaveBalance | null> {
     await this.authorizer.assertPermission(actor.actorId, LEAVE_READ, companyTarget(companyId));
-    return this.uow.run((repos) => repos.balances.find(companyId, employeeId, leaveType, year));
+    return this.uow.run(async (repos) => {
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isOwn = callerEmp !== null && callerEmp.id === employeeId;
+      if (!isOwn) {
+        await this.assertSupervisorOrManager(actor.actorId, companyId);
+      }
+      return repos.balances.find(companyId, employeeId, leaveType, year);
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -240,7 +292,6 @@ export class LeaveService {
   ): Promise<LeaveRequestWithDetails> {
     await this.authorizer.assertPermission(actor.actorId, LEAVE_APPLY, companyTarget(companyId));
 
-    const employeeId = input.employeeId ?? actor.actorId;
     const isHalfDay = input.isHalfDay ?? false;
 
     if (isHalfDay && input.startDate !== input.endDate) {
@@ -256,6 +307,29 @@ export class LeaveService {
     const year = start.getUTCFullYear();
 
     return this.uow.run(async (repos) => {
+      // 0. Resolve employee context and permissions
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      let employeeId: string;
+
+      if (!input.employeeId) {
+        if (!callerEmp) {
+          throw new LeaveRequestStateError('No employee profile found for caller in this company');
+        }
+        employeeId = callerEmp.id;
+      } else {
+        employeeId = input.employeeId;
+        if (callerEmp?.id !== employeeId) {
+          await this.authorizer.assertPermission(actor.actorId, LEAVE_MANAGE, companyTarget(companyId));
+        }
+        const targetEmp = await repos.employees.findById(companyId, employeeId);
+        if (!targetEmp) {
+          throw new LeaveRequestStateError(`Employee ${employeeId} not found`);
+        }
+      }
+
+      // Serialize concurrent requests for this employee
+      await repos.employees.lockForUpdate?.(companyId, employeeId);
+
       // 1. Resolve effective policy for sandwich and compliance rules
       const policy = await repos.policies.resolveEffective(companyId, input.leaveType, { employeeId });
 
@@ -376,6 +450,15 @@ export class LeaveService {
         throw new LeaveRequestStateError(`Leave request is already in ${existing.status} status`);
       }
 
+      // Check for self-approval (separation of duties)
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isSelf =
+        (existing.employee.principalId !== null && existing.employee.principalId === actor.actorId) ||
+        (callerEmp !== null && callerEmp.id === existing.employeeId);
+      if (isSelf) {
+        throw new SelfApprovalNotAllowedError('Employees cannot approve their own leave requests');
+      }
+
       const totalDays = Number(existing.totalDays);
       const year = existing.startDate.getUTCFullYear();
       const newStatus: LeaveRequestStatus = input.action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
@@ -446,6 +529,16 @@ export class LeaveService {
         throw new LeaveRequestStateError(`Cannot cancel leave in ${existing.status} status`);
       }
 
+      // Check ownership: caller must be owner or hold LEAVE_MANAGE
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isOwner =
+        (existing.employee.principalId !== null && existing.employee.principalId === actor.actorId) ||
+        (callerEmp !== null && callerEmp.id === existing.employeeId);
+
+      if (!isOwner) {
+        await this.authorizer.assertPermission(actor.actorId, LEAVE_MANAGE, companyTarget(companyId));
+      }
+
       const totalDays = Number(existing.totalDays);
       const year = existing.startDate.getUTCFullYear();
 
@@ -488,7 +581,23 @@ export class LeaveService {
     filter?: ListLeaveRequestsFilter,
   ): Promise<LeaveRequestWithDetails[]> {
     await this.authorizer.assertPermission(actor.actorId, LEAVE_READ, companyTarget(companyId));
-    return this.uow.run((repos) => repos.requests.list(companyId, filter));
+    return this.uow.run(async (repos) => {
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isManagerOrSupervisor = await this.isSupervisorOrManager(actor.actorId, companyId);
+
+      if (!isManagerOrSupervisor) {
+        if (filter?.employeeId !== undefined && callerEmp && filter.employeeId !== callerEmp.id) {
+          await this.assertSupervisorOrManager(actor.actorId, companyId);
+        }
+        const effectiveFilter: ListLeaveRequestsFilter = {
+          ...filter,
+          employeeId: callerEmp ? callerEmp.id : '00000000-0000-0000-0000-000000000000',
+        };
+        return repos.requests.list(companyId, effectiveFilter);
+      }
+
+      return repos.requests.list(companyId, filter);
+    });
   }
 
   async getRequestById(
@@ -497,6 +606,20 @@ export class LeaveService {
     id: string,
   ): Promise<LeaveRequestWithDetails | null> {
     await this.authorizer.assertPermission(actor.actorId, LEAVE_READ, companyTarget(companyId));
-    return this.uow.run((repos) => repos.requests.findById(companyId, id));
+    return this.uow.run(async (repos) => {
+      const req = await repos.requests.findById(companyId, id);
+      if (!req) return null;
+
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isOwner =
+        (req.employee.principalId !== null && req.employee.principalId === actor.actorId) ||
+        (callerEmp !== null && callerEmp.id === req.employeeId);
+
+      if (!isOwner) {
+        await this.assertSupervisorOrManager(actor.actorId, companyId);
+      }
+
+      return req;
+    });
   }
 }

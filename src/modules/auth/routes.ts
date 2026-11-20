@@ -66,6 +66,24 @@ const MfaToggleResponse = Type.Object({
   success: Type.Boolean(),
   mfaEnabled: Type.Boolean(),
   mfaType: Type.Optional(Type.String()),
+  message: Type.Optional(Type.String()),
+});
+
+const MfaEnableBody = Type.Optional(
+  Type.Object({
+    mfaToken: Type.Optional(Type.String({ minLength: 1 })),
+    code: Type.Optional(Type.String({ minLength: 6, maxLength: 6 })),
+  }),
+);
+
+const ChangePasswordBody = Type.Object({
+  currentPassword: Type.String({ minLength: 1, maxLength: 512 }),
+  newPassword: Type.String({ minLength: 8, maxLength: 128 }),
+});
+
+const ChangePasswordResponse = Type.Object({
+  success: Type.Boolean(),
+  message: Type.String(),
 });
 
 const EmptyResponse = Type.Object({});
@@ -117,6 +135,109 @@ const UserMeResponseSchema = Type.Object({
       departmentName: Type.String(),
       category: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       isPrimary: Type.Boolean(),
+    }),
+  ),
+});
+
+const UserAggregatedProfileResponseSchema = Type.Object({
+  principal: Type.Object({
+    id: Type.String({ format: 'uuid' }),
+    loginId: Type.String(),
+    loginIdType: Type.String(),
+    status: Type.String(),
+    mfaEnabled: Type.Boolean(),
+    mfaType: Type.Union([Type.String(), Type.Null()]),
+  }),
+  employee: Type.Union([
+    Type.Object({
+      id: Type.String({ format: 'uuid' }),
+      companyId: Type.String({ format: 'uuid' }),
+      employeeCode: Type.String(),
+      displayName: Type.String(),
+      engagementType: Type.Union([Type.String(), Type.Null()]),
+      designation: Type.Union([Type.String(), Type.Null()]),
+      tradeCategory: Type.Union([Type.String(), Type.Null()]),
+      joiningDate: Type.Union([Type.String(), Type.Null()]),
+      contactPhone: Type.Union([Type.String(), Type.Null()]),
+      contactEmail: Type.Union([Type.String(), Type.Null()]),
+      emergencyContactName: Type.Union([Type.String(), Type.Null()]),
+      emergencyContactPhone: Type.Union([Type.String(), Type.Null()]),
+      status: Type.String(),
+    }),
+    Type.Null(),
+  ]),
+  company: Type.Union([
+    Type.Object({
+      id: Type.String({ format: 'uuid' }),
+      code: Type.String(),
+      name: Type.String(),
+      isPlatform: Type.Boolean(),
+    }),
+    Type.Null(),
+  ]),
+  primaryRole: Type.Union([Type.String(), Type.Null()]),
+  roles: Type.Array(Type.String()),
+  permissions: Type.Array(Type.String()),
+  departments: Type.Array(
+    Type.Object({
+      departmentId: Type.String({ format: 'uuid' }),
+      departmentCode: Type.String(),
+      departmentName: Type.String(),
+      category: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      isPrimary: Type.Boolean(),
+    }),
+  ),
+  assignments: Type.Array(
+    Type.Object({
+      id: Type.String({ format: 'uuid' }),
+      roleKey: Type.String(),
+      roleName: Type.String(),
+      scopeType: Type.String(),
+      headOfficeId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+      headOfficeName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      projectId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+      projectName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      siteId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+      siteName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      effectiveFrom: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      effectiveTo: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    }),
+  ),
+  attendance: Type.Object({
+    hasActiveSession: Type.Boolean(),
+    activeSession: Type.Union([
+      Type.Object({
+        id: Type.String({ format: 'uuid' }),
+        siteId: Type.String({ format: 'uuid' }),
+        siteCode: Type.String(),
+        siteName: Type.String(),
+        businessDate: Type.String(),
+        punchInAt: Type.String(),
+        source: Type.String(),
+        punchInWithinGeofence: Type.Boolean(),
+        isFlagged: Type.Boolean(),
+        flagReason: Type.Union([Type.String(), Type.Null()]),
+        activeBreak: Type.Union([
+          Type.Object({
+            id: Type.String({ format: 'uuid' }),
+            breakType: Type.String(),
+            startedAt: Type.String(),
+          }),
+          Type.Null(),
+        ]),
+      }),
+      Type.Null(),
+    ]),
+  }),
+  leaveBalances: Type.Array(
+    Type.Object({
+      leaveType: Type.String(),
+      year: Type.Integer(),
+      allocatedDays: Type.Number(),
+      usedDays: Type.Number(),
+      pendingDays: Type.Number(),
+      carriedOverDays: Type.Number(),
+      availableDays: Type.Number(),
     }),
   ),
 });
@@ -220,9 +341,23 @@ export default function authRoutes(opts: AuthRoutesOptions) {
     );
 
     app.post(
+      '/auth/mfa/setup',
+      {
+        schema: { response: { 200: MfaChallengeResponse } },
+        preHandler: [app.authenticate],
+      },
+      async (request) => {
+        if (!request.principal) {
+          throw new UnauthorizedError();
+        }
+        return service.requestMfaSetup(request.principal.actorId);
+      },
+    );
+
+    app.post(
       '/auth/mfa/enable',
       {
-        schema: { response: { 200: MfaToggleResponse } },
+        schema: { body: MfaEnableBody, response: { 200: MfaToggleResponse } },
         preHandler: [app.authenticate],
       },
       async (request) => {
@@ -232,8 +367,12 @@ export default function authRoutes(opts: AuthRoutesOptions) {
         if (!service.mfaService) {
           throw new AppError(400, 'MFA_NOT_CONFIGURED', 'MFA service not configured');
         }
+        const body = request.body as { mfaToken?: string; code?: string } | undefined;
+        if (body?.mfaToken && body.code) {
+          return service.confirmMfaSetup(request.principal.actorId, body.mfaToken, body.code);
+        }
         await service.mfaService.enableMfa(request.principal.actorId, 'EMAIL_OTP');
-        return { success: true, mfaEnabled: true, mfaType: 'EMAIL_OTP' };
+        return { success: true, mfaEnabled: true, mfaType: 'EMAIL_OTP', message: 'Two-factor authentication enabled successfully' };
       },
     );
 
@@ -251,7 +390,25 @@ export default function authRoutes(opts: AuthRoutesOptions) {
           throw new AppError(400, 'MFA_NOT_CONFIGURED', 'MFA service not configured');
         }
         await service.mfaService.disableMfa(request.principal.actorId);
-        return { success: true, mfaEnabled: false };
+        return { success: true, mfaEnabled: false, message: 'Two-factor authentication disabled' };
+      },
+    );
+
+    app.post(
+      '/auth/change-password',
+      {
+        schema: { body: ChangePasswordBody, response: { 200: ChangePasswordResponse } },
+        preHandler: [app.authenticate],
+      },
+      async (request) => {
+        if (!request.principal) {
+          throw new UnauthorizedError();
+        }
+        return service.changePassword(
+          request.principal.actorId,
+          request.body as { currentPassword: string; newPassword: string },
+          { correlationId: request.correlationId },
+        );
       },
     );
 
@@ -301,6 +458,21 @@ export default function authRoutes(opts: AuthRoutesOptions) {
         }
         const companyId = request.headers['x-company-id'] as string | undefined;
         return service.getMe(request.principal.actorId, companyId);
+      },
+    );
+
+    app.get(
+      '/profile',
+      {
+        schema: { response: { 200: UserAggregatedProfileResponseSchema } },
+        preHandler: [app.authenticate],
+      },
+      async (request) => {
+        if (!request.principal) {
+          throw new UnauthorizedError();
+        }
+        const companyId = request.headers['x-company-id'] as string | undefined;
+        return service.getProfile(request.principal.actorId, companyId);
       },
     );
   };

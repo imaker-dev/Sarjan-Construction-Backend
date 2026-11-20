@@ -189,10 +189,16 @@ export class MfaService {
         await this.redis.del(otpKey);
         throw new AppError(429, 'MFA_LOCKED', 'Too many failed attempts. Please request a new code.');
       }
+      let remainingSeconds = OTP_TTL_SECONDS;
+      if (typeof this.redis.ttl === 'function') {
+        const ttl = await this.redis.ttl(otpKey);
+        if (ttl > 0) remainingSeconds = ttl;
+      }
       await this.redis.set(
         otpKey,
         JSON.stringify({ ...data, attempts: nextAttempts }),
-        'KEEPTTL',
+        'EX',
+        remainingSeconds,
       );
       throw new AppError(400, 'INVALID_MFA_CODE', `Invalid code. ${String(MAX_ATTEMPTS - nextAttempts)} attempt(s) remaining.`);
     }

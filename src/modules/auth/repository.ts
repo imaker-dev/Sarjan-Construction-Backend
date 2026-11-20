@@ -44,11 +44,14 @@ export interface FullPrincipalDetails extends Principal {
     companyId: string;
     employeeCode: string;
     displayName: string;
+    engagementType?: string | null;
     designation: string | null;
     tradeCategory: string | null;
     joiningDate: Date | null;
     contactPhone: string | null;
     contactEmail: string | null;
+    emergencyContactName?: string | null;
+    emergencyContactPhone?: string | null;
     status: string;
     company: {
       id: string;
@@ -66,6 +69,35 @@ export interface FullPrincipalDetails extends Principal {
         name: string;
         category?: string | null;
       };
+    }[];
+    attendanceSessions?: {
+      id: string;
+      siteId: string;
+      source: string;
+      businessDate: string;
+      punchInAt: Date;
+      punchInWithinGeofence: boolean;
+      isFlagged: boolean;
+      flagReason: string | null;
+      site: {
+        id: string;
+        code: string;
+        name: string;
+      };
+      breaks: {
+        id: string;
+        breakType: string;
+        startedAt: Date;
+        endedAt: Date | null;
+      }[];
+    }[];
+    leaveBalances?: {
+      leaveType: string;
+      year: number;
+      allocatedDays: unknown;
+      usedDays: unknown;
+      pendingDays: unknown;
+      carriedOverDays: unknown;
     }[];
   }[];
   roleAssignments: {
@@ -104,6 +136,7 @@ export interface PrincipalRepository {
   ): Promise<FullPrincipalDetails | null>;
   findByLoginId(loginId: string): Promise<Principal | null>;
   findById(id: string): Promise<Principal | null>;
+  updatePassword?(id: string, passwordHash: string): Promise<void>;
 }
 
 export interface SessionRepository {
@@ -168,6 +201,12 @@ export function makeAuthRepos(tx: Tx): AuthRepos {
           },
         }),
       findById: (id) => tx.principal.findUnique({ where: { id } }),
+      updatePassword: async (id, passwordHash) => {
+        await tx.principal.update({
+          where: { id },
+          data: { passwordHash, version: { increment: 1 } },
+        });
+      },
       findFullProfile: (principalId, companyId, now = new Date()) =>
         tx.principal.findUnique({
           where: { id: principalId },
@@ -181,6 +220,20 @@ export function makeAuthRepos(tx: Tx): AuthRepos {
                   include: {
                     department: true,
                   },
+                },
+                attendanceSessions: {
+                  where: { status: 'IN_PROGRESS' },
+                  include: {
+                    site: { select: { id: true, code: true, name: true } },
+                    breaks: { where: { endedAt: null } },
+                  },
+                  take: 1,
+                },
+                leaveBalances: {
+                  where: {
+                    year: now.getFullYear(),
+                  },
+                  orderBy: { leaveType: 'asc' },
                 },
               },
             },

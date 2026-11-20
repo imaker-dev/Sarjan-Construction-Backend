@@ -10,6 +10,11 @@ import {
 } from '@prisma/client';
 import { scopedUpdate, type AuditRepository } from '../organization/repository.js';
 import type { AuditRecord } from '../organization/types.js';
+import {
+  InsufficientLeaveBalanceError,
+  LeaveDateConflictError,
+  LeaveRequestStateError,
+} from './errors.js';
 import type {
   ListLeaveBalancesFilter,
   ListLeavePoliciesFilter,
@@ -112,6 +117,17 @@ export interface LeaveRepos {
       endDate: Date,
       excludeId?: string,
     ): Promise<LeaveRequest | null>;
+  };
+  employees: {
+    findByPrincipal(
+      companyId: string,
+      principalId: string,
+    ): Promise<{ id: string; displayName: string; status: string; principalId?: string | null } | null>;
+    findById(
+      companyId: string,
+      id: string,
+    ): Promise<{ id: string; displayName: string; status: string; principalId?: string | null } | null>;
+    lockForUpdate?(companyId: string, id: string): Promise<void>;
   };
   audit: AuditRepository;
 }
@@ -317,7 +333,21 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
       year: number,
       days: number,
     ) => {
-      return tx.leaveBalance.upsert({
+      const result = await tx.$executeRaw`
+        UPDATE "LeaveBalance"
+        SET "pendingDays" = "pendingDays" + ${days},
+            "version" = "version" + 1,
+            "updatedAt" = NOW()
+        WHERE "companyId" = ${companyId}::uuid
+          AND "employeeId" = ${employeeId}::uuid
+          AND "leaveType" = ${leaveType}::"LeaveType"
+          AND "year" = ${year}
+          AND ("allocatedDays" + "carriedOverDays" - "usedDays" - "pendingDays") >= ${days}
+      `;
+      if (result === 0) {
+        throw new InsufficientLeaveBalanceError(0, days);
+      }
+      return tx.leaveBalance.findUniqueOrThrow({
         where: {
           companyId_employeeId_leaveType_year: {
             companyId,
@@ -325,17 +355,6 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
             leaveType,
             year,
           },
-        },
-        create: {
-          company: { connect: { id: companyId } },
-          employee: { connect: { id_companyId: { id: employeeId, companyId } } },
-          leaveType,
-          year,
-          pendingDays: new Prisma.Decimal(days),
-        },
-        update: {
-          pendingDays: { increment: days },
-          version: { increment: 1 },
         },
       });
     },
@@ -346,7 +365,21 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
       year: number,
       days: number,
     ) => {
-      return tx.leaveBalance.update({
+      const result = await tx.$executeRaw`
+        UPDATE "LeaveBalance"
+        SET "pendingDays" = GREATEST("pendingDays" - ${days}, 0),
+            "usedDays" = "usedDays" + ${days},
+            "version" = "version" + 1,
+            "updatedAt" = NOW()
+        WHERE "companyId" = ${companyId}::uuid
+          AND "employeeId" = ${employeeId}::uuid
+          AND "leaveType" = ${leaveType}::"LeaveType"
+          AND "year" = ${year}
+      `;
+      if (result === 0) {
+        throw new LeaveRequestStateError(`Leave balance record not found for employee ${employeeId}`);
+      }
+      return tx.leaveBalance.findUniqueOrThrow({
         where: {
           companyId_employeeId_leaveType_year: {
             companyId,
@@ -354,11 +387,6 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
             leaveType,
             year,
           },
-        },
-        data: {
-          pendingDays: { decrement: days },
-          usedDays: { increment: days },
-          version: { increment: 1 },
         },
       });
     },
@@ -369,7 +397,20 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
       year: number,
       days: number,
     ) => {
-      return tx.leaveBalance.update({
+      const result = await tx.$executeRaw`
+        UPDATE "LeaveBalance"
+        SET "pendingDays" = GREATEST("pendingDays" - ${days}, 0),
+            "version" = "version" + 1,
+            "updatedAt" = NOW()
+        WHERE "companyId" = ${companyId}::uuid
+          AND "employeeId" = ${employeeId}::uuid
+          AND "leaveType" = ${leaveType}::"LeaveType"
+          AND "year" = ${year}
+      `;
+      if (result === 0) {
+        throw new LeaveRequestStateError(`Leave balance record not found for employee ${employeeId}`);
+      }
+      return tx.leaveBalance.findUniqueOrThrow({
         where: {
           companyId_employeeId_leaveType_year: {
             companyId,
@@ -377,10 +418,6 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
             leaveType,
             year,
           },
-        },
-        data: {
-          pendingDays: { decrement: days },
-          version: { increment: 1 },
         },
       });
     },
@@ -391,7 +428,20 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
       year: number,
       days: number,
     ) => {
-      return tx.leaveBalance.update({
+      const result = await tx.$executeRaw`
+        UPDATE "LeaveBalance"
+        SET "usedDays" = GREATEST("usedDays" - ${days}, 0),
+            "version" = "version" + 1,
+            "updatedAt" = NOW()
+        WHERE "companyId" = ${companyId}::uuid
+          AND "employeeId" = ${employeeId}::uuid
+          AND "leaveType" = ${leaveType}::"LeaveType"
+          AND "year" = ${year}
+      `;
+      if (result === 0) {
+        throw new LeaveRequestStateError(`Leave balance record not found for employee ${employeeId}`);
+      }
+      return tx.leaveBalance.findUniqueOrThrow({
         where: {
           companyId_employeeId_leaveType_year: {
             companyId,
@@ -399,10 +449,6 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
             leaveType,
             year,
           },
-        },
-        data: {
-          usedDays: { decrement: days },
-          version: { increment: 1 },
         },
       });
     },
@@ -436,18 +482,33 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
         take: filter?.limit ?? 50,
       }),
-    create: (companyId: string, data: Omit<Prisma.LeaveRequestCreateInput, 'company'>) =>
-      tx.leaveRequest.create({
-        data: {
-          ...data,
-          company: { connect: { id: companyId } },
-        },
-        include: {
-          employee: {
-            select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
+    create: async (companyId: string, data: Omit<Prisma.LeaveRequestCreateInput, 'company'>) => {
+      try {
+        return await tx.leaveRequest.create({
+          data: {
+            ...data,
+            company: { connect: { id: companyId } },
           },
-        },
-      }),
+          include: {
+            employee: {
+              select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
+            },
+          },
+        });
+      } catch (err: unknown) {
+        if (
+          err &&
+          typeof err === 'object' &&
+          'code' in err &&
+          ((err as { code: string }).code === 'P2002' ||
+            (err as { code: string }).code === 'P2010' ||
+            (err as { message?: string }).message?.includes('leave_request_no_overlap'))
+        ) {
+          throw new LeaveDateConflictError('overlapping-request');
+        }
+        throw err;
+      }
+    },
     updateStatus: (
       companyId: string,
       id: string,
@@ -496,7 +557,23 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
       }),
   };
 
-  return { policies, balances, requests, audit };
+  const employees = {
+    findByPrincipal: (companyId: string, principalId: string) =>
+      tx.employee.findFirst({
+        where: { companyId, principalId },
+        select: { id: true, displayName: true, status: true, principalId: true },
+      }),
+    findById: (companyId: string, id: string) =>
+      tx.employee.findFirst({
+        where: { id, companyId },
+        select: { id: true, displayName: true, status: true, principalId: true },
+      }),
+    lockForUpdate: async (companyId: string, id: string) => {
+      await tx.$executeRaw`SELECT id FROM "Employee" WHERE id = ${id}::uuid AND "companyId" = ${companyId}::uuid FOR UPDATE`;
+    },
+  };
+
+  return { policies, balances, requests, employees, audit };
 }
 
 export interface LeaveUnitOfWork {

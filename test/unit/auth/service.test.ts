@@ -207,6 +207,30 @@ describe('getMe', () => {
     const res3 = await service.getMe(p.id);
     expect(res3.loginId).toBe('changed@example.com');
   });
+
+  it('getProfile returns aggregated profile for active user', async () => {
+    const passwordHash = await passwordService.hash('secret-pw');
+    const p = fakePrincipal({ passwordHash, loginId: 'profile@example.com', status: 'ACTIVE', type: 'USER' });
+    store.principals.push(p);
+    store.employees.push({
+      id: 'emp-profile',
+      principalId: p.id,
+      companyId: 'comp-1',
+      displayName: 'Profile User',
+      employeeCode: 'EMP-P1',
+      company: { id: 'comp-1', code: 'C1', name: 'Co 1', isPlatform: false },
+    });
+
+    const res = await service.getProfile(p.id);
+    expect(res.principal.loginId).toBe('profile@example.com');
+    expect(res.principal.mfaEnabled).toBe(false);
+    expect(res.employee).not.toBeNull();
+    expect(res.employee?.displayName).toBe('Profile User');
+    expect(res.employee?.employeeCode).toBe('EMP-P1');
+    expect(res.company?.code).toBe('C1');
+    expect(res.attendance.hasActiveSession).toBe(false);
+    expect(res.leaveBalances).toEqual([]);
+  });
 });
 
 describe('login operations resolver', () => {
@@ -234,5 +258,52 @@ describe('login operations resolver', () => {
       'PETTY_CASH_REQUEST_APPROVE',
       'EMPLOYEE_PAYROLL_PREPARE',
     ]);
+  });
+});
+
+describe('changePassword', () => {
+  it('successfully updates password when current password matches', async () => {
+    const p = await seedPrincipal({ loginId: 'pwd@example.com' });
+    const res = await service.changePassword(p.id, {
+      currentPassword: 'secret-pw',
+      newPassword: 'updated-secret-123',
+    });
+    expect(res.success).toBe(true);
+
+    // Verify login with new password succeeds and old password fails
+    const loginOk = asAuth(await service.login({ loginId: 'pwd@example.com', password: 'updated-secret-123' }, {}));
+    expect(loginOk.accessToken).toBeDefined();
+
+    await expect(service.login({ loginId: 'pwd@example.com', password: 'secret-pw' }, {})).rejects.toThrow();
+  });
+
+  it('rejects incorrect current password', async () => {
+    const p = await seedPrincipal({ loginId: 'pwd-wrong@example.com' });
+    await expect(
+      service.changePassword(p.id, {
+        currentPassword: 'wrong-password',
+        newPassword: 'new-valid-password',
+      }),
+    ).rejects.toThrow('Current password is incorrect');
+  });
+
+  it('rejects new password that is identical to current password', async () => {
+    const p = await seedPrincipal({ loginId: 'pwd-same@example.com' });
+    await expect(
+      service.changePassword(p.id, {
+        currentPassword: 'secret-pw',
+        newPassword: 'secret-pw',
+      }),
+    ).rejects.toThrow('New password must be different');
+  });
+
+  it('rejects short password less than 8 chars', async () => {
+    const p = await seedPrincipal({ loginId: 'pwd-short@example.com' });
+    await expect(
+      service.changePassword(p.id, {
+        currentPassword: 'secret-pw',
+        newPassword: 'short',
+      }),
+    ).rejects.toThrow('at least 8 characters');
   });
 });

@@ -12,7 +12,12 @@ import type {
 } from '@prisma/client';
 import { scopedUpdate, type AuditRepository } from '../organization/repository.js';
 import type { AuditRecord } from '../organization/types.js';
-import type { ListSessionsFilter, MusterRollRangeFilter } from './types.js';
+import { ActiveSessionExistsError } from './errors.js';
+import {
+  DEFAULT_ATTENDANCE_POLICY,
+  type ListSessionsFilter,
+  type MusterRollRangeFilter,
+} from './types.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -30,6 +35,8 @@ export interface AttendanceRepos {
       companyId: string,
       criteria: { employeeId?: string; siteId?: string; projectId?: string },
     ): Promise<AttendancePolicy | null>;
+    findEmployeePolicies?(companyId: string, employeeIds: string[]): Promise<AttendancePolicy[]>;
+    ensureDefaultPolicy?(companyId: string): Promise<AttendancePolicy>;
     list(
       companyId: string,
       filter?: { scope?: AttendancePolicyScope },
@@ -51,6 +58,19 @@ export interface AttendanceRepos {
       companyId: string,
       employeeId: string,
     ): Promise<(AttendanceSession & { breaks: AttendanceBreak[] }) | null>;
+    findActiveMany?(
+      companyId: string,
+      employeeIds: string[],
+    ): Promise<
+      (AttendanceSession & {
+        breaks: AttendanceBreak[];
+        policy: AttendancePolicy | null;
+      })[]
+    >;
+    findManyByClientSessionIds?(
+      companyId: string,
+      clientSessionIds: string[],
+    ): Promise<AttendanceSession[]>;
     list(companyId: string, filter: ListSessionsFilter): Promise<AttendanceSessionWithDetails[]>;
     create(
       companyId: string,
@@ -66,6 +86,7 @@ export interface AttendanceRepos {
       companyId: string,
       clientSessionId: string,
     ): Promise<AttendanceSession | null>;
+    autoCloseStaleSessions?(cutoffDate: Date, companyId?: string): Promise<number>;
     getMusterRollRange(
       companyId: string,
       filter: MusterRollRangeFilter,
@@ -151,8 +172,15 @@ export interface AttendanceRepos {
       employeeId: string,
       businessDate: string,
     ): Promise<boolean>;
+    findAttendeesForSiteAndDate?(
+      companyId: string,
+      siteId: string,
+      businessDate: string,
+      employeeIds: string[],
+    ): Promise<string[]>;
   };
   breaks: {
+    findById(companyId: string, id: string): Promise<AttendanceBreak | null>;
     create(
       companyId: string,
       data: Omit<Prisma.AttendanceBreakCreateInput, 'company'>,
@@ -185,6 +213,10 @@ export interface AttendanceRepos {
       companyId: string,
       id: string,
     ): Promise<{ id: string; displayName: string; status: string } | null>;
+    findManyByIds?(
+      companyId: string,
+      ids: string[],
+    ): Promise<{ id: string; displayName: string; status: string }[]>;
   };
   audit: AuditRepository;
 }
@@ -224,6 +256,54 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         // Tier 4: Company-level default policy
         return tx.attendancePolicy.findFirst({
           where: { companyId, scope: 'COMPANY', status: 'ACTIVE' },
+        });
+      },
+      findEmployeePolicies: (companyId, employeeIds) =>
+        tx.attendancePolicy.findMany({
+          where: {
+            companyId,
+            scope: 'EMPLOYEE',
+            employeeId: { in: employeeIds },
+            status: 'ACTIVE',
+          },
+        }),
+      ensureDefaultPolicy: async (companyId) => {
+        const existing = await tx.attendancePolicy.findFirst({
+          where: { companyId, scope: 'COMPANY', status: 'ACTIVE' },
+          orderBy: { createdAt: 'asc' },
+        });
+        if (existing) return existing;
+
+        const byName = await tx.attendancePolicy.findFirst({
+          where: { companyId, name: 'Company Default Policy' },
+        });
+        if (byName) return byName;
+
+        return tx.attendancePolicy.create({
+          data: {
+            company: { connect: { id: companyId } },
+            name: 'Company Default Policy',
+            description: 'Default company attendance policy (8:00 AM to 8:00 AM cycle)',
+            scope: 'COMPANY',
+            dayStartHour: DEFAULT_ATTENDANCE_POLICY.dayStartHour,
+            dayStartMinute: DEFAULT_ATTENDANCE_POLICY.dayStartMinute,
+            shiftDurationMins: DEFAULT_ATTENDANCE_POLICY.shiftDurationMins,
+            halfDayThresholdMins: DEFAULT_ATTENDANCE_POLICY.halfDayThresholdMins,
+            fullDayThresholdMins: DEFAULT_ATTENDANCE_POLICY.fullDayThresholdMins,
+            breakMode: DEFAULT_ATTENDANCE_POLICY.breakMode,
+            fixedBreakMins: DEFAULT_ATTENDANCE_POLICY.fixedBreakMins,
+            minWorkForBreakMins: DEFAULT_ATTENDANCE_POLICY.minWorkForBreakMins,
+            maxDynamicBreakMins: DEFAULT_ATTENDANCE_POLICY.maxDynamicBreakMins,
+            overtimeMode: DEFAULT_ATTENDANCE_POLICY.overtimeMode,
+            minOvertimeMins: DEFAULT_ATTENDANCE_POLICY.minOvertimeMins,
+            otSlabMins: DEFAULT_ATTENDANCE_POLICY.otSlabMins,
+            geofenceStrict: DEFAULT_ATTENDANCE_POLICY.geofenceStrict,
+            allowMobilePunch: DEFAULT_ATTENDANCE_POLICY.allowMobilePunch,
+            allowKioskPunch: DEFAULT_ATTENDANCE_POLICY.allowKioskPunch,
+            allowBiometric: DEFAULT_ATTENDANCE_POLICY.allowBiometric,
+            requireTvtGate: DEFAULT_ATTENDANCE_POLICY.requireTvtGate,
+            tvtGateAction: DEFAULT_ATTENDANCE_POLICY.tvtGateAction,
+          },
         });
       },
       list: (companyId, filter) =>
@@ -270,8 +350,8 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             },
           },
         }),
-      findActive: (companyId, employeeId) =>
-        tx.attendanceSession.findFirst({
+      findActive: async (companyId, employeeId) => {
+        const session = await tx.attendanceSession.findFirst({
           where: {
             companyId,
             employeeId,
@@ -281,6 +361,41 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             breaks: true,
           },
           orderBy: { punchInAt: 'desc' },
+        });
+        if (!session) return null;
+        // Auto-close stale sessions older than 24h
+        const ageMs = Date.now() - session.punchInAt.getTime();
+        if (ageMs > 24 * 60 * 60 * 1000) {
+          await tx.attendanceSession.update({
+            where: { id: session.id },
+            data: {
+              status: 'AUTO_CLOSED',
+              punchOutRemarks: 'Auto-closed by system due to missing punch out (>24h)',
+            },
+          });
+          return null;
+        }
+        return session;
+      },
+      findActiveMany: (companyId, employeeIds) =>
+        tx.attendanceSession.findMany({
+          where: {
+            companyId,
+            employeeId: { in: employeeIds },
+            status: 'IN_PROGRESS',
+          },
+          include: {
+            breaks: true,
+            policy: true,
+          },
+          orderBy: { punchInAt: 'desc' },
+        }),
+      findManyByClientSessionIds: (companyId, clientSessionIds) =>
+        tx.attendanceSession.findMany({
+          where: {
+            companyId,
+            clientSessionId: { in: clientSessionIds },
+          },
         }),
       list: async (companyId, filter) => {
         return tx.attendanceSession.findMany({
@@ -305,17 +420,35 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
               orderBy: { startedAt: 'asc' },
             },
           },
-          orderBy: { punchInAt: 'desc' },
+          orderBy: [{ punchInAt: 'desc' }, { id: 'desc' }],
           take: filter.limit ?? 50,
+          ...(filter.cursor ? { cursor: { id: filter.cursor }, skip: 1 } : {}),
         });
       },
-      create: (companyId, data) =>
-        tx.attendanceSession.create({
-          data: {
-            ...data,
-            company: { connect: { id: companyId } },
-          },
-        }),
+      create: async (companyId, data) => {
+        try {
+          return await tx.attendanceSession.create({
+            data: {
+              ...data,
+              company: { connect: { id: companyId } },
+            },
+          });
+        } catch (err: unknown) {
+          if (
+            typeof err === 'object' &&
+            err !== null &&
+            'code' in err &&
+            (err as { code: string }).code === 'P2002'
+          ) {
+            const empId =
+              'connect' in data.employee && data.employee.connect.id
+                ? data.employee.connect.id
+                : 'unknown';
+            throw new ActiveSessionExistsError(empId);
+          }
+          throw err;
+        }
+      },
       update: (companyId, id, data, expectedVersion) =>
         scopedUpdate(
           'ATTENDANCE_SESSION',
@@ -329,6 +462,20 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         tx.attendanceSession.findFirst({
           where: { companyId, clientSessionId },
         }),
+      autoCloseStaleSessions: async (cutoffDate: Date, companyId?: string) => {
+        const res = await tx.attendanceSession.updateMany({
+          where: {
+            ...(companyId ? { companyId } : {}),
+            status: 'IN_PROGRESS',
+            punchInAt: { lt: cutoffDate },
+          },
+          data: {
+            status: 'AUTO_CLOSED',
+            punchOutRemarks: 'Auto-closed by background worker sweep (>24h shift)',
+          },
+        });
+        return res.count;
+      },
       getMusterRollRange: async (companyId, filter) => {
         const where: Prisma.AttendanceSessionWhereInput = {
           companyId,
@@ -338,41 +485,49 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           ...(filter.status ? { status: filter.status } : {}),
         };
 
-        const sessions = await tx.attendanceSession.findMany({
-          where,
-          include: {
-            employee: {
-              select: { id: true, employeeCode: true, displayName: true, tradeCategory: true },
-            },
-            site: { select: { id: true, code: true, name: true } },
-            breaks: { orderBy: { startedAt: 'asc' } },
-            policy: { select: { id: true, name: true, overtimeMode: true, breakMode: true } },
-          },
-          orderBy: [{ businessDate: 'asc' }, { punchInAt: 'asc' }],
-        });
-
         const fromDate = new Date(`${filter.from}T00:00:00.000Z`);
         const toDate = new Date(`${filter.to}T23:59:59.999Z`);
 
-        const leaves = await tx.leaveRequest.findMany({
-          where: {
-            companyId,
-            status: 'APPROVED',
-            startDate: { lte: toDate },
-            endDate: { gte: fromDate },
-            ...(filter.employeeId ? { employeeId: filter.employeeId } : {}),
-          },
-          include: {
-            employee: {
-              select: { id: true, employeeCode: true, displayName: true, designation: true },
+        const [sessions, totalsAgg, leaves] = await Promise.all([
+          tx.attendanceSession.findMany({
+            where,
+            include: {
+              employee: {
+                select: { id: true, employeeCode: true, displayName: true, tradeCategory: true },
+              },
+              site: { select: { id: true, code: true, name: true } },
+              breaks: { orderBy: { startedAt: 'asc' } },
+              policy: { select: { id: true, name: true, overtimeMode: true, breakMode: true } },
             },
-          },
-        });
-
-        let totalPresentUnits = 0;
-        let totalOvertimePUnits = 0;
-        let totalTotalPUnits = 0;
-        let totalOvertimeHours = 0;
+            orderBy: [{ businessDate: 'asc' }, { punchInAt: 'asc' }],
+          }),
+          tx.attendanceSession.aggregate({
+            where,
+            _sum: {
+              presentUnits: true,
+              overtimePUnits: true,
+              totalPUnits: true,
+              overtimeHours: true,
+            },
+            _count: {
+              _all: true,
+            },
+          }),
+          tx.leaveRequest.findMany({
+            where: {
+              companyId,
+              status: 'APPROVED',
+              startDate: { lte: toDate },
+              endDate: { gte: fromDate },
+              ...(filter.employeeId ? { employeeId: filter.employeeId } : {}),
+            },
+            include: {
+              employee: {
+                select: { id: true, employeeCode: true, displayName: true, designation: true },
+              },
+            },
+          }),
+        ]);
 
         const workerMap = new Map<
           string,
@@ -396,11 +551,6 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           const otP = Number(s.overtimePUnits);
           const totP = Number(s.totalPUnits);
           const otH = Number(s.overtimeHours);
-
-          totalPresentUnits += pu;
-          totalOvertimePUnits += otP;
-          totalTotalPUnits += totP;
-          totalOvertimeHours += otH;
 
           let w = workerMap.get(s.employeeId);
           if (!w) {
@@ -452,90 +602,134 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           siteId: filter.siteId,
           from: filter.from,
           to: filter.to,
-          totalSessions: sessions.length,
+          totalSessions: totalsAgg._count._all,
           totalMandays: workerSummaries.reduce((sum, w) => sum + w.daysPresent, 0),
-          totalPresentUnits: Number(totalPresentUnits.toFixed(1)),
-          totalOvertimePUnits: Number(totalOvertimePUnits.toFixed(1)),
-          totalTotalPUnits: Number(totalTotalPUnits.toFixed(1)),
-          totalOvertimeHours: Number(totalOvertimeHours.toFixed(2)),
+          totalPresentUnits: Number(Number(totalsAgg._sum.presentUnits ?? 0).toFixed(1)),
+          totalOvertimePUnits: Number(Number(totalsAgg._sum.overtimePUnits ?? 0).toFixed(1)),
+          totalTotalPUnits: Number(Number(totalsAgg._sum.totalPUnits ?? 0).toFixed(1)),
+          totalOvertimeHours: Number(Number(totalsAgg._sum.overtimeHours ?? 0).toFixed(2)),
           workerSummaries,
           sessions,
           leaves,
         };
       },
       getDailySummary: async (companyId, siteId, businessDate) => {
-        const sessions = await tx.attendanceSession.findMany({
-          where: {
-            companyId,
-            siteId,
-            businessDate,
-          },
-          include: {
-            employee: {
-              select: { id: true, employeeCode: true, displayName: true, tradeCategory: true },
-            },
-            site: {
-              select: { id: true, code: true, name: true },
-            },
-            breaks: true,
-          },
-          orderBy: { punchInAt: 'asc' },
-        });
+        const businessDateObj = new Date(`${businessDate}T00:00:00.000Z`);
+
+        const [sessions, statusGroups, totalsAgg, siteRoleAssignments, siteSessions] =
+          await Promise.all([
+            tx.attendanceSession.findMany({
+              where: {
+                companyId,
+                siteId,
+                businessDate,
+              },
+              include: {
+                employee: {
+                  select: { id: true, employeeCode: true, displayName: true, tradeCategory: true },
+                },
+                site: {
+                  select: { id: true, code: true, name: true },
+                },
+                breaks: true,
+              },
+              orderBy: { punchInAt: 'asc' },
+            }),
+            tx.attendanceSession.groupBy({
+              by: ['status'],
+              where: { companyId, siteId, businessDate },
+              _count: { _all: true },
+            }),
+            tx.attendanceSession.aggregate({
+              where: { companyId, siteId, businessDate },
+              _sum: {
+                presentUnits: true,
+                overtimePUnits: true,
+                totalPUnits: true,
+                overtimeHours: true,
+              },
+              _count: { _all: true },
+            }),
+            tx.roleAssignment.findMany({
+              where: { companyId, siteId, revokedAt: null },
+              select: { principalId: true },
+            }),
+            tx.attendanceSession.findMany({
+              where: { companyId, siteId },
+              select: { employeeId: true },
+              distinct: ['employeeId'],
+            }),
+          ]);
+
+        const sitePrincipalIds = siteRoleAssignments
+          .map((r) => r.principalId)
+          .filter((pid): pid is string => Boolean(pid));
+
+        const siteRoleEmployees =
+          sitePrincipalIds.length > 0
+            ? await tx.employee.findMany({
+                where: { companyId, principalId: { in: sitePrincipalIds } },
+                select: { id: true },
+              })
+            : [];
+
+        const siteWorkerIds = new Set<string>([
+          ...siteSessions.map((s) => s.employeeId),
+          ...siteRoleEmployees.map((e) => e.id),
+        ]);
+
+        const leaves =
+          siteWorkerIds.size > 0
+            ? await tx.leaveRequest.findMany({
+                where: {
+                  companyId,
+                  employeeId: { in: Array.from(siteWorkerIds) },
+                  status: 'APPROVED',
+                  startDate: { lte: businessDateObj },
+                  endDate: { gte: businessDateObj },
+                },
+                include: {
+                  employee: {
+                    select: { id: true, employeeCode: true, displayName: true, designation: true },
+                  },
+                },
+              })
+            : [];
 
         const distinctEmployees = new Set(sessions.map((s) => s.employeeId));
         let completedSessions = 0;
         let inProgressSessions = 0;
         let autoClosedSessions = 0;
-        let totalPresentUnits = 0;
-        let totalOvertimePUnits = 0;
-        let totalTotalPUnits = 0;
-        let totalOvertimeHours = 0;
 
-        for (const s of sessions) {
-          if (s.status === 'COMPLETED') completedSessions++;
-          else if (s.status === 'IN_PROGRESS') inProgressSessions++;
-          else if (s.status === 'AUTO_CLOSED') autoClosedSessions++;
-
-          totalPresentUnits += Number(s.presentUnits);
-          totalOvertimePUnits += Number(s.overtimePUnits);
-          totalTotalPUnits += Number(s.totalPUnits);
-          totalOvertimeHours += Number(s.overtimeHours);
+        for (const g of statusGroups) {
+          if (g.status === 'COMPLETED') completedSessions = g._count._all;
+          else if (g.status === 'IN_PROGRESS') inProgressSessions = g._count._all;
+          else if (g.status === 'AUTO_CLOSED') autoClosedSessions = g._count._all;
         }
-
-        const businessDateObj = new Date(`${businessDate}T00:00:00.000Z`);
-        const leaves = await tx.leaveRequest.findMany({
-          where: {
-            companyId,
-            status: 'APPROVED',
-            startDate: { lte: businessDateObj },
-            endDate: { gte: businessDateObj },
-          },
-          include: {
-            employee: {
-              select: { id: true, employeeCode: true, displayName: true, designation: true },
-            },
-          },
-        });
 
         return {
           siteId,
           businessDate,
           totalWorkers: distinctEmployees.size,
-          totalSessions: sessions.length,
+          totalSessions: totalsAgg._count._all,
           completedSessions,
           inProgressSessions,
           autoClosedSessions,
           totalApprovedLeaves: leaves.length,
-          totalPresentUnits: Number(totalPresentUnits.toFixed(1)),
-          totalOvertimePUnits: Number(totalOvertimePUnits.toFixed(1)),
-          totalTotalPUnits: Number(totalTotalPUnits.toFixed(1)),
-          totalOvertimeHours: Number(totalOvertimeHours.toFixed(2)),
+          totalPresentUnits: Number(Number(totalsAgg._sum.presentUnits ?? 0).toFixed(1)),
+          totalOvertimePUnits: Number(Number(totalsAgg._sum.overtimePUnits ?? 0).toFixed(1)),
+          totalTotalPUnits: Number(Number(totalsAgg._sum.totalPUnits ?? 0).toFixed(1)),
+          totalOvertimeHours: Number(Number(totalsAgg._sum.overtimeHours ?? 0).toFixed(2)),
           sessions,
           leaves,
         };
       },
     },
     breaks: {
+      findById: (companyId, id) =>
+        tx.attendanceBreak.findFirst({
+          where: { id, companyId },
+        }),
       create: (companyId, data) =>
         tx.attendanceBreak.create({
           data: {
@@ -581,6 +775,11 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
       findById: (companyId, id) =>
         tx.employee.findFirst({
           where: { id, companyId },
+          select: { id: true, displayName: true, status: true },
+        }),
+      findManyByIds: (companyId, ids) =>
+        tx.employee.findMany({
+          where: { id: { in: ids }, companyId },
           select: { id: true, displayName: true, status: true },
         }),
     },
@@ -690,6 +889,20 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           select: { id: true },
         });
         return attendee !== null;
+      },
+      findAttendeesForSiteAndDate: async (companyId, siteId, businessDate, employeeIds) => {
+        const rows = await tx.safetyTvtAttendee.findMany({
+          where: {
+            companyId,
+            employeeId: { in: employeeIds },
+            session: {
+              siteId,
+              businessDate,
+            },
+          },
+          select: { employeeId: true },
+        });
+        return rows.map((r) => r.employeeId);
       },
     },
   };

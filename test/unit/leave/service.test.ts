@@ -6,6 +6,7 @@ import {
   LeaveDateConflictError,
   LeaveNoticePeriodError,
   LeaveRequestStateError,
+  SelfApprovalNotAllowedError,
 } from '../../../src/modules/leave/errors.js';
 import type {
   LeaveRepos,
@@ -15,9 +16,30 @@ import type {
 import { LeaveService } from '../../../src/modules/leave/service.js';
 
 function createMockUow(repos: Partial<LeaveRepos>): LeaveUnitOfWork {
+  const defaultEmployees: LeaveRepos['employees'] = {
+    findByPrincipal: vi.fn().mockImplementation(async (_cid: string, pid: string) => ({
+      id: pid === 'u1' ? 'emp-1' : `emp-${pid}`,
+      displayName: pid === 'u1' ? 'Ramesh' : `User ${pid}`,
+      status: 'ACTIVE',
+      principalId: pid,
+    })),
+    findById: vi.fn().mockImplementation(async (_cid: string, id: string) => ({
+      id,
+      displayName: id === 'emp-1' ? 'Ramesh' : `User ${id}`,
+      status: 'ACTIVE',
+      principalId: id === 'emp-1' ? 'u1' : `u-${id}`,
+    })),
+    lockForUpdate: vi.fn().mockResolvedValue(undefined),
+  };
+
+  const completeRepos: LeaveRepos = {
+    employees: defaultEmployees,
+    ...repos,
+  } as LeaveRepos;
+
   return {
     run: async <T>(fn: (r: LeaveRepos) => Promise<T>): Promise<T> => {
-      return fn(repos as LeaveRepos);
+      return fn(completeRepos);
     },
   };
 }
@@ -303,10 +325,11 @@ describe('LeaveService', () => {
       employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng', principalId: 'p-1' },
     };
 
+    const approverActor: ActorContext = { actorId: 'mgr-1', actorType: 'USER' };
     const updatedReq: LeaveRequestWithDetails = {
       ...existingReq,
       status: 'APPROVED',
-      reviewedBy: actor.actorId,
+      reviewedBy: approverActor.actorId,
       reviewedAt: new Date(),
       version: 1,
     };
@@ -328,7 +351,7 @@ describe('LeaveService', () => {
     };
 
     const service = new LeaveService(createMockUow(mockRepos), authorizer);
-    const result = await service.reviewRequest(actor, companyId, 'req-1', {
+    const result = await service.reviewRequest(approverActor, companyId, 'req-1', {
       action: 'APPROVE',
       remarks: 'Approved by PM',
       expectedVersion: 0,
@@ -362,10 +385,11 @@ describe('LeaveService', () => {
       employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng', principalId: 'p-1' },
     };
 
+    const approverActor: ActorContext = { actorId: 'mgr-1', actorType: 'USER' };
     const updatedReq: LeaveRequestWithDetails = {
       ...existingReq,
       status: 'REJECTED',
-      reviewedBy: actor.actorId,
+      reviewedBy: approverActor.actorId,
       reviewedAt: new Date(),
       reviewRemarks: 'Site workload heavy',
       version: 1,
@@ -388,7 +412,7 @@ describe('LeaveService', () => {
     };
 
     const service = new LeaveService(createMockUow(mockRepos), authorizer);
-    const result = await service.reviewRequest(actor, companyId, 'req-1', {
+    const result = await service.reviewRequest(approverActor, companyId, 'req-1', {
       action: 'REJECT',
       remarks: 'Site workload heavy',
       expectedVersion: 0,
@@ -489,5 +513,295 @@ describe('LeaveService', () => {
         expectedVersion: 2,
       }),
     ).rejects.toBeInstanceOf(LeaveRequestStateError);
+  });
+
+  describe('Defect Fixes', () => {
+    // Bug 1: Self-apply resolution & proxy apply gating
+    it('resolves employeeId to caller employee when omitted in submitRequest', async () => {
+      let createdWithEmployeeId = '';
+      const mockCreated: LeaveRequestWithDetails = {
+        id: 'req-self',
+        companyId,
+        employeeId: 'emp-1',
+        leaveType: 'CASUAL',
+        startDate: new Date('2026-11-20T00:00:00.000Z'),
+        endDate: new Date('2026-11-20T00:00:00.000Z'),
+        isHalfDay: false,
+        halfDayPortion: null,
+        totalDays: new Prisma.Decimal(1.0),
+        reason: 'Self apply test',
+        documentId: null,
+        status: 'PENDING',
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewRemarks: null,
+        version: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng', principalId: 'u1' },
+      };
+
+      const mockRepos: Partial<LeaveRepos> = {
+        policies: {
+          resolveEffective: vi.fn().mockResolvedValue(samplePolicy),
+        } as unknown as LeaveRepos['policies'],
+        balances: {
+          find: vi.fn().mockResolvedValue(sampleBalance),
+          reservePending: vi.fn().mockResolvedValue(sampleBalance),
+        } as unknown as LeaveRepos['balances'],
+        requests: {
+          findConflicting: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockImplementation(
+            async (
+              _cid: string,
+              data: { employee: { connect: { id_companyId: { id: string } } } },
+            ) => {
+              createdWithEmployeeId = data.employee.connect.id_companyId.id;
+              return mockCreated;
+            },
+          ),
+        } as unknown as LeaveRepos['requests'],
+        audit: { record: vi.fn().mockResolvedValue(undefined) },
+      };
+
+      const service = new LeaveService(createMockUow(mockRepos), authorizer);
+      const req = await service.submitRequest(actor, companyId, {
+        leaveType: 'CASUAL',
+        startDate: '2026-11-20',
+        endDate: '2026-11-20',
+        reason: 'Self apply test',
+      });
+
+      expect(req.id).toBe('req-self');
+      expect(createdWithEmployeeId).toBe('emp-1');
+    });
+
+    it('throws error when caller has no employee record on self-apply', async () => {
+      const mockRepos: Partial<LeaveRepos> = {
+        employees: {
+          findByPrincipal: vi.fn().mockResolvedValue(null),
+          findById: vi.fn().mockResolvedValue(null),
+          lockForUpdate: vi.fn().mockResolvedValue(undefined),
+        },
+      };
+
+      const service = new LeaveService(createMockUow(mockRepos), authorizer);
+      await expect(
+        service.submitRequest(actor, companyId, {
+          leaveType: 'CASUAL',
+          startDate: '2026-11-20',
+          endDate: '2026-11-20',
+          reason: 'No emp profile',
+        }),
+      ).rejects.toBeInstanceOf(LeaveRequestStateError);
+    });
+
+    it('requires LEAVE_MANAGE when submitting on behalf of another employee', async () => {
+      const strictAuthorizer = {
+        assertPermission: vi.fn().mockImplementation(async (_pid: string, perm: string) => {
+          if (perm === 'LEAVE_MANAGE') {
+            throw new Error('Permission denied: LEAVE_MANAGE');
+          }
+        }),
+      };
+
+      const mockRepos: Partial<LeaveRepos> = {
+        policies: {
+          resolveEffective: vi.fn().mockResolvedValue(samplePolicy),
+        } as unknown as LeaveRepos['policies'],
+        employees: {
+          findByPrincipal: vi.fn().mockResolvedValue({ id: 'emp-1', displayName: 'Ramesh', status: 'ACTIVE', principalId: 'u1' }),
+          findById: vi.fn().mockResolvedValue({ id: 'emp-other', displayName: 'Other', status: 'ACTIVE', principalId: 'u2' }),
+          lockForUpdate: vi.fn().mockResolvedValue(undefined),
+        },
+      };
+
+      const service = new LeaveService(createMockUow(mockRepos), strictAuthorizer);
+      await expect(
+        service.submitRequest(actor, companyId, {
+          employeeId: 'emp-other',
+          leaveType: 'CASUAL',
+          startDate: '2026-11-20',
+          endDate: '2026-11-20',
+          reason: 'Applying for other',
+        }),
+      ).rejects.toThrow('Permission denied: LEAVE_MANAGE');
+    });
+
+    // Bug 2: Self-approval separation of duties
+    it('blocks self-approval when reviewer is the applicant', async () => {
+      const existingReq: LeaveRequestWithDetails = {
+        id: 'req-self-appr',
+        companyId,
+        employeeId: 'emp-1',
+        leaveType: 'CASUAL',
+        startDate: new Date('2026-11-20T00:00:00.000Z'),
+        endDate: new Date('2026-11-20T00:00:00.000Z'),
+        isHalfDay: false,
+        halfDayPortion: null,
+        totalDays: new Prisma.Decimal(1.0),
+        reason: 'Personal',
+        documentId: null,
+        status: 'PENDING',
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewRemarks: null,
+        version: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        employee: { id: 'emp-1', employeeCode: 'E1', displayName: 'Ramesh', designation: 'Eng', principalId: 'u1' },
+      };
+
+      const mockRepos: Partial<LeaveRepos> = {
+        requests: {
+          findById: vi.fn().mockResolvedValue(existingReq),
+        } as unknown as LeaveRepos['requests'],
+      };
+
+      const service = new LeaveService(createMockUow(mockRepos), authorizer);
+      await expect(
+        service.reviewRequest(actor, companyId, 'req-self-appr', {
+          action: 'APPROVE',
+          expectedVersion: 0,
+        }),
+      ).rejects.toBeInstanceOf(SelfApprovalNotAllowedError);
+    });
+
+    // Bug 3: Anyone cancelling anyone's leave
+    it('blocks non-owner from cancelling leave without LEAVE_MANAGE', async () => {
+      const existingReq: LeaveRequestWithDetails = {
+        id: 'req-other',
+        companyId,
+        employeeId: 'emp-other',
+        leaveType: 'CASUAL',
+        startDate: new Date('2026-11-20T00:00:00.000Z'),
+        endDate: new Date('2026-11-20T00:00:00.000Z'),
+        isHalfDay: false,
+        halfDayPortion: null,
+        totalDays: new Prisma.Decimal(1.0),
+        reason: 'Personal',
+        documentId: null,
+        status: 'PENDING',
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewRemarks: null,
+        version: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        employee: { id: 'emp-other', employeeCode: 'E2', displayName: 'Other', designation: 'Eng', principalId: 'u-other' },
+      };
+
+      const mockRepos: Partial<LeaveRepos> = {
+        requests: {
+          findById: vi.fn().mockResolvedValue(existingReq),
+        } as unknown as LeaveRepos['requests'],
+      };
+
+      const strictAuthorizer = {
+        assertPermission: vi.fn().mockImplementation(async (_pid: string, perm: string) => {
+          if (perm === 'LEAVE_MANAGE') {
+            throw new Error('Permission denied: LEAVE_MANAGE');
+          }
+        }),
+      };
+
+      const service = new LeaveService(createMockUow(mockRepos), strictAuthorizer);
+      await expect(
+        service.cancelRequest(actor, companyId, 'req-other', {
+          reason: 'Unauthorized cancel attempt',
+          expectedVersion: 0,
+        }),
+      ).rejects.toThrow('Permission denied: LEAVE_MANAGE');
+    });
+
+    // Bug 6: Privacy enforcement
+    it('restricts ordinary employee to only their own records in listBalances', async () => {
+      let queriedFilter: unknown;
+      const mockRepos: Partial<LeaveRepos> = {
+        balances: {
+          list: vi.fn().mockImplementation(async (_cid, filter) => {
+            queriedFilter = filter;
+            return [];
+          }),
+        } as unknown as LeaveRepos['balances'],
+      };
+
+      const normalEmployeeAuthorizer = {
+        assertPermission: vi.fn().mockImplementation(async (_pid: string, perm: string) => {
+          if (perm === 'LEAVE_MANAGE' || perm === 'LEAVE_APPROVE') {
+            throw new Error('Not supervisor');
+          }
+        }),
+      };
+
+      const service = new LeaveService(createMockUow(mockRepos), normalEmployeeAuthorizer);
+      await service.listBalances(actor, companyId);
+
+      expect((queriedFilter as { employeeId: string }).employeeId).toBe('emp-1');
+    });
+
+    it('rejects ordinary employee attempting to query another employee balance directly', async () => {
+      const mockRepos: Partial<LeaveRepos> = {
+        balances: {
+          find: vi.fn().mockResolvedValue(null),
+        } as unknown as LeaveRepos['balances'],
+      };
+
+      const normalEmployeeAuthorizer = {
+        assertPermission: vi.fn().mockImplementation(async (_pid: string, perm: string) => {
+          if (perm === 'LEAVE_MANAGE' || perm === 'LEAVE_APPROVE') {
+            throw new Error('Access denied to other employee balance');
+          }
+        }),
+      };
+
+      const service = new LeaveService(createMockUow(mockRepos), normalEmployeeAuthorizer);
+      await expect(
+        service.getEmployeeBalance(actor, companyId, 'emp-other', 'CASUAL', 2026),
+      ).rejects.toThrow('Access denied to other employee balance');
+    });
+
+    it('rejects ordinary employee attempting to read another employee leave request details', async () => {
+      const otherReq: LeaveRequestWithDetails = {
+        id: 'req-confidential',
+        companyId,
+        employeeId: 'emp-other',
+        leaveType: 'SICK',
+        startDate: new Date('2026-11-20T00:00:00.000Z'),
+        endDate: new Date('2026-11-20T00:00:00.000Z'),
+        isHalfDay: false,
+        halfDayPortion: null,
+        totalDays: new Prisma.Decimal(1.0),
+        reason: 'Sensitive Medical Surgery',
+        documentId: null,
+        status: 'APPROVED',
+        reviewedBy: 'mgr-1',
+        reviewedAt: new Date(),
+        reviewRemarks: null,
+        version: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        employee: { id: 'emp-other', employeeCode: 'E2', displayName: 'Other', designation: 'Eng', principalId: 'u-other' },
+      };
+
+      const mockRepos: Partial<LeaveRepos> = {
+        requests: {
+          findById: vi.fn().mockResolvedValue(otherReq),
+        } as unknown as LeaveRepos['requests'],
+      };
+
+      const normalEmployeeAuthorizer = {
+        assertPermission: vi.fn().mockImplementation(async (_pid: string, perm: string) => {
+          if (perm === 'LEAVE_MANAGE' || perm === 'LEAVE_APPROVE') {
+            throw new Error('Access denied: supervisor permission required');
+          }
+        }),
+      };
+
+      const service = new LeaveService(createMockUow(mockRepos), normalEmployeeAuthorizer);
+      await expect(
+        service.getRequestById(actor, companyId, 'req-confidential'),
+      ).rejects.toThrow('Access denied: supervisor permission required');
+    });
   });
 });

@@ -50,6 +50,8 @@ import { PrismaFormUnitOfWork } from './modules/form/repository.js';
 import { AttendanceService } from './modules/attendance/service.js';
 import { attendanceRoutes } from './modules/attendance/routes.js';
 import { PrismaAttendanceUnitOfWork } from './modules/attendance/repository.js';
+import { AttendanceWorker } from './modules/attendance/worker.js';
+import attendanceWorkerPlugin from './plugins/attendance-worker.js';
 import { LeaveService } from './modules/leave/service.js';
 import { leaveRoutes } from './modules/leave/routes.js';
 import { PrismaLeaveUnitOfWork } from './modules/leave/repository.js';
@@ -91,17 +93,30 @@ const OPERATION_DOCS: Record<
     summary: 'Get 2FA status for authenticated user',
     permission: 'authenticated',
   },
+  'POST /auth/mfa/setup': {
+    summary: 'Request 2FA registration setup (sends OTP code to registered email)',
+    permission: 'authenticated',
+  },
   'POST /auth/mfa/enable': {
-    summary: 'Enable 2FA (Email OTP) for authenticated user',
+    summary: 'Enable or confirm 2FA (Email OTP) for authenticated user',
     permission: 'authenticated',
   },
   'POST /auth/mfa/disable': {
     summary: 'Disable 2FA for authenticated user',
     permission: 'authenticated',
   },
+  'POST /auth/change-password': {
+    summary: 'Change password for authenticated user',
+    permission: 'authenticated',
+  },
   'GET /auth/me': {
     summary:
       'Get current authenticated user profile, roles, permissions, and scope assignments (cached)',
+    permission: 'authenticated',
+  },
+  'GET /profile': {
+    summary:
+      'Get aggregated profile of authenticated user including employee, attendance, and leave details',
     permission: 'authenticated',
   },
   'POST /auth/claim': {
@@ -973,16 +988,22 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     ),
     { prefix: '/api/v1' },
   );
-  await app.register(
-    attendanceRoutes(
-      services.attendanceService ??
-        new AttendanceService(new PrismaAttendanceUnitOfWork(app.prisma), {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-        }),
+  const attendanceService =
+    services.attendanceService ??
+    new AttendanceService(new PrismaAttendanceUnitOfWork(app.prisma), {
+      assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+        accessControl.assertPermission(pid, key, target),
+    });
+  await app.register(attendanceRoutes(attendanceService), { prefix: '/api/v1' });
+  await app.register(attendanceWorkerPlugin, {
+    worker: new AttendanceWorker(
+      attendanceService,
+      app.redis.duplicate({ maxRetriesPerRequest: null }),
+      (msg, meta) => {
+        app.log.info(meta ?? {}, msg);
+      },
     ),
-    { prefix: '/api/v1' },
-  );
+  });
   await app.register(mailRoutes(mailService), { prefix: '/api/v1' });
   const roleDispatcher = new RoleNotificationDispatcher(
     app.prisma,

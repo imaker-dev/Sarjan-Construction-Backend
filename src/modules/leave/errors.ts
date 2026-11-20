@@ -95,3 +95,11 @@ export class MaxConsecutiveLeaveDaysExceededError extends LeaveError {
     this.maxAllowedDays = maxAllowedDays;
   }
 }
+
+export class SelfApprovalNotAllowedError extends LeaveError {
+  constructor(message = 'Employees cannot approve their own leave requests') {
+    super(message, 403, 'SELF_APPROVAL_NOT_ALLOWED');
+    this.name = 'SelfApprovalNotAllowedError';
+  }
+}
+

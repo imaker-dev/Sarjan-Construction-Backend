@@ -3,8 +3,10 @@ import type { AttendanceSession, Site } from '@prisma/client';
 import type { ActorContext } from '../../../src/modules/organization/types.js';
 import {
   ActiveSessionExistsError,
+  AttendanceValidationError,
   BreakAlreadyActiveError,
   GeofenceBreachError,
+  InvalidDateRangeError,
   NoActiveBreakError,
   NoActiveSessionError,
   TvtSafetyBriefingRequiredError,
@@ -326,6 +328,13 @@ describe('AttendanceService', () => {
           findActive: vi.fn().mockResolvedValue({
             id: 'sess-1',
             siteId: 's1',
+            employeeId: sampleEmployee.id,
+            status: 'IN_PROGRESS',
+          }),
+          findById: vi.fn().mockResolvedValue({
+            id: 'sess-1',
+            siteId: 's1',
+            employeeId: sampleEmployee.id,
             status: 'IN_PROGRESS',
           }),
         } as unknown as AttendanceRepos['sessions'],
@@ -365,6 +374,13 @@ describe('AttendanceService', () => {
           findActive: vi.fn().mockResolvedValue({
             id: 'sess-1',
             siteId: 's1',
+            employeeId: sampleEmployee.id,
+            status: 'IN_PROGRESS',
+          }),
+          findById: vi.fn().mockResolvedValue({
+            id: 'sess-1',
+            siteId: 's1',
+            employeeId: sampleEmployee.id,
             status: 'IN_PROGRESS',
           }),
         } as unknown as AttendanceRepos['sessions'],
@@ -386,6 +402,8 @@ describe('AttendanceService', () => {
           findById: vi.fn().mockResolvedValue({
             id: 'sess-1',
             siteId: 's1',
+            punchInAt: new Date('2026-11-18T08:00:00.000Z'),
+            punchOutAt: new Date('2026-11-18T17:00:00.000Z'),
             status: 'IN_PROGRESS',
             presentUnits: 0,
             overtimePUnits: 0,
@@ -396,6 +414,9 @@ describe('AttendanceService', () => {
             return { id: 'sess-1', ...data } as AttendanceSession;
           }),
         } as unknown as AttendanceRepos['sessions'],
+        policies: {
+          findById: vi.fn().mockResolvedValue(null),
+        } as unknown as AttendanceRepos['policies'],
         audit: { record: vi.fn().mockResolvedValue(undefined) },
       };
 
@@ -598,6 +619,9 @@ describe('AttendanceService', () => {
     it('batch punches out multiple workers and calculates P-units and durations', async () => {
       const mockRepos: Partial<AttendanceRepos> = {
         sites: { findById: vi.fn().mockResolvedValue(sampleSite) },
+        employees: {
+          findManyByIds: vi.fn().mockResolvedValue([{ id: 'e-1', status: 'ACTIVE' }]),
+        } as unknown as AttendanceRepos['employees'],
         sessions: {
           findActive: vi.fn().mockImplementation(async (_, id) => {
             if (id === 'e-none') return null;
@@ -652,7 +676,11 @@ describe('AttendanceService', () => {
     it('idempotently syncs offline sessions, skipping existing clientSessionIds', async () => {
       const mockRepos: Partial<AttendanceRepos> = {
         sites: { findById: vi.fn().mockResolvedValue(sampleSite) },
+        employees: {
+          findManyByIds: vi.fn().mockResolvedValue([{ id: 'e-1', status: 'ACTIVE' }]),
+        } as unknown as AttendanceRepos['employees'],
         sessions: {
+          findActive: vi.fn().mockResolvedValue(null),
           findByClientSessionId: vi.fn().mockImplementation(async (_: string, clientSessionId: string) => {
             if (clientSessionId === 'cs-already-synced') {
               return { id: 'sess-already', clientSessionId };
@@ -817,6 +845,529 @@ describe('AttendanceService', () => {
       expect(res.totalTotalPUnits).toBe(18.5);
       expect(res.workerSummaries).toHaveLength(1);
       expect(res.workerSummaries[0]?.tradeCategory).toBe('MASON');
+    });
+
+    it('rejects date range exceeding 31 days with InvalidDateRangeError', async () => {
+      const mockRepos: Partial<AttendanceRepos> = {
+        sessions: {
+          getMusterRollRange: vi.fn(),
+        } as unknown as AttendanceRepos['sessions'],
+      };
+
+      const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+      await expect(
+        service.getMusterRollRange(actor, companyId, {
+          siteId: 's1',
+          from: '2026-01-01',
+          to: '2026-02-15', // 46 days
+        }),
+      ).rejects.toThrow(InvalidDateRangeError);
+    });
+
+    it('rejects when from date is after to date', async () => {
+      const mockRepos: Partial<AttendanceRepos> = {
+        sessions: {
+          getMusterRollRange: vi.fn(),
+        } as unknown as AttendanceRepos['sessions'],
+      };
+
+      const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+      await expect(
+        service.getMusterRollRange(actor, companyId, {
+          siteId: 's1',
+          from: '2026-11-15',
+          to: '2026-11-01',
+        }),
+      ).rejects.toThrow(InvalidDateRangeError);
+    });
+  });
+
+  describe('Pre-batching & Default Policy Fallback Optimizations', () => {
+    it('uses batch findManyByIds, findActiveMany, and pre-batches TVT in kioskBatchPunchIn', async () => {
+      const findManyByIdsSpy = vi.fn().mockResolvedValue([
+        { id: 'emp-1', displayName: 'Worker 1', status: 'ACTIVE' },
+        { id: 'emp-2', displayName: 'Worker 2', status: 'ACTIVE' },
+      ]);
+      const findActiveManySpy = vi.fn().mockResolvedValue([]);
+      const findEmployeePoliciesSpy = vi.fn().mockResolvedValue([]);
+      const findAttendeesForSiteAndDateSpy = vi.fn().mockResolvedValue(['emp-1', 'emp-2']);
+      const createSessionSpy = vi
+        .fn<(_: string, data: { employee: { connect: { id: string } } }) => Promise<AttendanceSession>>()
+        .mockImplementation(async (_: string, data: { employee: { connect: { id: string } } }) =>
+          Promise.resolve({
+            id: `sess-${data.employee.connect.id}`,
+            ...data,
+          } as unknown as AttendanceSession),
+        );
+
+      const mockRepos: Partial<AttendanceRepos> = {
+        sites: { findById: vi.fn().mockResolvedValue(sampleSite) },
+        employees: {
+          findManyByIds: findManyByIdsSpy,
+          findById: vi.fn(),
+          findByPrincipal: vi.fn(),
+        },
+        sessions: {
+          findActiveMany: findActiveManySpy,
+          create: createSessionSpy,
+        } as unknown as AttendanceRepos['sessions'],
+        policies: {
+          findEffective: vi.fn().mockResolvedValue({
+            id: 'pol-tvt',
+            dayStartHour: 8,
+            dayStartMinute: 0,
+            geofenceStrict: false,
+            requireTvtGate: true,
+            tvtGateAction: 'BLOCK',
+          }),
+          findEmployeePolicies: findEmployeePoliciesSpy,
+        } as unknown as AttendanceRepos['policies'],
+        tvt: {
+          findAttendeesForSiteAndDate: findAttendeesForSiteAndDateSpy,
+        } as unknown as AttendanceRepos['tvt'],
+        audit: { record: vi.fn().mockResolvedValue(undefined) },
+      };
+
+      const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+      const res = await service.kioskBatchPunchIn(actor, companyId, {
+        siteId: 's1',
+        employeeIds: ['emp-1', 'emp-2'],
+        latitude: 23.23,
+        longitude: 72.57,
+      });
+
+      expect(res.totalSubmitted).toBe(2);
+      expect(res.successCount).toBe(2);
+      expect(findManyByIdsSpy).toHaveBeenCalledTimes(1);
+      expect(findActiveManySpy).toHaveBeenCalledTimes(1);
+      expect(findEmployeePoliciesSpy).toHaveBeenCalledTimes(1);
+      expect(findAttendeesForSiteAndDateSpy).toHaveBeenCalledTimes(1);
+      expect(createSessionSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('safely ensures default company policy without duplicate creation on fallback punch', async () => {
+      const ensureDefaultPolicySpy = vi.fn().mockResolvedValue({
+        id: 'pol-ensured-default',
+        name: 'Company Default Policy',
+        scope: 'COMPANY',
+        dayStartHour: 8,
+        dayStartMinute: 0,
+        shiftDurationMins: 480,
+        geofenceStrict: false,
+        allowMobilePunch: true,
+      });
+
+      const mockRepos: Partial<AttendanceRepos> = {
+        employees: {
+          findByPrincipal: vi.fn().mockResolvedValue(sampleEmployee),
+          findById: vi.fn().mockResolvedValue(sampleEmployee),
+        },
+        sites: { findById: vi.fn().mockResolvedValue(sampleSite) },
+        sessions: {
+          findActive: vi.fn().mockResolvedValue(null),
+          create: vi
+            .fn<(_: string, data: Record<string, unknown>) => Promise<AttendanceSession>>()
+            .mockImplementation(async (_: string, data: Record<string, unknown>) =>
+              Promise.resolve({ id: 'sess-new', ...data } as unknown as AttendanceSession),
+            ),
+        } as unknown as AttendanceRepos['sessions'],
+        policies: {
+          findEffective: vi.fn().mockResolvedValue(null), // Triggers fallback
+          ensureDefaultPolicy: ensureDefaultPolicySpy,
+        } as unknown as AttendanceRepos['policies'],
+        audit: { record: vi.fn().mockResolvedValue(undefined) },
+      };
+
+      const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+      const res = await service.punchIn(actor, companyId, {
+        siteId: 's1',
+        latitude: 23.23,
+        longitude: 72.57,
+      });
+
+      expect(res.id).toBe('sess-new');
+      expect(ensureDefaultPolicySpy).toHaveBeenCalledTimes(1);
+    });
+
+    describe('Attendance 11-Issue Remediation Verification', () => {
+      const samplePolicy = {
+        id: 'pol-1',
+        companyId,
+        name: 'Standard Policy',
+        shiftDurationMins: 480,
+        halfDayThresholdMins: 240,
+        fullDayThresholdMins: 480,
+        dayStartHour: 8,
+        dayStartMinute: 0,
+        breakMode: 'FIXED',
+        fixedBreakMins: 60,
+        minWorkForBreakMins: 240,
+        overtimeMode: 'HOURLY',
+        minOvertimeMins: 30,
+        otSlabMins: 30,
+        pMultiplierSlabs: null,
+        requireTvtGate: false,
+        allowMobilePunch: true,
+        allowKioskPunch: true,
+        allowBiometric: true,
+        geofenceStrict: false,
+      };
+
+      it('Issue 1: endBreak successfully finds break by breakId directly', async () => {
+        const updateBreakSpy = vi
+          .fn<(_: string, id: string, data: Record<string, unknown>) => Promise<Record<string, unknown>>>()
+          .mockImplementation(async (_: string, id: string, data: Record<string, unknown>) =>
+            Promise.resolve({
+              id,
+              sessionId: 'sess-1',
+              endedAt: new Date(),
+              durationMins: 30,
+              ...data,
+            }),
+          );
+
+        const mockRepos: Partial<AttendanceRepos> = {
+          employees: {
+            findByPrincipal: vi.fn().mockResolvedValue({ id: 'emp-1', displayName: 'Worker' }),
+          } as unknown as AttendanceRepos['employees'],
+          sessions: {
+            findById: vi.fn().mockResolvedValue({
+              id: 'sess-1',
+              employeeId: 'emp-1',
+              siteId: 's1',
+            }),
+          } as unknown as AttendanceRepos['sessions'],
+          breaks: {
+            findById: vi.fn().mockResolvedValue({
+              id: 'brk-target',
+              sessionId: 'sess-1',
+              startedAt: new Date(Date.now() - 30 * 60 * 1000),
+              endedAt: null,
+            }),
+            update: updateBreakSpy,
+          } as unknown as AttendanceRepos['breaks'],
+          audit: { record: vi.fn().mockResolvedValue(undefined) },
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+        const res = await service.endBreak(actor, companyId, {
+          breakId: 'brk-target',
+          remarks: 'Ended on time',
+        });
+
+        expect(res.id).toBe('brk-target');
+        expect(updateBreakSpy).toHaveBeenCalledWith(
+          companyId,
+          'brk-target',
+          expect.objectContaining({ remarks: 'Ended on time' }),
+        );
+      });
+
+      it('Issue 1: endBreak throws NoActiveBreakError if breakId is already ended', async () => {
+        const mockRepos: Partial<AttendanceRepos> = {
+          breaks: {
+            findById: vi.fn().mockResolvedValue({
+              id: 'brk-ended',
+              sessionId: 'sess-1',
+              startedAt: new Date(Date.now() - 60 * 60 * 1000),
+              endedAt: new Date(Date.now() - 30 * 60 * 1000),
+            }),
+          } as unknown as AttendanceRepos['breaks'],
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+        await expect(service.endBreak(actor, companyId, { breakId: 'brk-ended' })).rejects.toThrow(
+          NoActiveBreakError,
+        );
+      });
+
+      it('Issue 2: kioskBatchPunchOut flags SESSION_SITE_MISMATCH if session belongs to another site', async () => {
+        const mockRepos: Partial<AttendanceRepos> = {
+          sites: { findById: vi.fn().mockResolvedValue(sampleSite) },
+          sessions: {
+            findActive: vi.fn().mockResolvedValue({
+              id: 'sess-wrong-site',
+              siteId: 'site-other',
+              employeeId: 'emp-1',
+              status: 'IN_PROGRESS',
+              punchInAt: new Date(Date.now() - 8 * 60 * 60 * 1000),
+            }),
+          } as unknown as AttendanceRepos['sessions'],
+          audit: { record: vi.fn().mockResolvedValue(undefined) },
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+        const res = await service.kioskBatchPunchOut(actor, companyId, {
+          siteId: 's1',
+          employeeIds: ['emp-1'],
+          latitude: 23.23,
+          longitude: 72.57,
+        });
+
+        expect(res.failureCount).toBe(1);
+        expect(res.results[0]?.error).toBe('SESSION_SITE_MISMATCH');
+      });
+
+      it('Issue 3: punchOut outside geofence marks isFlagged and sets flagReason', async () => {
+        let updatedData: unknown = null;
+        const mockRepos: Partial<AttendanceRepos> = {
+          employees: {
+            findByPrincipal: vi.fn().mockResolvedValue(sampleEmployee),
+          } as unknown as AttendanceRepos['employees'],
+          sites: {
+            findById: vi.fn().mockResolvedValue({
+              ...sampleSite,
+              geoLatitude: 23.0,
+              geoLongitude: 72.0,
+              geoFenceRadiusM: 100,
+            }),
+          },
+          sessions: {
+            findActive: vi.fn().mockResolvedValue({
+              id: 'sess-1',
+              siteId: 's1',
+              employeeId: sampleEmployee.id,
+              status: 'IN_PROGRESS',
+              punchInAt: new Date(Date.now() - 8 * 60 * 60 * 1000),
+              isFlagged: false,
+              flagReason: null,
+            }),
+            update: vi.fn().mockImplementation(async (_, __, data) => {
+              updatedData = data;
+              return { id: 'sess-1', ...data } as AttendanceSession;
+            }),
+          } as unknown as AttendanceRepos['sessions'],
+          policies: {
+            findById: vi.fn().mockResolvedValue(samplePolicy),
+          } as unknown as AttendanceRepos['policies'],
+          breaks: {
+            findActive: vi.fn().mockResolvedValue(null),
+            listForSession: vi.fn().mockResolvedValue([]),
+          } as unknown as AttendanceRepos['breaks'],
+          audit: { record: vi.fn().mockResolvedValue(undefined) },
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+        // Punch out far from geofence
+        await service.punchOut(actor, companyId, {
+          latitude: 28.61, // Delhi coordinates vs site at 23.0, 72.0
+          longitude: 77.20,
+        });
+
+        const record = updatedData as Record<string, unknown>;
+        expect(record.isFlagged).toBe(true);
+        expect(record.flagReason).toContain('Punch-out outside geofence');
+        expect(record.punchOutWithinGeofence).toBe(false);
+      });
+
+      it('Issue 4: regularizeSession validates punchOutAt presence, order, and recalculates durations', async () => {
+        let updatedData: unknown = null;
+        const mockRepos: Partial<AttendanceRepos> = {
+          sessions: {
+            findById: vi.fn().mockResolvedValue({
+              id: 'sess-1',
+              siteId: 's1',
+              status: 'IN_PROGRESS',
+              punchInAt: new Date('2026-11-18T08:00:00.000Z'),
+              punchOutAt: null,
+            }),
+            update: vi.fn().mockImplementation(async (_, __, data) => {
+              updatedData = data;
+              return { id: 'sess-1', ...data } as AttendanceSession;
+            }),
+          } as unknown as AttendanceRepos['sessions'],
+          policies: {
+            findById: vi.fn().mockResolvedValue(samplePolicy),
+          } as unknown as AttendanceRepos['policies'],
+          breaks: {
+            listForSession: vi.fn().mockResolvedValue([]),
+          } as unknown as AttendanceRepos['breaks'],
+          audit: { record: vi.fn().mockResolvedValue(undefined) },
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+
+        // Attempting to regularize without punchOutAt on in-progress session throws
+        await expect(
+          service.regularizeSession(actor, companyId, 'sess-1', { remarks: 'Missing out' }),
+        ).rejects.toThrow(AttendanceValidationError);
+
+        // Attempting out <= in throws
+        await expect(
+          service.regularizeSession(actor, companyId, 'sess-1', {
+            punchOutAt: '2026-11-18T07:00:00.000Z',
+            remarks: 'Invalid time order',
+          }),
+        ).rejects.toThrow(AttendanceValidationError);
+
+        // Valid regularization recalculates durations (08:00 to 18:00 = 10h = 600m)
+        await service.regularizeSession(actor, companyId, 'sess-1', {
+          punchOutAt: '2026-11-18T18:00:00.000Z',
+          remarks: 'Valid regularization',
+        });
+
+        const rec = updatedData as Record<string, unknown>;
+        expect(rec.grossDurationMins).toBe(600);
+        expect(rec.status).toBe('COMPLETED');
+      });
+
+      it('Issue 5: sweepStaleSessions auto-closes sessions exceeding cutoff', async () => {
+        const autoCloseSpy = vi.fn().mockResolvedValue(3);
+        const mockRepos: Partial<AttendanceRepos> = {
+          sessions: {
+            autoCloseStaleSessions: autoCloseSpy,
+          } as unknown as AttendanceRepos['sessions'],
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+        const count = await service.sweepStaleSessions(companyId, 24);
+
+        expect(count).toBe(3);
+        expect(autoCloseSpy).toHaveBeenCalledWith(expect.any(Date), companyId);
+      });
+
+      it('Issue 7 & 8: punchIn for another employee or privileged source asserts ATTENDANCE_MANAGE', async () => {
+        const authSpy = vi.fn().mockResolvedValue(undefined);
+        const mockAuthorizer = { assertPermission: authSpy };
+
+        const mockRepos: Partial<AttendanceRepos> = {
+          employees: {
+            findByPrincipal: vi.fn().mockResolvedValue({ id: 'emp-caller', displayName: 'Caller', status: 'ACTIVE' }),
+            findById: vi.fn().mockResolvedValue({ id: 'emp-target', displayName: 'Target', status: 'ACTIVE' }),
+          },
+          sites: { findById: vi.fn().mockResolvedValue(sampleSite) },
+          sessions: {
+            findActive: vi.fn().mockResolvedValue(null),
+            create: vi
+              .fn<(_: string, data: Record<string, unknown>) => Promise<AttendanceSession>>()
+              .mockResolvedValue({ id: 'sess-new' } as AttendanceSession),
+          } as unknown as AttendanceRepos['sessions'],
+          policies: {
+            findEffective: vi.fn().mockResolvedValue({
+              ...samplePolicy,
+              allowKioskPunch: true,
+              allowBiometric: true,
+            }),
+          } as unknown as AttendanceRepos['policies'],
+          tvt: { hasAttended: vi.fn().mockResolvedValue(true) } as unknown as AttendanceRepos['tvt'],
+          audit: { record: vi.fn().mockResolvedValue(undefined) },
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), mockAuthorizer);
+
+        // Punching for another employee requires ATTENDANCE_MANAGE
+        await service.punchIn(actor, companyId, {
+          siteId: 's1',
+          employeeId: 'emp-target',
+          latitude: 23.23,
+          longitude: 72.57,
+        });
+
+        expect(authSpy).toHaveBeenCalledWith('u1', 'ATTENDANCE_MANAGE', expect.anything());
+      });
+
+      it('Issue 9: getActiveSession targeting another employee asserts ATTENDANCE_MANAGE', async () => {
+        const authSpy = vi.fn().mockResolvedValue(undefined);
+        const mockAuthorizer = { assertPermission: authSpy };
+
+        const mockRepos: Partial<AttendanceRepos> = {
+          employees: {
+            findByPrincipal: vi.fn().mockResolvedValue({ id: 'emp-caller' }),
+          } as unknown as AttendanceRepos['employees'],
+          sessions: {
+            findActive: vi.fn().mockResolvedValue({
+              id: 'sess-target',
+              siteId: 's1',
+              employeeId: 'emp-other',
+            }),
+          } as unknown as AttendanceRepos['sessions'],
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), mockAuthorizer);
+        const session = await service.getActiveSession(actor, companyId, 'emp-other');
+
+        expect(session?.id).toBe('sess-target');
+        expect(authSpy).toHaveBeenCalledWith('u1', 'ATTENDANCE_MANAGE', expect.anything());
+      });
+
+      it('Issue 10: kioskOfflineSync rejects inactive employee, duplicate active, and TVT BLOCK', async () => {
+        const mockRepos: Partial<AttendanceRepos> = {
+          sites: {
+            findById: vi.fn().mockResolvedValue({
+              ...sampleSite,
+              geoLatitude: 23.0,
+              geoLongitude: 72.0,
+              geoFenceRadiusM: 100,
+            }),
+          },
+          employees: {
+            findManyByIds: vi.fn().mockResolvedValue([
+              { id: 'emp-active', status: 'ACTIVE' },
+              { id: 'emp-inactive', status: 'INACTIVE' },
+              { id: 'emp-has-active', status: 'ACTIVE' },
+            ]),
+          } as unknown as AttendanceRepos['employees'],
+          sessions: {
+            findByClientSessionId: vi.fn().mockResolvedValue(null),
+            findActiveMany: vi.fn().mockResolvedValue([
+              { id: 'sess-act', employeeId: 'emp-has-active', status: 'IN_PROGRESS' },
+            ]),
+            create: vi
+              .fn<(_: string, data: { clientSessionId?: string }) => Promise<AttendanceSession>>()
+              .mockImplementation(async (_, data) =>
+                Promise.resolve({
+                  id: `sess-${data.clientSessionId ?? ''}`,
+                  ...data,
+                } as unknown as AttendanceSession),
+              ),
+          } as unknown as AttendanceRepos['sessions'],
+          policies: {
+            findEffective: vi.fn().mockResolvedValue({
+              ...samplePolicy,
+              requireTvtGate: true,
+              tvtGateAction: 'BLOCK',
+            }),
+          } as unknown as AttendanceRepos['policies'],
+          tvt: {
+            hasAttended: vi.fn().mockResolvedValue(false), // missed TVT
+          } as unknown as AttendanceRepos['tvt'],
+          audit: { record: vi.fn().mockResolvedValue(undefined) },
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+        const res = await service.kioskOfflineSync(actor, companyId, {
+          siteId: 's1',
+          syncBatchId: 'batch-test-10',
+          sessions: [
+            {
+              clientSessionId: 'cs-inactive',
+              employeeId: 'emp-inactive',
+              punchInAt: '2026-11-18T08:00:00.000Z',
+            },
+            {
+              clientSessionId: 'cs-dup-active',
+              employeeId: 'emp-has-active',
+              punchInAt: '2026-11-18T08:00:00.000Z',
+            },
+            {
+              clientSessionId: 'cs-tvt-block',
+              employeeId: 'emp-active',
+              punchInAt: '2026-11-18T08:00:00.000Z',
+            },
+          ],
+        });
+
+        expect(res.failedCount).toBe(3);
+        expect(res.results.find((r) => r.clientSessionId === 'cs-inactive')?.error).toBe(
+          'EMPLOYEE_NOT_ACTIVE',
+        );
+        expect(res.results.find((r) => r.clientSessionId === 'cs-dup-active')?.error).toBe(
+          'ACTIVE_SESSION_EXISTS',
+        );
+        expect(res.results.find((r) => r.clientSessionId === 'cs-tvt-block')?.error).toBe(
+          'TVT_SAFETY_BRIEFING_REQUIRED',
+        );
+      });
     });
   });
 });

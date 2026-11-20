@@ -54,12 +54,35 @@ export function makeAuthRepos(store: AuthStore): AuthRepos {
         };
       },
       findById: async (id) => store.principals.find((p) => p.id === id) ?? null,
+      updatePassword: async (id, passwordHash) => {
+        const found = store.principals.find((p) => p.id === id);
+        if (found) {
+          found.passwordHash = passwordHash;
+          found.version += 1;
+        }
+      },
       findFullProfile: async (id) => {
         const found = store.principals.find((p) => p.id === id);
         if (!found) return null;
         return {
           ...found,
-          employees: [],
+          employees: store.employees
+            .filter((e) => e.principalId === found.id)
+            .map((e) => ({
+              ...e,
+              engagementType: 'DIRECT_EMPLOYEE',
+              designation: null,
+              tradeCategory: null,
+              joiningDate: null,
+              contactPhone: null,
+              contactEmail: null,
+              emergencyContactName: null,
+              emergencyContactPhone: null,
+              status: 'ACTIVE',
+              memberships: [],
+              attendanceSessions: [],
+              leaveBalances: [],
+            })),
           roleAssignments: [],
         };
       },

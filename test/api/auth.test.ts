@@ -50,6 +50,73 @@ function makeService(over: Partial<AuthService> = {}) {
       assignments: [],
       departments: [],
     }),
+    getProfile: async () => ({
+      principal: {
+        id: '00000000-0000-0000-0000-000000000001',
+        loginId: 'user@example.com',
+        loginIdType: 'EMAIL',
+        status: 'ACTIVE',
+        mfaEnabled: false,
+        mfaType: null,
+      },
+      employee: {
+        id: '00000000-0000-0000-0000-000000000003',
+        companyId: '00000000-0000-0000-0000-000000000002',
+        employeeCode: 'EMP-001',
+        displayName: 'Test User',
+        engagementType: 'DIRECT_EMPLOYEE',
+        designation: 'Engineer',
+        tradeCategory: 'CIVIL',
+        joiningDate: '2024-01-15',
+        contactPhone: '+919876543210',
+        contactEmail: 'user@example.com',
+        emergencyContactName: 'Parent',
+        emergencyContactPhone: '+919876543211',
+        status: 'ACTIVE',
+      },
+      company: {
+        id: '00000000-0000-0000-0000-000000000002',
+        code: 'ACME',
+        name: 'Acme Corp',
+        isPlatform: false,
+      },
+      primaryRole: 'COMPANY_OWNER',
+      roles: ['COMPANY_OWNER'],
+      permissions: ['ORG_COMPANY_READ'],
+      assignments: [],
+      departments: [],
+      attendance: {
+        hasActiveSession: false,
+        activeSession: null,
+      },
+      leaveBalances: [
+        {
+          leaveType: 'CASUAL',
+          year: 2026,
+          allocatedDays: 12,
+          usedDays: 2,
+          pendingDays: 1,
+          carriedOverDays: 0,
+          availableDays: 9,
+        },
+      ],
+    }),
+    changePassword: async () => ({
+      success: true,
+      message: 'Password changed successfully',
+    }),
+    requestMfaSetup: async () => ({
+      mfaRequired: true as const,
+      mfaToken: 'setup-token',
+      mfaType: 'EMAIL_OTP' as const,
+      maskedEmail: 'u***@example.com',
+      expiresInSeconds: 300,
+    }),
+    confirmMfaSetup: async () => ({
+      success: true,
+      mfaEnabled: true,
+      mfaType: 'EMAIL_OTP',
+    }),
     buildActorContext: async () => ({
       actorId: 'p1',
       actorType: 'USER' as const,
@@ -216,6 +283,98 @@ describe('auth routes', () => {
       expect(body.roles).toContain('COMPANY_OWNER');
       expect(body.permissions).toContain('ORG_COMPANY_READ');
       expect(body.company.code).toBe('ACME');
+      await app.close();
+    });
+  });
+
+  describe('GET /api/v1/profile', () => {
+    it('requires authentication', async () => {
+      const app = await appWith(makeService());
+      const res = await app.inject({ method: 'GET', url: '/api/v1/profile' });
+      expect(res.statusCode).toBe(401);
+      const body = res.json<{ error: { code: string } }>();
+      expect(body.error.code).toBe('TOKEN_MISSING');
+      await app.close();
+    });
+
+    it('returns aggregated profile with principal, employee, attendance, and leave details', async () => {
+      const app = await appWith(makeService());
+      const token = app.tokenService.signAccessToken('p1', 's1');
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/profile',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{
+        principal: { loginId: string; mfaEnabled: boolean };
+        employee: { employeeCode: string; displayName: string; designation: string };
+        company: { code: string };
+        attendance: { hasActiveSession: boolean };
+        leaveBalances: { leaveType: string; availableDays: number }[];
+      }>();
+      expect(body.principal.loginId).toBe('user@example.com');
+      expect(body.principal.mfaEnabled).toBe(false);
+      expect(body.employee.displayName).toBe('Test User');
+      expect(body.employee.employeeCode).toBe('EMP-001');
+      expect(body.employee.designation).toBe('Engineer');
+      expect(body.company.code).toBe('ACME');
+      expect(body.attendance.hasActiveSession).toBe(false);
+      expect(body.leaveBalances).toHaveLength(1);
+      expect(body.leaveBalances[0]?.availableDays).toBe(9);
+      await app.close();
+    });
+  });
+
+  describe('POST /api/v1/auth/change-password', () => {
+    it('requires authentication', async () => {
+      const app = await appWith(makeService());
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/change-password',
+        payload: { currentPassword: 'old', newPassword: 'new-secure-password' },
+      });
+      expect(res.statusCode).toBe(401);
+      await app.close();
+    });
+
+    it('successfully changes password when authenticated', async () => {
+      const app = await appWith(makeService());
+      const token = app.tokenService.signAccessToken('p1', 's1');
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/change-password',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { currentPassword: 'secret-pw', newPassword: 'brand-new-password-123' },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{ success: boolean; message: string }>();
+      expect(body.success).toBe(true);
+      await app.close();
+    });
+  });
+
+  describe('POST /api/v1/auth/mfa/setup', () => {
+    it('requires authentication', async () => {
+      const app = await appWith(makeService());
+      const res = await app.inject({ method: 'POST', url: '/api/v1/auth/mfa/setup' });
+      expect(res.statusCode).toBe(401);
+      await app.close();
+    });
+
+    it('returns challenge with masked email and mfaToken', async () => {
+      const app = await appWith(makeService());
+      const token = app.tokenService.signAccessToken('p1', 's1');
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/mfa/setup',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{ mfaRequired: boolean; mfaToken: string; maskedEmail: string }>();
+      expect(body.mfaRequired).toBe(true);
+      expect(body.mfaToken).toBe('setup-token');
+      expect(body.maskedEmail).toBe('u***@example.com');
       await app.close();
     });
   });

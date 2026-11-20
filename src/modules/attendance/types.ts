@@ -2,8 +2,34 @@ import { Type, type Static } from '@sinclair/typebox';
 import type { BreakMode, OvertimeMode } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
-// Pure Domain Helper Functions
+// Pure Domain Helper Functions & Default Configuration
 // ---------------------------------------------------------------------------
+
+export const MAX_MUSTER_ROLL_DAYS = 31;
+
+export const DEFAULT_ATTENDANCE_POLICY = {
+  dayStartHour: 8,
+  dayStartMinute: 0,
+  shiftDurationMins: 480,
+  halfDayThresholdMins: 240,
+  fullDayThresholdMins: 480,
+  breakMode: 'FIXED' as const,
+  fixedBreakMins: 60,
+  minWorkForBreakMins: 240,
+  maxDynamicBreakMins: 90,
+  overtimeMode: 'HOURLY' as const,
+  minOvertimeMins: 30,
+  otSlabMins: 30,
+  pMultiplierSlabs: null,
+  geofenceStrict: true,
+  allowMobilePunch: true,
+  allowKioskPunch: true,
+  allowBiometric: true,
+  requireTvtGate: false,
+  tvtGateAction: 'FLAG' as const,
+  status: 'ACTIVE' as const,
+  version: 0,
+};
 
 /**
  * Calculates the construction business date ('YYYY-MM-DD') for a given UTC timestamp,

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { UnauthorizedError } from '../../common/errors/app-error.js';
+import { UnauthorizedError, AppError } from '../../common/errors/app-error.js';
 import { passwordService } from '../identity/password.js';
 import { generateRefreshToken, hashRefreshToken, type TokenService } from './tokens.js';
 import type { AuthUnitOfWork, PrincipalDetails } from './repository.js';
@@ -11,6 +11,91 @@ import {
   type UserProfileResponse,
   InMemoryUserProfileCache,
 } from './cache.js';
+
+export interface UserAggregatedProfileResponse {
+  principal: {
+    id: string;
+    loginId: string;
+    loginIdType: string;
+    status: string;
+    mfaEnabled: boolean;
+    mfaType: string | null;
+  };
+  employee: {
+    id: string;
+    companyId: string;
+    employeeCode: string;
+    displayName: string;
+    engagementType: string | null;
+    designation: string | null;
+    tradeCategory: string | null;
+    joiningDate: string | null;
+    contactPhone: string | null;
+    contactEmail: string | null;
+    emergencyContactName: string | null;
+    emergencyContactPhone: string | null;
+    status: string;
+  } | null;
+  company: {
+    id: string;
+    code: string;
+    name: string;
+    isPlatform: boolean;
+  } | null;
+  primaryRole: string | null;
+  roles: string[];
+  permissions: string[];
+  departments: {
+    departmentId: string;
+    departmentCode: string;
+    departmentName: string;
+    category: string | null;
+    isPrimary: boolean;
+  }[];
+  assignments: {
+    id: string;
+    roleKey: string;
+    roleName: string;
+    scopeType: string;
+    headOfficeId: string | null;
+    headOfficeName: string | null;
+    projectId: string | null;
+    projectName: string | null;
+    siteId: string | null;
+    siteName: string | null;
+    effectiveFrom: string | null;
+    effectiveTo: string | null;
+  }[];
+  attendance: {
+    hasActiveSession: boolean;
+    activeSession: {
+      id: string;
+      siteId: string;
+      siteCode: string;
+      siteName: string;
+      businessDate: string;
+      punchInAt: string;
+      source: string;
+      punchInWithinGeofence: boolean;
+      isFlagged: boolean;
+      flagReason: string | null;
+      activeBreak: {
+        id: string;
+        breakType: string;
+        startedAt: string;
+      } | null;
+    } | null;
+  };
+  leaveBalances: {
+    leaveType: string;
+    year: number;
+    allocatedDays: number;
+    usedDays: number;
+    pendingDays: number;
+    carriedOverDays: number;
+    availableDays: number;
+  }[];
+}
 
 export interface AuthConfig {
   accessTokenTtlS: number;
@@ -323,6 +408,97 @@ export class AuthService {
     });
   }
 
+  async changePassword(
+    principalId: string,
+    input: { currentPassword: string; newPassword: string },
+    meta: RequestMeta = {},
+  ): Promise<{ success: boolean; message: string }> {
+    if (!input.currentPassword || !input.newPassword) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Current password and new password are required');
+    }
+    if (input.newPassword.length < 8) {
+      throw new AppError(400, 'PASSWORD_TOO_WEAK', 'New password must be at least 8 characters long');
+    }
+    if (input.newPassword.length > 128) {
+      throw new AppError(400, 'PASSWORD_TOO_LONG', 'New password must not exceed 128 characters');
+    }
+    if (input.newPassword === input.currentPassword) {
+      throw new AppError(400, 'SAME_PASSWORD', 'New password must be different from current password');
+    }
+
+    return this.uow.run(async ({ principals, audit }) => {
+      const principal = await principals.findById(principalId);
+      if (principal?.status !== 'ACTIVE') {
+        throw new UnauthorizedError('ACCOUNT_INACTIVE', 'Account is not active');
+      }
+
+      const currentValid = await passwordService.verify(principal.passwordHash, input.currentPassword);
+      if (!currentValid) {
+        throw new AppError(400, 'INVALID_CURRENT_PASSWORD', 'Current password is incorrect');
+      }
+
+      const newHash = await passwordService.hash(input.newPassword);
+      if (principals.updatePassword) {
+        await principals.updatePassword(principal.id, newHash);
+      }
+
+      await audit.record({
+        eventKey: randomUUID(),
+        action: 'AUTH_PASSWORD_CHANGED',
+        entityType: 'PRINCIPAL',
+        entityId: principal.id,
+        actorId: principal.id,
+        actorType: principal.type,
+        ...(meta.correlationId !== undefined ? { correlationId: meta.correlationId } : {}),
+      });
+
+      return {
+        success: true,
+        message: 'Password changed successfully',
+      };
+    });
+  }
+
+  async requestMfaSetup(principalId: string): Promise<MfaChallengeResult> {
+    if (!this.mfaService) {
+      throw new AppError(400, 'MFA_NOT_CONFIGURED', 'MFA service not configured');
+    }
+    const full = await this.uow.run(async ({ principals }) => {
+      if (principals.findFullProfile) {
+        return principals.findFullProfile(principalId);
+      }
+      return null;
+    });
+    if (full?.status !== 'ACTIVE') {
+      throw new UnauthorizedError('ACCOUNT_INACTIVE', 'Account is not active');
+    }
+    const email = full.employees[0]?.contactEmail ?? full.loginId;
+    if (!email) {
+      throw new AppError(400, 'NO_EMAIL_FOUND', 'No valid email found on account for MFA setup');
+    }
+    return this.mfaService.createChallenge(principalId, email);
+  }
+
+  async confirmMfaSetup(
+    principalId: string,
+    mfaToken: string,
+    code: string,
+  ): Promise<{ success: boolean; mfaEnabled: boolean; mfaType: string }> {
+    if (!this.mfaService) {
+      throw new AppError(400, 'MFA_NOT_CONFIGURED', 'MFA service not configured');
+    }
+    const verified = await this.mfaService.verifyChallenge(mfaToken, code);
+    if (verified.principalId !== principalId) {
+      throw new UnauthorizedError('INVALID_MFA_TOKEN');
+    }
+    await this.mfaService.enableMfa(principalId, 'EMAIL_OTP');
+    return {
+      success: true,
+      mfaEnabled: true,
+      mfaType: 'EMAIL_OTP',
+    };
+  }
+
   /**
    * Resolve verified token claims into a request actor context. Revalidates
    * the session and principal status on every call — suspension/revocation
@@ -448,6 +624,172 @@ export class AuthService {
 
     await this.cache.set(principalId, response, companyId);
     return response;
+  }
+
+  async getProfile(principalId: string, companyId?: string): Promise<UserAggregatedProfileResponse> {
+    const full = await this.uow.run(async ({ principals }) => {
+      if (principals.findFullProfile) {
+        return principals.findFullProfile(principalId, companyId, this.now());
+      }
+      return null;
+    });
+
+    if (full?.status !== 'ACTIVE') {
+      throw new UnauthorizedError('ACCOUNT_INACTIVE', 'Account is not active');
+    }
+
+    const emp = full.employees[0];
+    const company = emp?.company ?? null;
+
+    const roles: string[] = [];
+    const permissions: string[] = [];
+    const assignments: UserAggregatedProfileResponse['assignments'] = [];
+
+    for (const ra of full.roleAssignments) {
+      if (!roles.includes(ra.role.key)) {
+        roles.push(ra.role.key);
+      }
+      for (const rp of ra.role.permissions) {
+        if (!permissions.includes(rp.permission.key)) {
+          permissions.push(rp.permission.key);
+        }
+      }
+      assignments.push({
+        id: ra.id,
+        roleKey: ra.role.key,
+        roleName: ra.role.name,
+        scopeType: ra.scopeType,
+        headOfficeId: ra.headOfficeId ?? null,
+        headOfficeName: ra.headOffice?.name ?? null,
+        projectId: ra.projectId ?? null,
+        projectName: ra.project?.name ?? null,
+        siteId: ra.siteId ?? null,
+        siteName: ra.site?.name ?? null,
+        effectiveFrom: ra.effectiveFrom ? ra.effectiveFrom.toISOString() : null,
+        effectiveTo: ra.effectiveTo ? ra.effectiveTo.toISOString() : null,
+      });
+    }
+
+    const departments: UserAggregatedProfileResponse['departments'] = [];
+    if (emp?.memberships) {
+      for (const m of emp.memberships) {
+        departments.push({
+          departmentId: m.departmentId,
+          departmentCode: m.department.code,
+          departmentName: m.department.name,
+          category: (m.department as { category?: string }).category ?? null,
+          isPrimary: m.isPrimary,
+        });
+      }
+    }
+
+    let activeSessionData: UserAggregatedProfileResponse['attendance']['activeSession'] = null;
+    if (emp?.attendanceSessions && emp.attendanceSessions.length > 0) {
+      const s = emp.attendanceSessions[0];
+      if (s) {
+        const activeBreak = s.breaks.find((b) => b.endedAt === null) ?? null;
+        activeSessionData = {
+          id: s.id,
+          siteId: s.siteId,
+          siteCode: s.site.code,
+          siteName: s.site.name,
+          businessDate: s.businessDate,
+          punchInAt: s.punchInAt instanceof Date ? s.punchInAt.toISOString() : String(s.punchInAt),
+          source: s.source,
+          punchInWithinGeofence: s.punchInWithinGeofence,
+          isFlagged: s.isFlagged,
+          flagReason: s.flagReason,
+          activeBreak: activeBreak
+            ? {
+                id: activeBreak.id,
+                breakType: activeBreak.breakType,
+                startedAt:
+                  activeBreak.startedAt instanceof Date
+                    ? activeBreak.startedAt.toISOString()
+                    : String(activeBreak.startedAt),
+              }
+            : null,
+        };
+      }
+    }
+
+    const leaveBalancesData: UserAggregatedProfileResponse['leaveBalances'] = [];
+    if (emp?.leaveBalances) {
+      for (const lb of emp.leaveBalances) {
+        const allocated = Number(lb.allocatedDays ?? 0);
+        const used = Number(lb.usedDays ?? 0);
+        const pending = Number(lb.pendingDays ?? 0);
+        const carried = Number(lb.carriedOverDays ?? 0);
+        const available = Math.max(0, allocated + carried - used - pending);
+        leaveBalancesData.push({
+          leaveType: lb.leaveType,
+          year: lb.year,
+          allocatedDays: allocated,
+          usedDays: used,
+          pendingDays: pending,
+          carriedOverDays: carried,
+          availableDays: available,
+        });
+      }
+    }
+
+    let mfaEnabled = false;
+    let mfaType: string | null = null;
+    if (this.mfaService) {
+      const status = await this.mfaService.getStatus(principalId);
+      mfaEnabled = status.mfaEnabled;
+      mfaType = status.mfaType;
+    }
+
+    return {
+      principal: {
+        id: full.id,
+        loginId: full.loginId ?? '',
+        loginIdType: full.loginIdType ?? 'EMAIL',
+        status: full.status,
+        mfaEnabled,
+        mfaType,
+      },
+      employee: emp
+        ? {
+            id: emp.id,
+            companyId: emp.companyId,
+            employeeCode: emp.employeeCode,
+            displayName: emp.displayName,
+            engagementType: emp.engagementType ?? null,
+            designation: emp.designation ?? null,
+            tradeCategory: emp.tradeCategory ?? null,
+            joiningDate: emp.joiningDate
+              ? emp.joiningDate instanceof Date
+                ? emp.joiningDate.toISOString().slice(0, 10)
+                : String(emp.joiningDate).slice(0, 10)
+              : null,
+            contactPhone: emp.contactPhone ?? null,
+            contactEmail: emp.contactEmail ?? null,
+            emergencyContactName: emp.emergencyContactName ?? null,
+            emergencyContactPhone: emp.emergencyContactPhone ?? null,
+            status: emp.status,
+          }
+        : null,
+      company: company
+        ? {
+            id: company.id,
+            code: company.code,
+            name: company.name,
+            isPlatform: company.isPlatform,
+          }
+        : null,
+      primaryRole: roles[0] ?? null,
+      roles,
+      permissions,
+      departments,
+      assignments,
+      attendance: {
+        hasActiveSession: activeSessionData !== null,
+        activeSession: activeSessionData,
+      },
+      leaveBalances: leaveBalancesData,
+    };
   }
 
   private issueTokens(
