@@ -199,6 +199,10 @@ export class OrganizationService {
         ...(input.contactName !== undefined ? { contactName: input.contactName } : {}),
         ...(input.contactPhone !== undefined ? { contactPhone: input.contactPhone } : {}),
         ...(input.contactEmail !== undefined ? { contactEmail: input.contactEmail } : {}),
+        ...(input.geoLatitude !== undefined ? { geoLatitude: input.geoLatitude } : {}),
+        ...(input.geoLongitude !== undefined ? { geoLongitude: input.geoLongitude } : {}),
+        ...(input.geoFenceRadiusM !== undefined ? { geoFenceRadiusM: input.geoFenceRadiusM } : {}),
+        ...(input.timezone !== undefined ? { timezone: input.timezone } : {}),
       });
       await this.recordMutation(
         audit,
@@ -237,6 +241,10 @@ export class OrganizationService {
       'contactName',
       'contactPhone',
       'contactEmail',
+      'geoLatitude',
+      'geoLongitude',
+      'geoFenceRadiusM',
+      'timezone',
     ] as const) {
       if (patch[f] !== undefined) data[f] = patch[f];
     }

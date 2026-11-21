@@ -42,9 +42,24 @@ export const PROJECT_LEADERSHIP_KEYS: ReadonlySet<string> = new Set([
  * FINANCE-category department. COMPANY_OWNER is deliberately absent —
  * the tenant admin keeps Finance access without department placement.
  */
-export const FINANCE_ROLE_KEYS: ReadonlySet<string> = new Set([
-  'FINANCE_MANAGER',
-  'FINANCE_STAFF',
+export const FINANCE_ROLE_KEYS: ReadonlySet<string> = new Set(['FINANCE_MANAGER', 'FINANCE_STAFF']);
+
+/**
+ * Catalogue domains covered by Finance role assignments (COMPANY scope):
+ * ops enabled on any ACTIVE department in these domains flow to FINANCE_*
+ * role holders automatically — sensitive ops still require explicit grants.
+ * PROJECT_DASHBOARD_VIEW is covered additionally in assignment.ts because it
+ * lives in the PROJECT_REPORTS domain alongside non-finance ops.
+ */
+export const FINANCE_OPERATION_DOMAINS: ReadonlySet<string> = new Set([
+  'PROJECT_FINANCE',
+  'BUDGET',
+  'WALLET',
+  'PAYROLL',
+  'BILLING',
+  'QUOTATION',
+  'ACCOUNTING',
+  'REPORT',
 ]);
 
 export const FINANCE_API_PERMISSIONS: readonly string[] = [

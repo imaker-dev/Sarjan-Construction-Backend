@@ -283,7 +283,10 @@ export const UpdatePolicyBody = Type.Partial(CreatePolicyBody);
 
 export const PunchInBody = Type.Object({
   employeeId: Type.Optional(Type.String({ format: 'uuid' })), // Optional for self-punch
-  siteId: Type.String({ format: 'uuid' }),
+  // Exactly one location anchor: siteId (site staff) OR headOfficeId
+  // (Head-Office-department employees); enforced in the service.
+  siteId: Type.Optional(Type.String({ format: 'uuid' })),
+  headOfficeId: Type.Optional(Type.String({ format: 'uuid' })),
   latitude: Type.Number({ minimum: -90, maximum: 90 }),
   longitude: Type.Number({ minimum: -180, maximum: 180 }),
   source: Type.Optional(AttendanceSourceSchema),

@@ -92,6 +92,21 @@ const siteTarget = (companyId: string, siteId: string): ScopeTarget => ({
   scopeId: siteId,
 });
 
+const headOfficeTarget = (companyId: string, headOfficeId: string): ScopeTarget => ({
+  companyId,
+  scopeType: 'HEAD_OFFICE',
+  scopeId: headOfficeId,
+});
+
+/** Authorization target for a session's location anchor (site or head office). */
+const sessionLocationTarget = (
+  companyId: string,
+  session: { siteId?: string | null; headOfficeId?: string | null },
+): ScopeTarget =>
+  session.siteId != null
+    ? siteTarget(companyId, session.siteId)
+    : headOfficeTarget(companyId, session.headOfficeId ?? companyId);
+
 export const createDefaultPolicyFallback = (companyId?: string): AttendancePolicy =>
   ({
     id: 'default-fallback',
@@ -111,7 +126,7 @@ export class AttendanceService {
   constructor(
     private readonly uow: AttendanceUnitOfWork,
     private readonly authorizer: Authorizer,
-  ) {}
+  ) { }
 
   // -------------------------------------------------------------------------
   // Policy Management
@@ -340,20 +355,23 @@ export class AttendanceService {
         supervisorId = actor.actorId;
       }
 
+      // Exactly one location anchor: siteId (site staff) or headOfficeId
+      // (Head-Office-department employees — they have no site).
+      const hasSite = input.siteId !== undefined;
+      const hasHo = input.headOfficeId !== undefined;
+      if (hasSite === hasHo) {
+        throw new AttendanceValidationError('Provide exactly one of siteId or headOfficeId');
+      }
+      const punchTarget = hasSite
+        ? siteTarget(companyId, input.siteId!)
+        : headOfficeTarget(companyId, input.headOfficeId!);
+
       // Assert permission: supervisor punch or privileged source requires ATTENDANCE_MANAGE
       const isPrivilegedSource = input.source !== undefined && input.source !== 'MOBILE_SELF';
       if (supervisorId || isPrivilegedSource) {
-        await this.authorizer.assertPermission(
-          actor.actorId,
-          ATTENDANCE_MANAGE,
-          siteTarget(companyId, input.siteId),
-        );
+        await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_MANAGE, punchTarget);
       } else {
-        await this.authorizer.assertPermission(
-          actor.actorId,
-          ATTENDANCE_RECORD,
-          siteTarget(companyId, input.siteId),
-        );
+        await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_RECORD, punchTarget);
       }
 
       const emp = await repos.employees.findById(companyId, employeeId);
@@ -361,9 +379,32 @@ export class AttendanceService {
         throw new AttendanceEntityNotFoundError('Active Employee', employeeId);
       }
 
-      // 2. Validate Site
-      const site = await repos.sites.findById(companyId, input.siteId);
-      if (!site) throw new AttendanceEntityNotFoundError('Site', input.siteId);
+      // 2. Validate the location anchor. For head-office punches the employee
+      // must hold an active membership in a department based at that office.
+      const site =
+        input.siteId !== undefined ? await repos.sites.findById(companyId, input.siteId) : null;
+      if (input.siteId !== undefined && site === null) {
+        throw new AttendanceEntityNotFoundError('Site', input.siteId);
+      }
+      const headOffice =
+        input.headOfficeId !== undefined
+          ? await repos.headOffices.findById(companyId, input.headOfficeId)
+          : null;
+      if (input.headOfficeId !== undefined) {
+        if (headOffice?.status !== 'ACTIVE') {
+          throw new AttendanceEntityNotFoundError('Active Head Office', input.headOfficeId);
+        }
+        const atOffice = await repos.memberships.hasActiveAtHeadOffice(
+          companyId,
+          employeeId,
+          headOffice.id,
+        );
+        if (!atOffice) {
+          throw new PunchNotAllowedError(
+            'Employee has no active membership in a department based at this head office',
+          );
+        }
+      }
 
       // 3. Check for existing active session
       const existingSession = await repos.sessions.findActive(companyId, employeeId);
@@ -375,8 +416,7 @@ export class AttendanceService {
       const policy =
         (await repos.policies.findEffective(companyId, {
           employeeId,
-          siteId: site.id,
-          projectId: site.projectId,
+          ...(site !== null ? { siteId: site.id, projectId: site.projectId } : {}),
         })) ?? createDefaultPolicyFallback(companyId);
 
       // If policy id was default-fallback, make sure we persist or connect a real company policy
@@ -385,9 +425,9 @@ export class AttendanceService {
         const compPolicy = repos.policies.ensureDefaultPolicy
           ? await repos.policies.ensureDefaultPolicy(companyId)
           : await repos.policies.create(companyId, {
-              name: 'Company Default Policy',
-              scope: 'COMPANY',
-            });
+            name: 'Company Default Policy',
+            scope: 'COMPANY',
+          });
         policyIdToPersist = compPolicy.id;
       }
 
@@ -402,28 +442,33 @@ export class AttendanceService {
         throw new PunchNotAllowedError('Biometric sync disabled by policy');
       }
 
-      // 5. Geofence Verification
+      // 5. Geofence Verification (site or head-office anchor)
       let distanceM: number | null = null;
       let isWithinGeofence = true;
-      if (site.geoLatitude !== null && site.geoLongitude !== null) {
+      const geoLat = site?.geoLatitude ?? headOffice?.geoLatitude ?? null;
+      const geoLng = site?.geoLongitude ?? headOffice?.geoLongitude ?? null;
+      const fenceRadiusM = site?.geoFenceRadiusM ?? headOffice?.geoFenceRadiusM ?? 100;
+      if (geoLat !== null && geoLng !== null) {
         distanceM = calculateHaversineDistanceMeters(
           input.latitude,
           input.longitude,
-          Number(site.geoLatitude),
-          Number(site.geoLongitude),
+          Number(geoLat),
+          Number(geoLng),
         );
-        const radiusM = site.geoFenceRadiusM ?? 100;
-        if (distanceM > radiusM) {
+        if (distanceM > fenceRadiusM) {
           isWithinGeofence = false;
           if (policy.geofenceStrict) {
-            throw new GeofenceBreachError(distanceM, radiusM);
+            throw new GeofenceBreachError(distanceM, fenceRadiusM);
           }
         }
       }
 
       // 6. Business Date Calculation (8 AM to 8 AM cycle)
       const now = new Date();
-      const timezone = site.timezone ?? site.project.timezone;
+      const timezone =
+        site !== null
+          ? (site.timezone ?? site.project.timezone)
+          : (headOffice?.timezone ?? 'Asia/Kolkata');
       const businessDate = getBusinessDate(
         now,
         timezone,
@@ -431,11 +476,11 @@ export class AttendanceService {
         policy.dayStartMinute,
       );
 
-      // 7. Safety TVT Gate Check
+      // 7. Safety TVT Gate Check (sites only — head offices run no TVT)
       let isFlagged = !isWithinGeofence;
       let flagReason = !isWithinGeofence ? 'Geofence breach on punch in' : null;
 
-      if (policy.requireTvtGate) {
+      if (site !== null && policy.requireTvtGate) {
         const hasAttendedTvt = await repos.tvt.hasAttended(
           companyId,
           site.id,
@@ -457,7 +502,8 @@ export class AttendanceService {
       // 8. Create Session
       const session = await repos.sessions.create(companyId, {
         employee: { connect: { id: employeeId } },
-        site: { connect: { id: site.id } },
+        ...(site !== null ? { site: { connect: { id: site.id } } } : {}),
+        ...(headOffice !== null ? { headOffice: { connect: { id: headOffice.id } } } : {}),
         policy: { connect: { id: policyIdToPersist } },
         businessDate,
         status: 'IN_PROGRESS',
@@ -482,7 +528,8 @@ export class AttendanceService {
           statusAfter: session.status,
           metadata: {
             employeeId,
-            siteId: site.id,
+            siteId: site?.id ?? null,
+            headOfficeId: headOffice?.id ?? null,
             businessDate,
             distanceM,
             isWithinGeofence,
@@ -526,22 +573,22 @@ export class AttendanceService {
         supervisorId = actor.actorId;
       }
 
+      const outTarget = sessionLocationTarget(companyId, session);
       if (supervisorId) {
-        await this.authorizer.assertPermission(
-          actor.actorId,
-          ATTENDANCE_MANAGE,
-          siteTarget(companyId, session.siteId),
-        );
+        await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_MANAGE, outTarget);
       } else {
-        await this.authorizer.assertPermission(
-          actor.actorId,
-          ATTENDANCE_RECORD,
-          siteTarget(companyId, session.siteId),
-        );
+        await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_RECORD, outTarget);
       }
 
-      const site = await repos.sites.findById(companyId, session.siteId);
-      if (!site) throw new AttendanceEntityNotFoundError('Site', session.siteId);
+      const site =
+        session.siteId != null ? await repos.sites.findById(companyId, session.siteId) : null;
+      const headOffice =
+        session.headOfficeId != null
+          ? await repos.headOffices.findById(companyId, session.headOfficeId)
+          : null;
+      if (session.siteId != null && !site) {
+        throw new AttendanceEntityNotFoundError('Site', session.siteId);
+      }
 
       // 3. Close any active break
       const activeBreak = await repos.breaks.findActive(companyId, session.id);
@@ -557,20 +604,23 @@ export class AttendanceService {
         });
       }
 
-      // 4. Geofence Verification
+      // 4. Geofence Verification (site or head-office anchor)
       let distanceM: number | null = null;
       let isWithinGeofence = true;
       let isFlagged = session.isFlagged;
       let flagReason = session.flagReason;
 
-      if (site.geoLatitude !== null && site.geoLongitude !== null) {
+      const outGeoLat = site?.geoLatitude ?? headOffice?.geoLatitude ?? null;
+      const outGeoLng = site?.geoLongitude ?? headOffice?.geoLongitude ?? null;
+      const outRadiusM = site?.geoFenceRadiusM ?? headOffice?.geoFenceRadiusM ?? 100;
+      if (outGeoLat !== null && outGeoLng !== null) {
         distanceM = calculateHaversineDistanceMeters(
           input.latitude,
           input.longitude,
-          Number(site.geoLatitude),
-          Number(site.geoLongitude),
+          Number(outGeoLat),
+          Number(outGeoLng),
         );
-        const radiusM = site.geoFenceRadiusM ?? 100;
+        const radiusM = outRadiusM;
         if (distanceM > radiusM) {
           isWithinGeofence = false;
           isFlagged = true;
@@ -633,7 +683,8 @@ export class AttendanceService {
           statusAfter: updated.status,
           metadata: {
             employeeId,
-            siteId: site.id,
+            siteId: site?.id ?? null,
+            headOfficeId: headOffice?.id ?? null,
             grossDurationMins,
             netDurationMins: calc.netDurationMins,
             presentUnits: calc.presentUnits,
@@ -675,13 +726,13 @@ export class AttendanceService {
         await this.authorizer.assertPermission(
           actor.actorId,
           ATTENDANCE_MANAGE,
-          siteTarget(companyId, session.siteId),
+          sessionLocationTarget(companyId, session),
         );
       } else {
         await this.authorizer.assertPermission(
           actor.actorId,
           ATTENDANCE_RECORD,
-          siteTarget(companyId, session.siteId),
+          sessionLocationTarget(companyId, session),
         );
       }
 
@@ -756,13 +807,13 @@ export class AttendanceService {
         await this.authorizer.assertPermission(
           actor.actorId,
           ATTENDANCE_MANAGE,
-          siteTarget(companyId, session.siteId),
+          sessionLocationTarget(companyId, session),
         );
       } else {
         await this.authorizer.assertPermission(
           actor.actorId,
           ATTENDANCE_RECORD,
-          siteTarget(companyId, session.siteId),
+          sessionLocationTarget(companyId, session),
         );
       }
 
@@ -809,7 +860,7 @@ export class AttendanceService {
       await this.authorizer.assertPermission(
         actor.actorId,
         ATTENDANCE_MANAGE,
-        siteTarget(companyId, session.siteId),
+        sessionLocationTarget(companyId, session),
       );
 
       const effectivePunchInAt = input.punchInAt ? new Date(input.punchInAt) : session.punchInAt;
@@ -937,7 +988,7 @@ export class AttendanceService {
       await this.authorizer.assertPermission(
         actor.actorId,
         ATTENDANCE_READ,
-        siteTarget(companyId, s.siteId),
+        sessionLocationTarget(companyId, s),
       );
       return s;
     });
@@ -946,8 +997,7 @@ export class AttendanceService {
   async getActiveSession(actor: ActorContext, companyId: string, employeeId?: string) {
     return this.uow.run(async (repos) => {
       const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
-      const isTargetingOther =
-        employeeId !== undefined && callerEmp?.id !== employeeId;
+      const isTargetingOther = employeeId !== undefined && callerEmp?.id !== employeeId;
 
       const targetEmpId = employeeId ?? callerEmp?.id;
       if (!targetEmpId) return null;
@@ -959,7 +1009,7 @@ export class AttendanceService {
         await this.authorizer.assertPermission(
           actor.actorId,
           ATTENDANCE_READ,
-          siteTarget(companyId, session.siteId),
+          sessionLocationTarget(companyId, session),
         );
       }
 
@@ -995,11 +1045,7 @@ export class AttendanceService {
   // Kiosk Batch Operations & Offline Sync
   // -------------------------------------------------------------------------
 
-  async kioskBatchPunchIn(
-    actor: ActorContext,
-    companyId: string,
-    input: KioskBatchPunchInInput,
-  ) {
+  async kioskBatchPunchIn(actor: ActorContext, companyId: string, input: KioskBatchPunchInInput) {
     await this.authorizer.assertPermission(
       actor.actorId,
       ATTENDANCE_RECORD,
@@ -1032,32 +1078,34 @@ export class AttendanceService {
       const employees = repos.employees.findManyByIds
         ? await repos.employees.findManyByIds(companyId, input.employeeIds)
         : await Promise.all(
-            input.employeeIds.map(async (id) => {
-              const e = await repos.employees.findById(companyId, id);
-              return e ? { id: e.id, displayName: e.displayName, status: e.status } : null;
-            }),
-          ).then((list) =>
-            list.filter((e): e is { id: string; displayName: string; status: string } => e !== null),
-          );
+          input.employeeIds.map(async (id) => {
+            const e = await repos.employees.findById(companyId, id);
+            return e ? { id: e.id, displayName: e.displayName, status: e.status } : null;
+          }),
+        ).then((list) =>
+          list.filter(
+            (e): e is { id: string; displayName: string; status: string } => e !== null,
+          ),
+        );
       const employeeMap = new Map(employees.map((e) => [e.id, e]));
 
       // 2. Pre-batch active sessions
       const activeSessions = repos.sessions.findActiveMany
         ? await repos.sessions.findActiveMany(companyId, input.employeeIds)
         : await Promise.all(
-            input.employeeIds.map(async (id) => {
-              const s = await repos.sessions.findActive(companyId, id);
-              return s
-                ? {
-                    ...s,
-                    employeeId:
-                      'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
-                        ? s.employeeId
-                        : id,
-                  }
-                : null;
-            }),
-          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+          input.employeeIds.map(async (id) => {
+            const s = await repos.sessions.findActive(companyId, id);
+            return s
+              ? {
+                ...s,
+                employeeId:
+                  'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
+                    ? s.employeeId
+                    : id,
+              }
+              : null;
+          }),
+        ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
       const activeSessionEmployeeIds = new Set(activeSessions.map((s) => s.employeeId));
 
       // 3. Resolve site/project policy ONCE upfront
@@ -1082,9 +1130,9 @@ export class AttendanceService {
         const compPolicy = repos.policies.ensureDefaultPolicy
           ? await repos.policies.ensureDefaultPolicy(companyId)
           : await repos.policies.create(companyId, {
-              name: 'Company Default Policy',
-              scope: 'COMPANY',
-            });
+            name: 'Company Default Policy',
+            scope: 'COMPANY',
+          });
         fallbackPersistedPolicyId = compPolicy.id;
       }
 
@@ -1145,9 +1193,7 @@ export class AttendanceService {
 
         const policy = employeePolicyMap.get(employeeId) ?? basePolicy;
         const policyIdToPersist =
-          policy.id === 'default-fallback'
-            ? (fallbackPersistedPolicyId ?? policy.id)
-            : policy.id;
+          policy.id === 'default-fallback' ? (fallbackPersistedPolicyId ?? policy.id) : policy.id;
 
         if (!isWithinGeofence && policy.geofenceStrict) {
           results.push({ employeeId, success: false, error: 'GEOFENCE_BREACH' });
@@ -1249,11 +1295,7 @@ export class AttendanceService {
     });
   }
 
-  async kioskBatchPunchOut(
-    actor: ActorContext,
-    companyId: string,
-    input: KioskBatchPunchOutInput,
-  ) {
+  async kioskBatchPunchOut(actor: ActorContext, companyId: string, input: KioskBatchPunchOutInput) {
     await this.authorizer.assertPermission(
       actor.actorId,
       ATTENDANCE_RECORD,
@@ -1285,19 +1327,19 @@ export class AttendanceService {
       const activeSessions = repos.sessions.findActiveMany
         ? await repos.sessions.findActiveMany(companyId, input.employeeIds)
         : await Promise.all(
-            input.employeeIds.map(async (id) => {
-              const s = await repos.sessions.findActive(companyId, id);
-              return s
-                ? {
-                    ...s,
-                    employeeId:
-                      'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
-                        ? s.employeeId
-                        : id,
-                  }
-                : null;
-            }),
-          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+          input.employeeIds.map(async (id) => {
+            const s = await repos.sessions.findActive(companyId, id);
+            return s
+              ? {
+                ...s,
+                employeeId:
+                  'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
+                    ? s.employeeId
+                    : id,
+              }
+              : null;
+          }),
+        ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
 
       const sessionMap = new Map(activeSessions.map((s) => [s.employeeId, s]));
 
@@ -1430,11 +1472,7 @@ export class AttendanceService {
     });
   }
 
-  async kioskOfflineSync(
-    actor: ActorContext,
-    companyId: string,
-    input: KioskOfflineSyncInput,
-  ) {
+  async kioskOfflineSync(actor: ActorContext, companyId: string, input: KioskOfflineSyncInput) {
     await this.authorizer.assertPermission(
       actor.actorId,
       ATTENDANCE_RECORD,
@@ -1452,8 +1490,8 @@ export class AttendanceService {
       const existingSessions = repos.sessions.findManyByClientSessionIds
         ? await repos.sessions.findManyByClientSessionIds(companyId, clientSessionIds)
         : await Promise.all(
-            clientSessionIds.map((cid) => repos.sessions.findByClientSessionId(companyId, cid)),
-          ).then((list) => list.filter((s): s is AttendanceSession => s !== null));
+          clientSessionIds.map((cid) => repos.sessions.findByClientSessionId(companyId, cid)),
+        ).then((list) => list.filter((s): s is AttendanceSession => s !== null));
       const existingSessionMap = new Map<string, AttendanceSession>();
       for (const s of existingSessions) {
         if (s.clientSessionId) {
@@ -1483,16 +1521,16 @@ export class AttendanceService {
       const employees = repos.employees.findManyByIds
         ? await repos.employees.findManyByIds(companyId, distinctEmployeeIds)
         : await Promise.all(
-            distinctEmployeeIds.map(async (id) => repos.employees.findById(companyId, id)),
-          ).then((list) => list.filter((e): e is NonNullable<typeof e> => e !== null));
+          distinctEmployeeIds.map(async (id) => repos.employees.findById(companyId, id)),
+        ).then((list) => list.filter((e): e is NonNullable<typeof e> => e !== null));
       const employeeMap = new Map(employees.map((e) => [e.id, e]));
 
       // Pre-batch active sessions to detect duplicate active sessions
       const activeSessions = repos.sessions.findActiveMany
         ? await repos.sessions.findActiveMany(companyId, distinctEmployeeIds)
         : await Promise.all(
-            distinctEmployeeIds.map(async (id) => repos.sessions.findActive(companyId, id)),
-          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+          distinctEmployeeIds.map(async (id) => repos.sessions.findActive(companyId, id)),
+        ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
       const activeEmployeeSet = new Set<string>(activeSessions.map((s) => s.employeeId));
 
       // Pre-batch TVT attendance grouped by business date — each item can map
@@ -1536,9 +1574,9 @@ export class AttendanceService {
         const compPolicy = repos.policies.ensureDefaultPolicy
           ? await repos.policies.ensureDefaultPolicy(companyId)
           : await repos.policies.create(companyId, {
-              name: 'Company Default Policy',
-              scope: 'COMPANY',
-            });
+            name: 'Company Default Policy',
+            scope: 'COMPANY',
+          });
         fallbackPersistedPolicyId = compPolicy.id;
       }
 
@@ -1590,9 +1628,7 @@ export class AttendanceService {
         const punchInAt = new Date(item.punchInAt);
         const policy = employeePolicyMap.get(item.employeeId) ?? basePolicy;
         const policyIdToPersist =
-          policy.id === 'default-fallback'
-            ? (fallbackPersistedPolicyId ?? policy.id)
-            : policy.id;
+          policy.id === 'default-fallback' ? (fallbackPersistedPolicyId ?? policy.id) : policy.id;
 
         const businessDate = getBusinessDate(
           punchInAt,
@@ -1788,11 +1824,7 @@ export class AttendanceService {
   // Safety Toolbox Talk (TVT) Gate Operations
   // -------------------------------------------------------------------------
 
-  async createTvtSession(
-    actor: ActorContext,
-    companyId: string,
-    input: CreateTvtSessionInput,
-  ) {
+  async createTvtSession(actor: ActorContext, companyId: string, input: CreateTvtSessionInput) {
     await this.authorizer.assertPermission(
       actor.actorId,
       ATTENDANCE_RECORD,
@@ -1841,14 +1873,8 @@ export class AttendanceService {
     });
   }
 
-  async listTvtSessions(
-    actor: ActorContext,
-    companyId: string,
-    filter: ListTvtSessionsFilter,
-  ) {
-    const target = filter.siteId
-      ? siteTarget(companyId, filter.siteId)
-      : companyTarget(companyId);
+  async listTvtSessions(actor: ActorContext, companyId: string, filter: ListTvtSessionsFilter) {
+    const target = filter.siteId ? siteTarget(companyId, filter.siteId) : companyTarget(companyId);
     await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_READ, target);
 
     return this.uow.run((repos) => repos.tvt.list(companyId, filter));
@@ -1912,11 +1938,7 @@ export class AttendanceService {
   // Muster Roll Range Settlement Export
   // -------------------------------------------------------------------------
 
-  async getMusterRollRange(
-    actor: ActorContext,
-    companyId: string,
-    filter: MusterRollRangeFilter,
-  ) {
+  async getMusterRollRange(actor: ActorContext, companyId: string, filter: MusterRollRangeFilter) {
     await this.authorizer.assertPermission(
       actor.actorId,
       ATTENDANCE_READ,

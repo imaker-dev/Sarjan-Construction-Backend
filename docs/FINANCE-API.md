@@ -111,7 +111,9 @@ site.
 ```http
 POST /api/v1/org/head-offices        # ORG_HEAD_OFFICE_CREATE
 { "code": "HQ", "name": "Head Office — Patna", "isPrimary": true,
-  "city": "Patna", "state": "Bihar", "country": "India" }
+  "city": "Patna", "state": "Bihar", "country": "India",
+  "geoLatitude": 25.5942, "geoLongitude": 85.1377,
+  "geoFenceRadiusM": 200, "timezone": "Asia/Kolkata" }
 ```
 
 ```json
@@ -335,16 +337,28 @@ FINANCE_EMPLOYEE_DIRECTORY_VIEW · FINANCE_EMPLOYMENT_DETAILS_VIEW
 PAYROLL_INPUT_REVIEW
 ```
 
-Grant to the employee (effective-dated; only enabled ops may be granted):
+Explicit per-employee grant (effective-dated) — needed only for **sensitive**
+ops or to grant an op enabled on no department:
 
 ```http
 POST /api/v1/employees/emp-mgr-uuid/operations       # OPERATION_EMPLOYEE_ASSIGN
-{ "operationKey": "PROJECT_BUDGET_APPROVE" }
+{ "operationKey": "FINANCE_EMPLOYMENT_DETAILS_VIEW" }
 ```
 
 ```http
 GET /api/v1/employees/emp-mgr-uuid/operations        # EMPLOYEE_READ — effective ops list
 ```
+
+**Finance-role coverage (automatic):** an active `FINANCE_MANAGER` /
+`FINANCE_STAFF` assignment covers every non-sensitive op in a finance domain
+(`PROJECT_FINANCE`, `BUDGET`, `WALLET`, `PAYROLL`, `BILLING`, `QUOTATION`,
+`ACCOUNTING`, `REPORT`) — plus `PROJECT_DASHBOARD_VIEW` — enabled on **any**
+active department in the company. It resolves live: enabling/disabling an op
+on a department, or revoking the role, updates the list immediately with no
+employee rows to maintain. These rows show `source: "ROLE"`. Coverage never
+includes **sensitive** ops (`FINANCE_EMPLOYMENT_DETAILS_VIEW`,
+`PAYROLL_INPUT_REVIEW`, …) — grant those explicitly per employee, and an
+employee-level `INACTIVE`/`REVOKED` override still subtracts a covered op.
 
 > Membership alone never grants operations; operations alone never grant API
 > permissions. Both must hold (or the caller is `COMPANY_OWNER`).
@@ -364,6 +378,18 @@ GET /api/v1/auth/me                                   # shows attendance.hasActi
 ```http
 POST /api/v1/attendance/punch-in                      # ATTENDANCE_RECORD at site
 { "siteId": "site-uuid", "latitude": 25.5942, "longitude": 85.1377 }
+```
+
+**Head-office staff (e.g. Finance) punch against their head office instead** —
+exactly one of `siteId`/`headOfficeId` is accepted. `departments[].headOfficeId`
+in `/auth/me` supplies the id; the employee must hold an active membership in a
+department based at that office. Set the office's `geoLatitude`/`geoLongitude`/
+`geoFenceRadiusM` via `POST/PATCH /org/head-offices` for geofencing (missing
+geo ⇒ no fence check); `timezone` defaults to `Asia/Kolkata` for business dates.
+
+```http
+POST /api/v1/attendance/punch-in                      # head-office anchor
+{ "headOfficeId": "ho-uuid", "latitude": 25.5942, "longitude": 85.1377 }
 ```
 
 ```json

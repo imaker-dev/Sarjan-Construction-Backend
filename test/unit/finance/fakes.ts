@@ -237,6 +237,7 @@ export function fakeSession(over: Partial<AttendanceSession> = {}): AttendanceSe
     companyId: 'c1',
     employeeId: 'e-1',
     siteId: 'site-1',
+    headOfficeId: null,
     policyId: 'pol-1',
     businessDate: '2026-11-01',
     status: 'COMPLETED',

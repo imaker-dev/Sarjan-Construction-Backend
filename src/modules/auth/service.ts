@@ -51,6 +51,8 @@ export interface UserAggregatedProfileResponse {
     departmentName: string;
     category: string | null;
     isPrimary: boolean;
+    headOfficeId?: string | null;
+    headOfficeName?: string | null;
   }[];
   assignments: {
     id: string;
@@ -70,9 +72,11 @@ export interface UserAggregatedProfileResponse {
     hasActiveSession: boolean;
     activeSession: {
       id: string;
-      siteId: string;
-      siteCode: string;
-      siteName: string;
+      siteId: string | null;
+      siteCode: string | null;
+      siteName: string | null;
+      headOfficeId?: string | null;
+      headOfficeName?: string | null;
       businessDate: string;
       punchInAt: string;
       source: string;
@@ -143,10 +147,13 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly cfg: AuthConfig,
     private readonly now: () => Date = () => new Date(),
-    private readonly resolveOperations?: (companyId: string, employeeId: string) => Promise<string[]>,
+    private readonly resolveOperations?: (
+      companyId: string,
+      employeeId: string,
+    ) => Promise<string[]>,
     private readonly cache: UserProfileCache = new InMemoryUserProfileCache(),
     readonly mfaService?: MfaService | undefined,
-  ) { }
+  ) {}
 
   get userCache(): UserProfileCache {
     return this.cache;
@@ -190,9 +197,7 @@ export class AuthService {
       throw new UnauthorizedError('MFA_NOT_CONFIGURED', 'MFA service not configured');
     }
     const { principalId } = await this.mfaService.verifyChallenge(mfaToken, code);
-    const principal = await this.uow.run(({ principals }) =>
-      principals.findById(principalId),
-    );
+    const principal = await this.uow.run(({ principals }) => principals.findById(principalId));
     if (principal?.status !== 'ACTIVE' || principal.type !== 'USER') {
       throw INVALID();
     }
@@ -417,13 +422,21 @@ export class AuthService {
       throw new AppError(400, 'VALIDATION_ERROR', 'Current password and new password are required');
     }
     if (input.newPassword.length < 8) {
-      throw new AppError(400, 'PASSWORD_TOO_WEAK', 'New password must be at least 8 characters long');
+      throw new AppError(
+        400,
+        'PASSWORD_TOO_WEAK',
+        'New password must be at least 8 characters long',
+      );
     }
     if (input.newPassword.length > 128) {
       throw new AppError(400, 'PASSWORD_TOO_LONG', 'New password must not exceed 128 characters');
     }
     if (input.newPassword === input.currentPassword) {
-      throw new AppError(400, 'SAME_PASSWORD', 'New password must be different from current password');
+      throw new AppError(
+        400,
+        'SAME_PASSWORD',
+        'New password must be different from current password',
+      );
     }
 
     return this.uow.run(async ({ principals, audit }) => {
@@ -432,7 +445,10 @@ export class AuthService {
         throw new UnauthorizedError('ACCOUNT_INACTIVE', 'Account is not active');
       }
 
-      const currentValid = await passwordService.verify(principal.passwordHash, input.currentPassword);
+      const currentValid = await passwordService.verify(
+        principal.passwordHash,
+        input.currentPassword,
+      );
       if (!currentValid) {
         throw new AppError(400, 'INVALID_CURRENT_PASSWORD', 'Current password is incorrect');
       }
@@ -556,7 +572,6 @@ export class AuthService {
     const assignments: UserProfileResponse['assignments'] = [];
 
     for (const ra of full.roleAssignments) {
-
       if (!roles.includes(ra.role.key)) {
         roles.push(ra.role.key);
       }
@@ -584,13 +599,14 @@ export class AuthService {
     const departments: UserProfileResponse['departments'] = [];
     if (emp?.memberships) {
       for (const m of emp.memberships) {
-
         departments.push({
           departmentId: m.departmentId,
           departmentCode: m.department.code,
           departmentName: m.department.name,
           category: (m.department as { category?: string }).category ?? null,
           isPrimary: m.isPrimary,
+          headOfficeId: m.department.baseHeadOfficeId ?? null,
+          headOfficeName: m.department.baseHeadOffice?.name ?? null,
         });
       }
     }
@@ -609,11 +625,11 @@ export class AuthService {
       joiningDate: emp?.joiningDate ? emp.joiningDate.toISOString().slice(0, 10) : null,
       company: company
         ? {
-          id: company.id,
-          code: company.code,
-          name: company.name,
-          isPlatform: company.isPlatform,
-        }
+            id: company.id,
+            code: company.code,
+            name: company.name,
+            isPlatform: company.isPlatform,
+          }
         : null,
       role: roles[0] ?? null,
       roles,
@@ -626,7 +642,10 @@ export class AuthService {
     return response;
   }
 
-  async getProfile(principalId: string, companyId?: string): Promise<UserAggregatedProfileResponse> {
+  async getProfile(
+    principalId: string,
+    companyId?: string,
+  ): Promise<UserAggregatedProfileResponse> {
     const full = await this.uow.run(async ({ principals }) => {
       if (principals.findFullProfile) {
         return principals.findFullProfile(principalId, companyId, this.now());
@@ -679,6 +698,8 @@ export class AuthService {
           departmentName: m.department.name,
           category: (m.department as { category?: string }).category ?? null,
           isPrimary: m.isPrimary,
+          headOfficeId: m.department.baseHeadOfficeId ?? null,
+          headOfficeName: m.department.baseHeadOffice?.name ?? null,
         });
       }
     }
@@ -691,8 +712,10 @@ export class AuthService {
         activeSessionData = {
           id: s.id,
           siteId: s.siteId,
-          siteCode: s.site.code,
-          siteName: s.site.name,
+          siteCode: s.site?.code ?? null,
+          siteName: s.site?.name ?? null,
+          headOfficeId: s.headOfficeId ?? null,
+          headOfficeName: s.headOffice?.name ?? null,
           businessDate: s.businessDate,
           punchInAt: s.punchInAt instanceof Date ? s.punchInAt.toISOString() : String(s.punchInAt),
           source: s.source,

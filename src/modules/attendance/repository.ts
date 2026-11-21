@@ -9,6 +9,7 @@ import type {
   DailySiteReportLabour,
   Employee,
   LabourCategory,
+  HeadOffice,
   Prisma,
   PrismaClient,
   SafetyTvtAttendee,
@@ -30,7 +31,8 @@ type Tx = Prisma.TransactionClient;
 
 export type AttendanceSessionWithDetails = AttendanceSession & {
   employee: Pick<Employee, 'id' | 'employeeCode' | 'displayName' | 'tradeCategory'>;
-  site: Pick<Site, 'id' | 'code' | 'name'>;
+  site: Pick<Site, 'id' | 'code' | 'name'> | null;
+  headOffice: Pick<HeadOffice, 'id' | 'code' | 'name'> | null;
   breaks: AttendanceBreak[];
   policy?: Pick<AttendancePolicy, 'id' | 'name' | 'overtimeMode' | 'breakMode'> | null;
 };
@@ -162,10 +164,10 @@ export interface AttendanceRepos {
       id: string,
     ): Promise<
       | (SafetyTvtSession & {
-          attendees: (SafetyTvtAttendee & {
-            employee: Pick<Employee, 'id' | 'employeeCode' | 'displayName' | 'tradeCategory'>;
-          })[];
-        })
+        attendees: (SafetyTvtAttendee & {
+          employee: Pick<Employee, 'id' | 'employeeCode' | 'displayName' | 'tradeCategory'>;
+        })[];
+      })
       | null
     >;
     list(
@@ -206,10 +208,20 @@ export interface AttendanceRepos {
       id: string,
     ): Promise<
       | (Site & {
-          project: { timezone: string };
-        })
+        project: { timezone: string };
+      })
       | null
     >;
+  };
+  headOffices: {
+    findById(companyId: string, id: string): Promise<HeadOffice | null>;
+  };
+  memberships: {
+    hasActiveAtHeadOffice(
+      companyId: string,
+      employeeId: string,
+      headOfficeId: string,
+    ): Promise<boolean>;
   };
   employees: {
     findByPrincipal(
@@ -231,14 +243,14 @@ export interface AttendanceRepos {
       id: string,
     ): Promise<
       | (DailySiteReport & {
-          labourSummaries: DailySiteReportLabour[];
-          auditLogs: DailyReportAuditLog[];
-          site: Pick<Site, 'id' | 'code' | 'name'>;
-          project: { id: string; code: string; name: string };
-          submittedBy?: { id: string; employeeCode: string; displayName: string } | null;
-          approvedBy?: { id: string; employeeCode: string; displayName: string } | null;
-          lockedBy?: { id: string; employeeCode: string; displayName: string } | null;
-        })
+        labourSummaries: DailySiteReportLabour[];
+        auditLogs: DailyReportAuditLog[];
+        site: Pick<Site, 'id' | 'code' | 'name'>;
+        project: { id: string; code: string; name: string };
+        submittedBy?: { id: string; employeeCode: string; displayName: string } | null;
+        approvedBy?: { id: string; employeeCode: string; displayName: string } | null;
+        lockedBy?: { id: string; employeeCode: string; displayName: string } | null;
+      })
       | null
     >;
     findBySiteAndDate(
@@ -247,8 +259,8 @@ export interface AttendanceRepos {
       businessDate: string,
     ): Promise<
       | (DailySiteReport & {
-          labourSummaries: DailySiteReportLabour[];
-        })
+        labourSummaries: DailySiteReportLabour[];
+      })
       | null
     >;
     list(
@@ -448,6 +460,9 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             site: {
               select: { id: true, code: true, name: true },
             },
+            headOffice: {
+              select: { id: true, code: true, name: true },
+            },
             policy: {
               select: { id: true, name: true, overtimeMode: true, breakMode: true },
             },
@@ -517,6 +532,9 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
               select: { id: true, employeeCode: true, displayName: true, tradeCategory: true },
             },
             site: {
+              select: { id: true, code: true, name: true },
+            },
+            headOffice: {
               select: { id: true, code: true, name: true },
             },
             policy: {
@@ -602,6 +620,7 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
                 select: { id: true, employeeCode: true, displayName: true, tradeCategory: true },
               },
               site: { select: { id: true, code: true, name: true } },
+              headOffice: { select: { id: true, code: true, name: true } },
               breaks: { orderBy: { startedAt: 'asc' } },
               policy: { select: { id: true, name: true, overtimeMode: true, breakMode: true } },
             },
@@ -737,6 +756,9 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
                 site: {
                   select: { id: true, code: true, name: true },
                 },
+                headOffice: {
+                  select: { id: true, code: true, name: true },
+                },
                 breaks: true,
               },
               orderBy: { punchInAt: 'asc' },
@@ -774,9 +796,9 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         const siteRoleEmployees =
           sitePrincipalIds.length > 0
             ? await tx.employee.findMany({
-                where: { companyId, principalId: { in: sitePrincipalIds } },
-                select: { id: true },
-              })
+              where: { companyId, principalId: { in: sitePrincipalIds } },
+              select: { id: true },
+            })
             : [];
 
         const siteWorkerIds = new Set<string>([
@@ -787,19 +809,19 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         const leaves =
           siteWorkerIds.size > 0
             ? await tx.leaveRequest.findMany({
-                where: {
-                  companyId,
-                  employeeId: { in: Array.from(siteWorkerIds) },
-                  status: 'APPROVED',
-                  startDate: { lte: businessDateObj },
-                  endDate: { gte: businessDateObj },
+              where: {
+                companyId,
+                employeeId: { in: Array.from(siteWorkerIds) },
+                status: 'APPROVED',
+                startDate: { lte: businessDateObj },
+                endDate: { gte: businessDateObj },
+              },
+              include: {
+                employee: {
+                  select: { id: true, employeeCode: true, displayName: true, designation: true },
                 },
-                include: {
-                  employee: {
-                    select: { id: true, employeeCode: true, displayName: true, designation: true },
-                  },
-                },
-              })
+              },
+            })
             : [];
 
         const distinctEmployees = new Set(sessions.map((s) => s.employeeId));
@@ -872,6 +894,20 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           },
         }),
     },
+    headOffices: {
+      findById: (companyId, id) => tx.headOffice.findFirst({ where: { id, companyId } }),
+    },
+    memberships: {
+      hasActiveAtHeadOffice: async (companyId, employeeId, headOfficeId) =>
+        (await tx.departmentMembership.count({
+          where: {
+            companyId,
+            employeeId,
+            endedAt: null,
+            department: { baseHeadOfficeId: headOfficeId, status: 'ACTIVE' },
+          },
+        })) > 0,
+    },
     employees: {
       findByPrincipal: (companyId, principalId) =>
         tx.employee.findFirst({
@@ -926,13 +962,13 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             ...(data.remarks !== undefined ? { remarks: data.remarks } : {}),
             ...(data.attendeeEmployeeIds && data.attendeeEmployeeIds.length > 0
               ? {
-                  attendees: {
-                    create: data.attendeeEmployeeIds.map((empId) => ({
-                      company: { connect: { id: companyId } },
-                      employee: { connect: { id_companyId: { id: empId, companyId } } },
-                    })),
-                  },
-                }
+                attendees: {
+                  create: data.attendeeEmployeeIds.map((empId) => ({
+                    company: { connect: { id: companyId } },
+                    employee: { connect: { id_companyId: { id: empId, companyId } } },
+                  })),
+                },
+              }
               : {}),
           },
           include: {
@@ -1041,11 +1077,11 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           ...(filter.status ? { status: filter.status } : {}),
           ...(filter.fromDate || filter.toDate
             ? {
-                businessDate: {
-                  ...(filter.fromDate ? { gte: filter.fromDate } : {}),
-                  ...(filter.toDate ? { lte: filter.toDate } : {}),
-                },
-              }
+              businessDate: {
+                ...(filter.fromDate ? { gte: filter.fromDate } : {}),
+                ...(filter.toDate ? { lte: filter.toDate } : {}),
+              },
+            }
             : {}),
         };
 
@@ -1221,7 +1257,7 @@ export interface AttendanceUnitOfWork {
 }
 
 export class PrismaAttendanceUnitOfWork implements AttendanceUnitOfWork {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(private readonly prisma: PrismaClient) { }
 
   run<T>(fn: (repos: AttendanceRepos) => Promise<T>): Promise<T> {
     return this.prisma.$transaction((tx) => fn(makeAttendanceRepos(tx)));

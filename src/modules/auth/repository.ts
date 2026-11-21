@@ -68,11 +68,14 @@ export interface FullPrincipalDetails extends Principal {
         code: string;
         name: string;
         category?: string | null;
+        baseHeadOfficeId?: string | null;
+        baseHeadOffice?: { id: string; code: string; name: string } | null;
       };
     }[];
     attendanceSessions?: {
       id: string;
-      siteId: string;
+      siteId: string | null;
+      headOfficeId?: string | null;
       source: string;
       businessDate: string;
       punchInAt: Date;
@@ -83,7 +86,12 @@ export interface FullPrincipalDetails extends Principal {
         id: string;
         code: string;
         name: string;
-      };
+      } | null;
+      headOffice?: {
+        id: string;
+        code: string;
+        name: string;
+      } | null;
       breaks: {
         id: string;
         breakType: string;
@@ -218,13 +226,18 @@ export function makeAuthRepos(tx: Tx): AuthRepos {
                 memberships: {
                   where: { endedAt: null },
                   include: {
-                    department: true,
+                    department: {
+                      include: {
+                        baseHeadOffice: { select: { id: true, code: true, name: true } },
+                      },
+                    },
                   },
                 },
                 attendanceSessions: {
                   where: { status: 'IN_PROGRESS' },
                   include: {
                     site: { select: { id: true, code: true, name: true } },
+                    headOffice: { select: { id: true, code: true, name: true } },
                     breaks: { where: { endedAt: null } },
                   },
                   take: 1,

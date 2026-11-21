@@ -149,17 +149,22 @@ model HeadOffice {
   contactName  String?
   contactPhone String?
   contactEmail String?
+  geoLatitude     Decimal?  @db.Decimal(9, 6)
+  geoLongitude    Decimal?  @db.Decimal(9, 6)
+  geoFenceRadiusM Int?
+  timezone        String? // NULL = default Asia/Kolkata for attendance business dates
   isPrimary    Boolean       @default(false)
   status       OrgNodeStatus @default(ACTIVE)
   version      Int           @default(0)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
-  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  projects        Project[]
-  roleAssignments RoleAssignment[]
-  documents       Document[]
-  departments     Department[]
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  projects           Project[]
+  roleAssignments    RoleAssignment[]
+  documents          Document[]
+  departments        Department[]
+  attendanceSessions AttendanceSession[]
 
   // Scoped business-code uniqueness within a company.
   @@unique([companyId, code])
@@ -1626,11 +1631,15 @@ model AttendancePolicy {
 }
 
 model AttendanceSession {
-  id         String @id @default(uuid()) @db.Uuid
-  companyId  String @db.Uuid
-  employeeId String @db.Uuid
-  siteId     String @db.Uuid
-  policyId   String @db.Uuid
+  id           String  @id @default(uuid()) @db.Uuid
+  companyId    String  @db.Uuid
+  employeeId   String  @db.Uuid
+  // Exactly one of siteId / headOfficeId is set (enforced by
+  // AttendanceSession_location_check): construction sites punch against a
+  // Site; Head-Office-department staff punch against their Head Office.
+  siteId       String? @db.Uuid
+  headOfficeId String? @db.Uuid
+  policyId     String  @db.Uuid
 
   // Business date for the 8 AM - 8 AM construction cycle, e.g. "2026-11-17"
   businessDate String                  @db.VarChar(10)
@@ -1681,16 +1690,18 @@ model AttendanceSession {
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
 
-  company  Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  employee Employee          @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
-  site     Site              @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  policy   AttendancePolicy  @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
-  breaks   AttendanceBreak[]
+  company    Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee   Employee         @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  site       Site?            @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  headOffice HeadOffice?      @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  policy     AttendancePolicy @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
+  breaks     AttendanceBreak[]
 
   @@unique([id, companyId])
   @@index([companyId, businessDate])
   @@index([companyId, employeeId, businessDate])
   @@index([companyId, siteId, businessDate])
+  @@index([companyId, headOfficeId, businessDate])
   @@index([companyId, status])
   @@index([companyId, clientSessionId])
 }
