@@ -53,14 +53,19 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
 
   it('calculates daily site report: auto-closes in-progress sessions and aggregates Categories A, B, and C', async () => {
     let autoClosedSessionId: string | null = null;
-    let upsertedData: CalculatedReportData | null = null;
+    let upsertedData: CalculatedReportData | undefined;
     let auditAction: string | null = null;
 
     const mockSessions = [
       {
         id: 'sess-open',
         status: 'IN_PROGRESS' as const,
-        employee: { id: 'e1', employeeCode: 'EMP-01', displayName: 'Ramesh Mason', tradeCategory: 'MASON' },
+        employee: {
+          id: 'e1',
+          employeeCode: 'EMP-01',
+          displayName: 'Ramesh Mason',
+          tradeCategory: 'MASON',
+        },
         presentUnits: 0,
         overtimeHours: 0,
         isFlagged: false,
@@ -68,7 +73,12 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       {
         id: 'sess-staff',
         status: 'COMPLETED' as const,
-        employee: { id: 'e2', employeeCode: 'EMP-02', displayName: 'Amit Engineer', tradeCategory: 'SITE_ENGINEER' },
+        employee: {
+          id: 'e2',
+          employeeCode: 'EMP-02',
+          displayName: 'Amit Engineer',
+          tradeCategory: 'SITE_ENGINEER',
+        },
         presentUnits: 1.0,
         overtimeHours: 1.5,
         isFlagged: false,
@@ -76,7 +86,12 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       {
         id: 'sess-direct',
         status: 'COMPLETED' as const,
-        employee: { id: 'e3', employeeCode: 'EMP-03', displayName: 'Suresh Carpenter', tradeCategory: 'CARPENTER' },
+        employee: {
+          id: 'e3',
+          employeeCode: 'EMP-03',
+          displayName: 'Suresh Carpenter',
+          tradeCategory: 'CARPENTER',
+        },
         presentUnits: 1.0,
         overtimeHours: 2.0,
         isFlagged: false,
@@ -84,7 +99,12 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       {
         id: 'sess-subcon',
         status: 'COMPLETED' as const,
-        employee: { id: 'e4', employeeCode: 'EMP-04', displayName: 'Pooja Bar Bender', tradeCategory: 'SUBCON_BAR_BENDER' },
+        employee: {
+          id: 'e4',
+          employeeCode: 'EMP-04',
+          displayName: 'Pooja Bar Bender',
+          tradeCategory: 'SUBCON_BAR_BENDER',
+        },
         presentUnits: 0.5,
         overtimeHours: 0,
         isFlagged: true,
@@ -110,12 +130,14 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
           totalOvertimeHours: 3.5,
           sessions: mockSessions,
         }),
-        update: vi.fn().mockImplementation(async (_cid: string, sid: string, data: Record<string, unknown>) => {
-          if (sid === 'sess-open') {
-            autoClosedSessionId = sid;
-          }
-          return { id: sid, ...data };
-        }),
+        update: vi
+          .fn()
+          .mockImplementation(async (_cid: string, sid: string, data: Record<string, unknown>) => {
+            if (sid === 'sess-open') {
+              autoClosedSessionId = sid;
+            }
+            return { id: sid, ...data };
+          }),
       },
       dailyReports: {
         findBySiteAndDate: vi.fn().mockResolvedValue(null),
@@ -131,10 +153,12 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
             ...data,
           };
         }),
-        addAuditLog: vi.fn().mockImplementation(async (_cid: string, _rid: string, data: { action: string }) => {
-          auditAction = data.action;
-          return { id: 'audit-1', ...data };
-        }),
+        addAuditLog: vi
+          .fn()
+          .mockImplementation(async (_cid: string, _rid: string, data: { action: string }) => {
+            auditAction = data.action;
+            return { id: 'audit-1', ...data };
+          }),
       },
     } as unknown as Partial<AttendanceRepos>;
 
@@ -177,7 +201,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
   });
 
   it('updates report header and work progress notes with audit logging', async () => {
-    let capturedAudit: { action: string } | null = null;
+    let capturedAudit: { action: string } | undefined;
     const existingReport: Partial<DailySiteReport> = {
       id: 'dsr-1',
       companyId,
@@ -197,10 +221,12 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
           workProgressNotes: 'Concrete pour delayed by rain',
           version: 1,
         }),
-        addAuditLog: vi.fn().mockImplementation(async (_cid: string, _rid: string, data: { action: string }) => {
-          capturedAudit = data;
-          return { id: 'a1', ...data };
-        }),
+        addAuditLog: vi
+          .fn()
+          .mockImplementation(async (_cid: string, _rid: string, data: { action: string }) => {
+            capturedAudit = data;
+            return { id: 'a1', ...data };
+          }),
       },
     } as unknown as Partial<AttendanceRepos>;
 
@@ -219,7 +245,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
   });
 
   it('allows PM to adjust subcontractor labour summary headcount and recalculates totals', async () => {
-    let capturedAudit: { action: string; reason: string } | null = null;
+    let capturedAudit: { action: string; reason: string } | undefined;
     const existingReport = {
       id: 'dsr-1',
       companyId,
@@ -257,10 +283,14 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
           overtimeHours: 5,
         }),
         update: vi.fn().mockResolvedValue(existingReport),
-        addAuditLog: vi.fn().mockImplementation(async (_cid: string, _rid: string, data: { action: string; reason: string }) => {
-          capturedAudit = data;
-          return { id: 'a1', ...data };
-        }),
+        addAuditLog: vi
+          .fn()
+          .mockImplementation(
+            async (_cid: string, _rid: string, data: { action: string; reason: string }) => {
+              capturedAudit = data;
+              return { id: 'a1', ...data };
+            },
+          ),
       },
     } as unknown as Partial<AttendanceRepos>;
 
@@ -291,14 +321,22 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
 
     const mockRepos = {
       employees: {
-        findByPrincipal: vi.fn().mockResolvedValue({ id: 'emp-101', displayName: 'PM Sharma', status: 'ACTIVE' }),
+        findByPrincipal: vi
+          .fn()
+          .mockResolvedValue({ id: 'emp-101', displayName: 'PM Sharma', status: 'ACTIVE' }),
       },
       dailyReports: {
-        findById: vi.fn().mockImplementation(async () => ({ ...reportRecord, status: currentStatus })),
-        update: vi.fn().mockImplementation(async (_cid: string, _id: string, data: { status?: DailyReportStatus }) => {
-          if (data.status) currentStatus = data.status;
-          return { ...reportRecord, status: currentStatus, ...data };
-        }),
+        findById: vi
+          .fn()
+          .mockImplementation(async () => ({ ...reportRecord, status: currentStatus })),
+        update: vi
+          .fn()
+          .mockImplementation(
+            async (_cid: string, _id: string, data: { status?: DailyReportStatus }) => {
+              if (data.status) currentStatus = data.status;
+              return { ...reportRecord, status: currentStatus, ...data };
+            },
+          ),
         addAuditLog: vi.fn().mockResolvedValue({ id: 'aud-ok' }),
       },
     } as unknown as Partial<AttendanceRepos>;

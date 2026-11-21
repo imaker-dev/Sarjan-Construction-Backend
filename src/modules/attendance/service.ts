@@ -126,7 +126,7 @@ export class AttendanceService {
   constructor(
     private readonly uow: AttendanceUnitOfWork,
     private readonly authorizer: Authorizer,
-  ) { }
+  ) {}
 
   // -------------------------------------------------------------------------
   // Policy Management
@@ -362,9 +362,9 @@ export class AttendanceService {
       if (hasSite === hasHo) {
         throw new AttendanceValidationError('Provide exactly one of siteId or headOfficeId');
       }
-      const punchTarget = hasSite
-        ? siteTarget(companyId, input.siteId!)
-        : headOfficeTarget(companyId, input.headOfficeId!);
+      const punchTarget = input.siteId
+        ? siteTarget(companyId, input.siteId)
+        : headOfficeTarget(companyId, input.headOfficeId as string);
 
       // Assert permission: supervisor punch or privileged source requires ATTENDANCE_MANAGE
       const isPrivilegedSource = input.source !== undefined && input.source !== 'MOBILE_SELF';
@@ -425,9 +425,9 @@ export class AttendanceService {
         const compPolicy = repos.policies.ensureDefaultPolicy
           ? await repos.policies.ensureDefaultPolicy(companyId)
           : await repos.policies.create(companyId, {
-            name: 'Company Default Policy',
-            scope: 'COMPANY',
-          });
+              name: 'Company Default Policy',
+              scope: 'COMPANY',
+            });
         policyIdToPersist = compPolicy.id;
       }
 
@@ -943,24 +943,27 @@ export class AttendanceService {
         }),
       );
 
-      // Auto-recalculate active DSR if one exists in DRAFT or SUBMITTED
-      const existingReport = await repos.dailyReports.findBySiteAndDate(
-        companyId,
-        session.siteId,
-        session.businessDate,
-      );
-      if (
-        existingReport &&
-        (existingReport.status === 'DRAFT' || existingReport.status === 'SUBMITTED')
-      ) {
-        await this.internalRecalculateReport(
-          repos,
+      // Auto-recalculate active DSR if one exists in DRAFT or SUBMITTED.
+      // Head-office-anchored sessions have no site DSR — skip them.
+      if (session.siteId !== null) {
+        const existingReport = await repos.dailyReports.findBySiteAndDate(
           companyId,
           session.siteId,
           session.businessDate,
-          actor.actorId,
-          `Session ${sessionId} regularized`,
         );
+        if (
+          existingReport &&
+          (existingReport.status === 'DRAFT' || existingReport.status === 'SUBMITTED')
+        ) {
+          await this.internalRecalculateReport(
+            repos,
+            companyId,
+            session.siteId,
+            session.businessDate,
+            actor.actorId,
+            `Session ${sessionId} regularized`,
+          );
+        }
       }
 
       return updated;
@@ -1078,34 +1081,34 @@ export class AttendanceService {
       const employees = repos.employees.findManyByIds
         ? await repos.employees.findManyByIds(companyId, input.employeeIds)
         : await Promise.all(
-          input.employeeIds.map(async (id) => {
-            const e = await repos.employees.findById(companyId, id);
-            return e ? { id: e.id, displayName: e.displayName, status: e.status } : null;
-          }),
-        ).then((list) =>
-          list.filter(
-            (e): e is { id: string; displayName: string; status: string } => e !== null,
-          ),
-        );
+            input.employeeIds.map(async (id) => {
+              const e = await repos.employees.findById(companyId, id);
+              return e ? { id: e.id, displayName: e.displayName, status: e.status } : null;
+            }),
+          ).then((list) =>
+            list.filter(
+              (e): e is { id: string; displayName: string; status: string } => e !== null,
+            ),
+          );
       const employeeMap = new Map(employees.map((e) => [e.id, e]));
 
       // 2. Pre-batch active sessions
       const activeSessions = repos.sessions.findActiveMany
         ? await repos.sessions.findActiveMany(companyId, input.employeeIds)
         : await Promise.all(
-          input.employeeIds.map(async (id) => {
-            const s = await repos.sessions.findActive(companyId, id);
-            return s
-              ? {
-                ...s,
-                employeeId:
-                  'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
-                    ? s.employeeId
-                    : id,
-              }
-              : null;
-          }),
-        ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+            input.employeeIds.map(async (id) => {
+              const s = await repos.sessions.findActive(companyId, id);
+              return s
+                ? {
+                    ...s,
+                    employeeId:
+                      'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
+                        ? s.employeeId
+                        : id,
+                  }
+                : null;
+            }),
+          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
       const activeSessionEmployeeIds = new Set(activeSessions.map((s) => s.employeeId));
 
       // 3. Resolve site/project policy ONCE upfront
@@ -1130,9 +1133,9 @@ export class AttendanceService {
         const compPolicy = repos.policies.ensureDefaultPolicy
           ? await repos.policies.ensureDefaultPolicy(companyId)
           : await repos.policies.create(companyId, {
-            name: 'Company Default Policy',
-            scope: 'COMPANY',
-          });
+              name: 'Company Default Policy',
+              scope: 'COMPANY',
+            });
         fallbackPersistedPolicyId = compPolicy.id;
       }
 
@@ -1327,19 +1330,19 @@ export class AttendanceService {
       const activeSessions = repos.sessions.findActiveMany
         ? await repos.sessions.findActiveMany(companyId, input.employeeIds)
         : await Promise.all(
-          input.employeeIds.map(async (id) => {
-            const s = await repos.sessions.findActive(companyId, id);
-            return s
-              ? {
-                ...s,
-                employeeId:
-                  'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
-                    ? s.employeeId
-                    : id,
-              }
-              : null;
-          }),
-        ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+            input.employeeIds.map(async (id) => {
+              const s = await repos.sessions.findActive(companyId, id);
+              return s
+                ? {
+                    ...s,
+                    employeeId:
+                      'employeeId' in s && typeof s.employeeId === 'string' && s.employeeId
+                        ? s.employeeId
+                        : id,
+                  }
+                : null;
+            }),
+          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
 
       const sessionMap = new Map(activeSessions.map((s) => [s.employeeId, s]));
 
@@ -1490,8 +1493,8 @@ export class AttendanceService {
       const existingSessions = repos.sessions.findManyByClientSessionIds
         ? await repos.sessions.findManyByClientSessionIds(companyId, clientSessionIds)
         : await Promise.all(
-          clientSessionIds.map((cid) => repos.sessions.findByClientSessionId(companyId, cid)),
-        ).then((list) => list.filter((s): s is AttendanceSession => s !== null));
+            clientSessionIds.map((cid) => repos.sessions.findByClientSessionId(companyId, cid)),
+          ).then((list) => list.filter((s): s is AttendanceSession => s !== null));
       const existingSessionMap = new Map<string, AttendanceSession>();
       for (const s of existingSessions) {
         if (s.clientSessionId) {
@@ -1521,16 +1524,16 @@ export class AttendanceService {
       const employees = repos.employees.findManyByIds
         ? await repos.employees.findManyByIds(companyId, distinctEmployeeIds)
         : await Promise.all(
-          distinctEmployeeIds.map(async (id) => repos.employees.findById(companyId, id)),
-        ).then((list) => list.filter((e): e is NonNullable<typeof e> => e !== null));
+            distinctEmployeeIds.map(async (id) => repos.employees.findById(companyId, id)),
+          ).then((list) => list.filter((e): e is NonNullable<typeof e> => e !== null));
       const employeeMap = new Map(employees.map((e) => [e.id, e]));
 
       // Pre-batch active sessions to detect duplicate active sessions
       const activeSessions = repos.sessions.findActiveMany
         ? await repos.sessions.findActiveMany(companyId, distinctEmployeeIds)
         : await Promise.all(
-          distinctEmployeeIds.map(async (id) => repos.sessions.findActive(companyId, id)),
-        ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
+            distinctEmployeeIds.map(async (id) => repos.sessions.findActive(companyId, id)),
+          ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
       const activeEmployeeSet = new Set<string>(activeSessions.map((s) => s.employeeId));
 
       // Pre-batch TVT attendance grouped by business date — each item can map
@@ -1574,9 +1577,9 @@ export class AttendanceService {
         const compPolicy = repos.policies.ensureDefaultPolicy
           ? await repos.policies.ensureDefaultPolicy(companyId)
           : await repos.policies.create(companyId, {
-            name: 'Company Default Policy',
-            scope: 'COMPANY',
-          });
+              name: 'Company Default Policy',
+              scope: 'COMPANY',
+            });
         fallbackPersistedPolicyId = compPolicy.id;
       }
 
@@ -2139,11 +2142,7 @@ export class AttendanceService {
     });
   }
 
-  async getDailyReports(
-    actor: ActorContext,
-    companyId: string,
-    filter: ListDailyReportsFilter,
-  ) {
+  async getDailyReports(actor: ActorContext, companyId: string, filter: ListDailyReportsFilter) {
     if (filter.siteId) {
       await this.authorizer.assertPermission(
         actor.actorId,
@@ -2209,12 +2208,7 @@ export class AttendanceService {
         ...(input.safetyNotes !== undefined ? { safetyNotes: input.safetyNotes } : {}),
       };
 
-      const updated = await repos.dailyReports.update(
-        companyId,
-        id,
-        updateData,
-        input.version,
-      );
+      const updated = await repos.dailyReports.update(companyId, id, updateData, input.version);
 
       await repos.dailyReports.addAuditLog(companyId, id, {
         actorId: actor.actorId,
