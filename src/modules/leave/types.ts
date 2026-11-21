@@ -1,4 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox';
+import type { OrgNodeStatus } from '@prisma/client';
 
 export const LeaveTypeEnum = Type.Union([
   Type.Literal('CASUAL'),
@@ -35,23 +36,97 @@ export const LeaveScopeTypeEnum = Type.Union([
   Type.Literal('EMPLOYEE'),
 ]);
 
-export const CreateLeavePolicyBody = Type.Object({
-  scopeType: LeaveScopeTypeEnum,
-  projectId: Type.Optional(Type.String({ format: 'uuid' })),
-  siteId: Type.Optional(Type.String({ format: 'uuid' })),
-  employeeId: Type.Optional(Type.String({ format: 'uuid' })),
-  leaveType: LeaveTypeEnum,
+/** Scope types allowed when authoring NEW policies. DEPARTMENT targets the
+ *  actual Department record regardless of where it sits (HO / project / site);
+ *  PROJECT/SITE remain only on pre-existing rows. */
+export const LeavePolicyWriteScopeEnum = Type.Union([
+  Type.Literal('COMPANY'),
+  Type.Literal('DEPARTMENT'),
+  Type.Literal('EMPLOYEE'),
+]);
+
+export const LeaveAccrualModeEnum = Type.Union([
+  Type.Literal('MONTHLY_CREDIT'),
+  Type.Literal('WORKED_DAYS_RATIO'),
+  Type.Literal('NONE'),
+]);
+
+const DateStr = Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' });
+const Uuid = Type.String({ format: 'uuid' });
+
+// ---------------------------------------------------------------------------
+// Leave type definitions (company-configured vocabulary — no seeded amounts)
+// ---------------------------------------------------------------------------
+
+export const CreateLeaveTypeDefBody = Type.Object({
+  code: Type.String({ minLength: 1, maxLength: 30 }),
   name: Type.String({ minLength: 1, maxLength: 120 }),
   description: Type.Optional(Type.String({ maxLength: 500 })),
-  annualAllowance: Type.Optional(Type.Number({ minimum: 0, maximum: 365, default: 12 })),
-  accrualFrequency: Type.Optional(LeaveAccrualFrequencyEnum),
-  maxConsecutiveDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 90 })),
-  minNoticeDays: Type.Optional(Type.Integer({ minimum: 0, maximum: 90, default: 0 })),
-  allowHalfDay: Type.Optional(Type.Boolean({ default: true })),
-  sandwichRule: Type.Optional(Type.Boolean({ default: false })),
-  carryoverMaxDays: Type.Optional(Type.Number({ minimum: 0, maximum: 90, default: 0 })),
-  encashable: Type.Optional(Type.Boolean({ default: false })),
-  requiresDocAboveDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })),
+  /** Optional mapping to a built-in LeaveType enum value. Defs without a
+   *  mapping are fully custom types. */
+  leaveType: Type.Optional(LeaveTypeEnum),
+});
+export type CreateLeaveTypeDefInput = Static<typeof CreateLeaveTypeDefBody>;
+
+export const UpdateLeaveTypeDefBody = Type.Object({
+  name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+  description: Type.Optional(Type.Union([Type.String({ maxLength: 500 }), Type.Null()])),
+  expectedVersion: Type.Integer({ minimum: 0 }),
+});
+export type UpdateLeaveTypeDefInput = Static<typeof UpdateLeaveTypeDefBody>;
+
+export const ArchiveLeaveTypeDefBody = Type.Object({
+  expectedVersion: Type.Integer({ minimum: 0 }),
+});
+export type ArchiveLeaveTypeDefInput = Static<typeof ArchiveLeaveTypeDefBody>;
+
+export const ListLeaveTypeDefsQuery = Type.Object({
+  status: Type.Optional(
+    Type.Union([Type.Literal('ACTIVE'), Type.Literal('INACTIVE'), Type.Literal('ARCHIVED')]),
+  ),
+});
+export type ListLeaveTypeDefsFilter = Static<typeof ListLeaveTypeDefsQuery> & {
+  status?: OrgNodeStatus;
+};
+
+// ---------------------------------------------------------------------------
+// Policy versions (immutable accrual configuration)
+// ---------------------------------------------------------------------------
+
+export const PolicyVersionBody = Type.Object({
+  effectiveFrom: DateStr,
+  mode: LeaveAccrualModeEnum,
+  /** MONTHLY_CREDIT: days credited per month (e.g. 4 => 4 days/month). */
+  monthlyCreditAmount: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: 365 })),
+  /** WORKED_DAYS_RATIO: eligible worked days per credit unit. */
+  ratioThresholdDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 366 })),
+  /** WORKED_DAYS_RATIO: days earned per threshold (e.g. 2 => 2 per 20 days). */
+  ratioEarnedAmount: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: 365 })),
+  note: Type.Optional(Type.String({ maxLength: 500 })),
+});
+export type PolicyVersionInput = Static<typeof PolicyVersionBody>;
+
+export const AddLeavePolicyVersionBody = Type.Intersect([
+  PolicyVersionBody,
+  Type.Object({ expectedVersion: Type.Integer({ minimum: 0 }) }),
+]);
+export type AddLeavePolicyVersionInput = Static<typeof AddLeavePolicyVersionBody>;
+
+export const ArchiveLeavePolicyBody = Type.Object({
+  expectedVersion: Type.Integer({ minimum: 0 }),
+});
+export type ArchiveLeavePolicyInput = Static<typeof ArchiveLeavePolicyBody>;
+
+export const CreateLeavePolicyBody = Type.Object({
+  scopeType: LeavePolicyWriteScopeEnum,
+  departmentId: Type.Optional(Uuid),
+  employeeId: Type.Optional(Uuid),
+  /** Administrator-defined leave type this policy configures. */
+  typeDefId: Uuid,
+  name: Type.String({ minLength: 1, maxLength: 120 }),
+  description: Type.Optional(Type.String({ maxLength: 500 })),
+  /** Initial immutable accrual version. */
+  version: PolicyVersionBody,
 });
 
 export const UpdateLeavePolicyBody = Type.Object({
@@ -59,13 +134,17 @@ export const UpdateLeavePolicyBody = Type.Object({
   description: Type.Optional(Type.String({ maxLength: 500 })),
   annualAllowance: Type.Optional(Type.Number({ minimum: 0, maximum: 365 })),
   accrualFrequency: Type.Optional(LeaveAccrualFrequencyEnum),
-  maxConsecutiveDays: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 90 }), Type.Null()])),
+  maxConsecutiveDays: Type.Optional(
+    Type.Union([Type.Integer({ minimum: 1, maximum: 90 }), Type.Null()]),
+  ),
   minNoticeDays: Type.Optional(Type.Integer({ minimum: 0, maximum: 90 })),
   allowHalfDay: Type.Optional(Type.Boolean()),
   sandwichRule: Type.Optional(Type.Boolean()),
   carryoverMaxDays: Type.Optional(Type.Number({ minimum: 0, maximum: 90 })),
   encashable: Type.Optional(Type.Boolean()),
-  requiresDocAboveDays: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 30 }), Type.Null()])),
+  requiresDocAboveDays: Type.Optional(
+    Type.Union([Type.Integer({ minimum: 1, maximum: 30 }), Type.Null()]),
+  ),
   isActive: Type.Optional(Type.Boolean()),
   expectedVersion: Type.Integer(),
 });
@@ -103,10 +182,26 @@ export const CancelLeaveRequestBody = Type.Object({
 export const ListLeavePoliciesQuery = Type.Object({
   scopeType: Type.Optional(LeaveScopeTypeEnum),
   leaveType: Type.Optional(LeaveTypeEnum),
-  projectId: Type.Optional(Type.String({ format: 'uuid' })),
-  siteId: Type.Optional(Type.String({ format: 'uuid' })),
-  employeeId: Type.Optional(Type.String({ format: 'uuid' })),
+  typeDefId: Type.Optional(Uuid),
+  departmentId: Type.Optional(Uuid),
+  projectId: Type.Optional(Uuid),
+  siteId: Type.Optional(Uuid),
+  employeeId: Type.Optional(Uuid),
 });
+
+export const EffectiveLeavePolicyQuery = Type.Object({
+  /** Administrator-defined type. Either typeDefId or leaveType is required. */
+  typeDefId: Type.Optional(Uuid),
+  leaveType: Type.Optional(LeaveTypeEnum),
+  employeeId: Type.Optional(Uuid),
+  asOf: Type.Optional(DateStr),
+});
+export interface EffectiveLeavePolicyCriteria {
+  typeDefId?: string;
+  leaveType?: import('@prisma/client').LeaveType;
+  employeeId?: string;
+  asOf?: string;
+}
 
 export const ListLeaveBalancesQuery = Type.Object({
   employeeId: Type.Optional(Type.String({ format: 'uuid' })),

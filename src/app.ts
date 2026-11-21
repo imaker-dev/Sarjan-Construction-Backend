@@ -55,8 +55,17 @@ import attendanceWorkerPlugin from './plugins/attendance-worker.js';
 import { LeaveService } from './modules/leave/service.js';
 import { leaveRoutes } from './modules/leave/routes.js';
 import { PrismaLeaveUnitOfWork } from './modules/leave/repository.js';
+import { ScheduleService } from './modules/schedule/service.js';
+import { scheduleRoutes } from './modules/schedule/routes.js';
+import { PrismaScheduleUnitOfWork } from './modules/schedule/repository.js';
 import { AuditService } from './modules/audit/service.js';
 import { auditRoutes } from './modules/audit/routes.js';
+import { approvalRoutes } from './modules/approval/routes.js';
+import { ApprovalService } from './modules/approval/service.js';
+import { PrismaApprovalUnitOfWork } from './modules/approval/repository.js';
+import { financeRoutes } from './modules/finance/routes.js';
+import { FinanceService } from './modules/finance/service.js';
+import { PrismaFinanceUnitOfWork } from './modules/finance/repository.js';
 import { MailService } from './modules/mail/service.js';
 import { mailRoutes } from './modules/mail/routes.js';
 import { AuthService } from './modules/auth/service.js';
@@ -203,6 +212,10 @@ const OPERATION_DOCS: Record<
       'and omitted for COMPANY. baseHeadOfficeId is physical location only — never a permission scope. ' +
       'capabilityKey is an internal routing identifier.',
     permission: 'DEPARTMENT_CONFIGURE',
+  },
+  'GET /departments/:id': {
+    summary: 'Get department detail (includes embedded base head office)',
+    permission: 'DEPARTMENT_READ',
   },
   'PATCH /departments/:id': { summary: 'Update department', permission: 'DEPARTMENT_CONFIGURE' },
   'POST /departments/:id/status': {
@@ -367,7 +380,8 @@ const OPERATION_DOCS: Record<
   },
   'POST /platform/companies/:companyId/impersonate': {
     summary: 'Impersonate company owner (Platform Admin only)',
-    description: 'Creates an impersonated session as the tenant company administrator. Records audit trail.',
+    description:
+      'Creates an impersonated session as the tenant company administrator. Records audit trail.',
     permission: 'PLATFORM_COMPANY_READ',
   },
   'GET /platform/operations': {
@@ -534,6 +548,193 @@ const OPERATION_DOCS: Record<
     summary: 'Cancel leave request',
     permission: 'LEAVE_APPLY',
   },
+  'GET /approval-tasks': {
+    summary: 'List approval tasks assigned to the caller',
+    permission: 'WORKFLOW_APPROVAL_READ',
+  },
+  'GET /approval-tasks/:id': {
+    summary: 'Get an approval task assigned to the caller',
+    permission: 'WORKFLOW_APPROVAL_READ',
+  },
+  'GET /approval-tasks/:id/decisions': {
+    summary: 'List decisions on an assigned approval task',
+    permission: 'WORKFLOW_APPROVAL_READ',
+  },
+  'POST /approval-tasks/:id/decisions': {
+    summary: 'Decide an assigned approval task (approve/reject/return)',
+    permission: 'WORKFLOW_APPROVAL_DECIDE',
+  },
+  'POST /finance/projects/:projectId/budgets': {
+    summary: 'Create a project budget (operation: PROJECT_BUDGET_CREATE)',
+    description:
+      'Body: {code, name, description?, currency, idempotencyKey?}. Currency is ISO 4217; ' +
+      'codes normalize to upper-case. idempotencyKey replays the recorded budget when the ' +
+      'semantic fingerprint matches, 409 IDEMPOTENCY_CONFLICT when it differs. ' +
+      'Errors: 403 OPERATION_NOT_ASSIGNED (employee lacks PROJECT_BUDGET_CREATE), ' +
+      '404 project, 409 duplicate code, 422 validation.',
+    permission: 'FINANCE_BUDGET_MANAGE',
+  },
+  'GET /finance/projects/:projectId/budgets': {
+    summary: 'List budgets for a project (operation: PROJECT_BUDGET_VIEW)',
+    description:
+      'Query: {status?, limit?, cursor?} — keyset pagination, ascending id, ' +
+      'nextCursor in the response while more rows exist.',
+    permission: 'FINANCE_BUDGET_READ',
+  },
+  'GET /finance/budgets/:id': {
+    summary: 'Get a budget with revisions and latest approved revision',
+    description:
+      'Response: budget header + latestApprovedRevisionId + revisions (with lines). ' +
+      '404 when the budget is missing or belongs to another company.',
+    permission: 'FINANCE_BUDGET_READ',
+  },
+  'PATCH /finance/budgets/:id': {
+    summary: 'Update budget header fields (optimistic version required)',
+    description:
+      'Body: {expectedVersion, name?, description?, currency?}. Header-only — cannot ' +
+      'touch revisions, lines, status, or latestApprovedRevisionId (no approval bypass). ' +
+      '422 on stale version or non-ACTIVE budget.',
+    permission: 'FINANCE_BUDGET_MANAGE',
+  },
+  'POST /finance/budgets/:id/revisions': {
+    summary: 'Create an immutable budget revision (operation: PROJECT_BUDGET_REVISE)',
+    description:
+      'Body: {notes?, idempotencyKey?, lines: [{category, description, amount}]} — ' +
+      'category is MATERIAL|LABOUR|EQUIPMENT|SUBCONTRACT|OVERHEAD|CONTINGENCY|OTHER; ' +
+      'amount is a decimal string (18,2). totalAmount is server-computed. ' +
+      '409 REVISION_IN_PROGRESS while a DRAFT/SUBMITTED revision is open.',
+    permission: 'FINANCE_BUDGET_MANAGE',
+  },
+  'GET /finance/budgets/:id/revisions': {
+    summary: 'List revisions of a budget (operation: PROJECT_BUDGET_VIEW)',
+    description: 'Query: {status?} — ascending revision number, includes lines.',
+    permission: 'FINANCE_BUDGET_READ',
+  },
+  'GET /finance/budgets/:id/revisions/:revisionId': {
+    summary: 'Get a revision with lines and decision history',
+    description: 'Response: revision + lines + append-only decisions array.',
+    permission: 'FINANCE_BUDGET_READ',
+  },
+  'POST /finance/budgets/:id/revisions/:revisionId/submit': {
+    summary: 'Submit a draft revision for review (operation: PROJECT_BUDGET_REVISE)',
+    description:
+      'Body: {expectedVersion?}. Workflow: DRAFT → SUBMITTED; writes audit + outbox ' +
+      'in the same transaction. Idempotent by state — a retry by the same submitter ' +
+      'returns replayed:true. 409 INVALID_STATUS_TRANSITION otherwise.',
+    permission: 'FINANCE_BUDGET_MANAGE',
+  },
+  'POST /finance/budgets/:id/revisions/:revisionId/decisions': {
+    summary:
+      'Decide a submitted revision — self-approval forbidden (operation: PROJECT_BUDGET_APPROVE)',
+    description:
+      'Body: {action: APPROVE|REJECT|RETURN, reason?, expectedVersion?, idempotencyKey?}. ' +
+      'Workflow: SUBMITTED → APPROVED|REJECTED|RETURNED (append-only decision row); ' +
+      'APPROVE promotes budget.latestApprovedRevisionId. 403 SELF_APPROVAL_FORBIDDEN ' +
+      'for the submitter. idempotencyKey replays on fingerprint match, ' +
+      '409 IDEMPOTENCY_CONFLICT on mismatch.',
+    permission: 'FINANCE_BUDGET_MANAGE',
+  },
+  'GET /finance/budgets/:id/revisions/:revisionId/decisions': {
+    summary: 'List review decisions on a revision',
+    description: 'Append-only history ordered by decidedAt — the approval outcome trail.',
+    permission: 'FINANCE_BUDGET_READ',
+  },
+  'GET /finance/projects/:projectId/costs': {
+    summary: 'Verified cost rollup: approved budgets + active forecasts (no fabricated actuals)',
+    description:
+      'Response: {budgets: [{id, code, name, currency, approvedRevision}], ' +
+      'cashFlowForecasts: {count, totalInflow, totalOutflow, net}, commitments, actuals}. ' +
+      'commitments/actuals are null until a Finance transaction ledger exists.',
+    permission: 'FINANCE_BUDGET_READ',
+  },
+  'POST /finance/projects/:projectId/cash-flow-forecasts': {
+    summary: 'Create a cash-flow forecast (operation: PROJECT_CASH_FLOW_FORECAST_SUBMIT)',
+    description:
+      'Body: {name, description?, currency, periodStart, periodEnd, idempotencyKey?, ' +
+      'lines: [{direction: INFLOW|OUTFLOW, category, amount, expectedDate?, description?}]}. ' +
+      'Category enums: inflow CLIENT_RECEIPT|ADVANCE_RECEIPT|RETENTION_RELEASE; ' +
+      'outflow MATERIAL|LABOUR|EQUIPMENT|SUBCONTRACT|OVERHEAD|TAX|OTHER. ' +
+      'Dates are YYYY-MM-DD, periodEnd >= periodStart.',
+    permission: 'FINANCE_BUDGET_MANAGE',
+  },
+  'GET /finance/projects/:projectId/cash-flow-forecasts': {
+    summary: 'List cash-flow forecasts for a project (operation: PROJECT_CASH_FLOW_REVIEW)',
+    description:
+      'Query: {status?, limit?, cursor?} — keyset pagination, ascending id, ' +
+      'nextCursor in the response while more rows exist.',
+    permission: 'FINANCE_BUDGET_READ',
+  },
+  'GET /finance/cash-flow-forecasts/:id': {
+    summary: 'Get a cash-flow forecast with lines (operation: PROJECT_CASH_FLOW_REVIEW)',
+    permission: 'FINANCE_BUDGET_READ',
+  },
+  'PATCH /finance/cash-flow-forecasts/:id': {
+    summary:
+      'Revise a forecast — version-guarded, bumps revision (operation: PROJECT_CASH_FLOW_FORECAST_REVISE)',
+    description:
+      'Body: {expectedVersion, reason?, name?, description?, currency?, periodStart?, ' +
+      'periodEnd?, idempotencyKey?, lines?}. Header+lines replaced atomically; revision ' +
+      'increments. 422 on stale version; 409 IDEMPOTENCY_CONFLICT on key reuse ' +
+      'with a different command.',
+    permission: 'FINANCE_BUDGET_MANAGE',
+  },
+  'GET /finance/projects': {
+    summary: 'Finance project portfolio (operation: PROJECT_DASHBOARD_VIEW)',
+    description:
+      'Query: {status?: PLANNED|ACTIVE|ON_HOLD|COMPLETED|ARCHIVED, search?, limit?, cursor?} — ' +
+      'keyset pagination on id; search matches code/name/city (case-insensitive). ' +
+      'Each item embeds its headOffice {id, code, name}.',
+    permission: 'FINANCE_PORTFOLIO_READ',
+  },
+  'GET /finance/projects/:projectId/sites': {
+    summary: 'Sites of a project (operation: PROJECT_DASHBOARD_VIEW)',
+    description:
+      'Query: {status?, limit?, cursor?}. Exact geofence coordinates are withheld — ' +
+      'address fields and geoFenceRadiusM are returned. 404 project/cross-company.',
+    permission: 'FINANCE_PORTFOLIO_READ',
+  },
+  'GET /finance/employees': {
+    summary: 'Employee directory for Finance (operation: FINANCE_EMPLOYEE_DIRECTORY_VIEW)',
+    description:
+      'Query: {projectId?, siteId?, departmentId?, status?, search?, limit?, cursor?} — ' +
+      'placement filters match ACTIVE department memberships only; search matches ' +
+      'displayName/employeeCode. Items: {id, employeeCode, displayName, status, ' +
+      'createdAt, primaryMembership}.',
+    permission: 'FINANCE_EMPLOYEE_READ',
+  },
+  'GET /finance/employees/:employeeId': {
+    summary: 'Employee detail (operation: FINANCE_EMPLOYEE_DIRECTORY_VIEW)',
+    description:
+      'Directory fields + active department memberships. employmentDetails ' +
+      '(engagement, designation, trade, contacts) is null unless the caller ALSO holds ' +
+      'FINANCE_EMPLOYEE_SENSITIVE_READ + FINANCE_EMPLOYMENT_DETAILS_VIEW.',
+    permission: 'FINANCE_EMPLOYEE_READ',
+  },
+  'GET /finance/employees/:employeeId/attendance-summary': {
+    summary: 'Attendance aggregates for payroll input (operation: PAYROLL_INPUT_REVIEW)',
+    description:
+      'Query: {from, to} — YYYY-MM-DD business dates, inclusive. Returns unit/hour ' +
+      'totals + session/flagged/site counts only; no GPS coordinates, remarks, or ' +
+      'per-punch detail. 404 employee/cross-company; 422 bad range.',
+    permission: 'FINANCE_EMPLOYEE_READ',
+  },
+  'GET /finance/employees/:employeeId/leave-summary': {
+    summary: 'Leave balances and request stats (operation: FINANCE_EMPLOYMENT_DETAILS_VIEW)',
+    description:
+      'Query: {year}. Balances per leave type (allocated/used/pending/carried-over/' +
+      'available) + requests grouped by status with day totals. Reasons and ' +
+      'documents are never returned.',
+    permission: 'FINANCE_EMPLOYEE_READ',
+  },
+  'GET /finance/dashboard': {
+    summary: 'Finance dashboard — verified aggregates only (operation: PROJECT_DASHBOARD_VIEW)',
+    description:
+      'projects/sites byStatus + budgets totals & approved sums per currency + ' +
+      'pendingBudgetReviews + active cash-flow sums per currency. workforce is null ' +
+      'without FINANCE_EMPLOYEE_READ + FINANCE_EMPLOYEE_DIRECTORY_VIEW. Sections with ' +
+      'no data model are listed in unavailable[] — never fabricated.',
+    permission: 'FINANCE_DASHBOARD_READ',
+  },
   'GET /audit-logs': {
     summary: 'List company audit logs with filtering and actor resolution',
     permission: 'AUDIT_LOG_VIEW',
@@ -568,6 +769,9 @@ export interface BuildAppOptions {
     formService?: FormService;
     attendanceService?: AttendanceService;
     leaveService?: LeaveService;
+    scheduleService?: ScheduleService;
+    approvalService?: ApprovalService;
+    financeService?: FinanceService;
     // Test hook: inject the sentinel platform-company id (null = none).
     platformCompanyId?: string | null;
   };
@@ -1020,6 +1224,44 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
               accessControl.assertPermission(pid, key, target),
           },
           roleDispatcher,
+        ),
+    ),
+    { prefix: '/api/v1' },
+  );
+  await app.register(
+    scheduleRoutes(
+      services.scheduleService ??
+        new ScheduleService(new PrismaScheduleUnitOfWork(app.prisma), {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+        }),
+    ),
+    { prefix: '/api/v1' },
+  );
+  await app.register(
+    approvalRoutes(
+      services.approvalService ??
+        new ApprovalService(new PrismaApprovalUnitOfWork(app.prisma), {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+          hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.hasPermission(pid, key, target),
+        }),
+    ),
+    { prefix: '/api/v1' },
+  );
+  await app.register(
+    financeRoutes(
+      services.financeService ??
+        new FinanceService(
+          new PrismaFinanceUnitOfWork(app.prisma),
+          {
+            assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.assertPermission(pid, key, target),
+            hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.hasPermission(pid, key, target),
+          },
+          (companyId, employeeId) => opAssignment.getEffectiveOperations(companyId, employeeId),
         ),
     ),
     { prefix: '/api/v1' },

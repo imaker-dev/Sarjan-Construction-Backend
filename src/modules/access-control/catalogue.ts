@@ -62,10 +62,31 @@ export const PERMISSIONS = [
   'ATTENDANCE_RECORD',
   'ATTENDANCE_READ',
   'ATTENDANCE_MANAGE',
+  'WORK_SCHEDULE_READ',
+  'WORK_SCHEDULE_MANAGE',
   'LEAVE_APPLY',
   'LEAVE_READ',
   'LEAVE_APPROVE',
   'LEAVE_MANAGE',
+  // Finance API surface (tenant scope only). Distinct from the FINANCE and
+  // payroll keys of the operation catalogue — these gate REST routes;
+  // employee operation grants gate command eligibility separately.
+  'FINANCE_DASHBOARD_READ',
+  'FINANCE_PORTFOLIO_READ',
+  'FINANCE_EMPLOYEE_READ',
+  'FINANCE_EMPLOYEE_SENSITIVE_READ',
+  'FINANCE_BUDGET_READ',
+  'FINANCE_BUDGET_MANAGE',
+  'FINANCE_WALLET_READ',
+  'FINANCE_WALLET_MANAGE',
+  'FINANCE_QUOTATION_READ',
+  'FINANCE_QUOTATION_MANAGE',
+  'FINANCE_BILLING_READ',
+  'FINANCE_BILLING_MANAGE',
+  'FINANCE_PAYROLL_READ',
+  'FINANCE_PAYROLL_MANAGE',
+  'FINANCE_REPORT_READ',
+  'FINANCE_REPORT_EXPORT',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[number];

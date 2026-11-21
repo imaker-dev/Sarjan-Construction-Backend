@@ -568,9 +568,42 @@ export class EmployeeService {
           changedFields: { endedAt: { before: null, after: 'ended by admin' } },
         }),
       );
-      if (this.cache) {
-        const emp = await employees.findById(companyId, employeeId);
-        if (emp?.principalId) await this.cache.invalidate(emp.principalId);
+      // Finance-role cascade: if this ended the employee's last effective
+      // membership in an ACTIVE FINANCE department, their FINANCE_* role
+      // assignments stop applying immediately — same transaction, audited.
+      // Other role assignments are untouched.
+      const emp = await employees.findById(companyId, employeeId);
+      if (emp?.principalId) {
+        const remainingFinance = await memberships.activeFinanceCount(
+          companyId,
+          employeeId,
+          new Date(),
+        );
+        if (remainingFinance === 0) {
+          const revoked = await employees.revokeFinanceRoleAssignments(
+            companyId,
+            emp.principalId,
+            new Date(),
+          );
+          for (const assignmentId of revoked) {
+            await audit.record(
+              auditEntry(actor, {
+                action: 'ACCESS_ROLE_REVOKED',
+                entityType: 'ROLE_ASSIGNMENT',
+                entityId: assignmentId,
+                companyId,
+                statusBefore: 'ACTIVE',
+                statusAfter: 'REVOKED',
+                changedFields: {
+                  revokedAt: { before: null, after: 'finance membership ended' },
+                },
+              }),
+            );
+          }
+        }
+      }
+      if (this.cache && emp?.principalId) {
+        await this.cache.invalidate(emp.principalId);
       }
       return memberships.findById(companyId, employeeId, membershipId);
     });

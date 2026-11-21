@@ -3,6 +3,7 @@ import { makeDepartmentRepos } from '../department/repository.js';
 import type { DepartmentRepos } from '../department/repository.js';
 import { scopedUpdate } from '../organization/repository.js';
 import { mapOrgWriteError } from '../organization/errors.js';
+import { FINANCE_ROLE_KEYS } from '../setup/role-templates.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -35,6 +36,15 @@ export interface EmployeeRowRepository {
     principalId: string,
     at: Date,
   ): Promise<string[]>;
+  /**
+   * Membership-end cascade — revokes only FINANCE_* role assignments,
+   * same tx as the membership end. Returns revoked assignment ids for audit.
+   */
+  revokeFinanceRoleAssignments(
+    companyId: string,
+    principalId: string,
+    at: Date,
+  ): Promise<string[]>;
   clearHeadReferences(companyId: string, employeeId: string): Promise<{ id: string }[]>;
   /** Last-admin guard: distinct active principals holding any of the keys. */
   activeHoldersOfKeys(companyId: string, keys: string[], at: Date): Promise<string[]>;
@@ -62,6 +72,12 @@ export interface EmployeeRepos extends DepartmentRepos {
       companyId: string,
       employeeId: string,
     ): Promise<import('@prisma/client').DepartmentMembership[]>;
+    /**
+     * Effective memberships in an ACTIVE FINANCE-category department —
+     * the same predicate as role-grant eligibility (started, not ended,
+     * department still active).
+     */
+    activeFinanceCount(companyId: string, employeeId: string, at: Date): Promise<number>;
     create(data: {
       companyId: string;
       employeeId: string;
@@ -179,6 +195,24 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
       }
       return rows.map((r) => r.id);
     },
+    revokeFinanceRoleAssignments: async (companyId, principalId, at) => {
+      const rows = await tx.roleAssignment.findMany({
+        where: {
+          companyId,
+          principalId,
+          revokedAt: null,
+          role: { is: { key: { in: [...FINANCE_ROLE_KEYS] } } },
+        },
+        select: { id: true },
+      });
+      if (rows.length > 0) {
+        await tx.roleAssignment.updateMany({
+          where: { id: { in: rows.map((r) => r.id) } },
+          data: { revokedAt: at },
+        });
+      }
+      return rows.map((r) => r.id);
+    },
     clearHeadReferences: async (companyId, employeeId) => {
       const rows = await tx.department.findMany({
         where: { companyId, headEmployeeId: employeeId },
@@ -240,6 +274,16 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
       }),
     activeForEmployee: (companyId: string, employeeId: string) =>
       tx.departmentMembership.findMany({ where: { companyId, employeeId, endedAt: null } }),
+    activeFinanceCount: (companyId: string, employeeId: string, at: Date) =>
+      tx.departmentMembership.count({
+        where: {
+          companyId,
+          employeeId,
+          startedAt: { lte: at },
+          OR: [{ endedAt: null }, { endedAt: { gt: at } }],
+          department: { is: { category: 'FINANCE', status: 'ACTIVE' } },
+        },
+      }),
     create: async (data: {
       companyId: string;
       employeeId: string;

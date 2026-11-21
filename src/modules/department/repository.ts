@@ -20,12 +20,19 @@ import {
 
 type Tx = Prisma.TransactionClient;
 
+/** Department row + embedded base head office for detail reads. */
+export interface DepartmentDetail extends Department {
+  baseHeadOffice: { id: string; code: string; name: string; isPrimary: boolean } | null;
+}
+
 export interface DepartmentRepository {
   findById(companyId: string, id: string): Promise<Department | null>;
+  /** Detail read: the row plus a slim baseHeadOffice embed. */
+  findDetail(companyId: string, id: string): Promise<DepartmentDetail | null>;
   list(
     companyId: string,
     filter?: { status?: DepartmentStatus; projectId?: string; siteId?: string },
-  ): Promise<Department[]>;
+  ): Promise<DepartmentDetail[]>;
   create(
     companyId: string,
     data: {
@@ -79,6 +86,13 @@ export function makeDepartmentRepos(tx: Tx): DepartmentRepos {
     audit: org.audit,
     departments: {
       findById: (companyId, id) => tx.department.findFirst({ where: { id, companyId } }),
+      findDetail: (companyId, id) =>
+        tx.department.findFirst({
+          where: { id, companyId },
+          include: {
+            baseHeadOffice: { select: { id: true, code: true, name: true, isPrimary: true } },
+          },
+        }),
       list: (companyId, filter) =>
         tx.department.findMany({
           where: {
@@ -86,6 +100,9 @@ export function makeDepartmentRepos(tx: Tx): DepartmentRepos {
             ...(filter?.status ? { status: filter.status } : {}),
             ...(filter?.projectId ? { projectId: filter.projectId } : {}),
             ...(filter?.siteId ? { siteId: filter.siteId } : {}),
+          },
+          include: {
+            baseHeadOffice: { select: { id: true, code: true, name: true, isPrimary: true } },
           },
           orderBy: { id: 'asc' },
         }),

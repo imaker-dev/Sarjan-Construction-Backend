@@ -12,6 +12,7 @@ import {
   DuplicateCodeError,
   VersionConflictError,
 } from '../../../src/modules/organization/errors.js';
+import { FINANCE_ROLE_KEYS } from '../../../src/modules/setup/role-templates.js';
 
 export { fakeEmployee };
 
@@ -23,6 +24,7 @@ export interface EmpStore extends DeptStore {
     revokedAt: Date | null;
     effectiveFrom: Date | null;
     effectiveTo: Date | null;
+    roleKey?: string;
     principalStatus?: string;
     permissionKeys?: string[];
   }[];
@@ -95,6 +97,17 @@ export function makeEmployeeTestRepos(store: EmpStore): EmployeeRepos {
         for (const r of rows) r.revokedAt = at;
         return rows.map((r) => r.id);
       },
+      revokeFinanceRoleAssignments: async (companyId, principalId, at) => {
+        const rows = store.roleAssignments.filter(
+          (a) =>
+            a.companyId === companyId &&
+            a.principalId === principalId &&
+            a.revokedAt === null &&
+            FINANCE_ROLE_KEYS.has(a.roleKey ?? ''),
+        );
+        for (const r of rows) r.revokedAt = at;
+        return rows.map((r) => r.id);
+      },
       clearHeadReferences: async (companyId, employeeId) => {
         const rows = store.departments.filter(
           (d) => d.companyId === companyId && d.headEmployeeId === employeeId,
@@ -143,6 +156,19 @@ export function makeEmployeeTestRepos(store: EmpStore): EmployeeRepos {
         store.memberships.filter(
           (m) => m.companyId === companyId && m.employeeId === employeeId && m.endedAt === null,
         ),
+      activeFinanceCount: async (companyId, employeeId, at) =>
+        store.memberships.filter((m) => {
+          if (
+            m.companyId !== companyId ||
+            m.employeeId !== employeeId ||
+            m.startedAt > at ||
+            (m.endedAt !== null && m.endedAt <= at)
+          ) {
+            return false;
+          }
+          const dept = store.departments.find((d) => d.id === m.departmentId);
+          return dept?.category === 'FINANCE' && dept.status === 'ACTIVE';
+        }).length,
       create: async (d) => {
         const m = {
           id: genId(),

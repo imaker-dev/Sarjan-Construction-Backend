@@ -20,7 +20,12 @@ import {
   SeparationOfDutiesError,
 } from './errors.js';
 import type { ApprovalRepos, ApprovalUnitOfWork } from './repository.js';
-import type { ApprovalTaskListFilter, DecideTaskInput, DecideTaskResult } from './types.js';
+import type {
+  ApprovalTaskListFilter,
+  ApprovalTaskPage,
+  DecideTaskInput,
+  DecideTaskResult,
+} from './types.js';
 
 export const WORKFLOW_APPROVAL_READ = 'WORKFLOW_APPROVAL_READ';
 export const WORKFLOW_APPROVAL_DECIDE = 'WORKFLOW_APPROVAL_DECIDE';
@@ -268,6 +273,96 @@ export class ApprovalService {
       if (instance === null) throw new OrgEntityNotFoundError('WORKFLOW_INSTANCE');
       const target = await this.scopeTargetForOperation(repos, companyId, instance.operationId);
       await this.authorizer.assertPermission(actor.actorId, WORKFLOW_APPROVAL_READ, target);
+      return repos.approvalDecisions.listByTask(companyId, taskId);
+    });
+  }
+
+  /**
+   * "My tasks" inbox — only tasks the caller can decide under the stage's
+   * pinned assignee rule. ROLE_KEY/INITIATOR/DEPARTMENT_HEAD resolve in SQL;
+   * PERMISSION_KEY resolves per candidate via the authorizer against the
+   * owning department's scope (cached — distinct keys are few).
+   */
+  async listAssignedTasks(
+    actor: ActorContext,
+    companyId: string,
+    filter?: { status?: string; workflowInstanceId?: string },
+    page?: { cursor?: string; limit?: number },
+  ): Promise<ApprovalTaskPage> {
+    await this.authorizer.assertPermission(actor.actorId, WORKFLOW_APPROVAL_READ, {
+      companyId,
+      scopeType: 'COMPANY',
+      scopeId: companyId,
+    });
+    const limit = page?.limit ?? 50;
+    return this.uow.run(async (repos) => {
+      const assignments = await repos.roleAssignments.listActiveForPrincipal(
+        actor.actorId,
+        companyId,
+        this.now(),
+      );
+      const employee = await repos.employees.findByPrincipalId(companyId, actor.actorId);
+
+      const candidates = await repos.approvalTasks.listPermissionKeyCandidates(companyId, filter);
+      const granted = new Map<string, Promise<boolean>>();
+      const permissionTaskIds: string[] = [];
+      for (const c of candidates) {
+        if (c.assigneeValue === null || c.department === null) continue;
+        const target = departmentScopeTarget(c.department);
+        const cacheKey = `${c.assigneeValue}|${target.scopeType}|${target.scopeId}`;
+        let check = granted.get(cacheKey);
+        if (check === undefined) {
+          check = this.authorizer.hasPermission(actor.actorId, c.assigneeValue, target);
+          granted.set(cacheKey, check);
+        }
+        if (await check) permissionTaskIds.push(c.id);
+      }
+
+      const rows = await repos.approvalTasks.listAssigned(companyId, {
+        roleKeys: [...new Set(assignments.map((a) => a.role.key))],
+        initiatorPrincipalId: actor.actorId,
+        ...(employee !== null ? { departmentHeadEmployeeId: employee.id } : {}),
+        permissionTaskIds,
+        ...(filter?.status !== undefined ? { status: filter.status } : {}),
+        ...(filter?.workflowInstanceId !== undefined
+          ? { workflowInstanceId: filter.workflowInstanceId }
+          : {}),
+        ...(page?.cursor !== undefined ? { cursor: page.cursor } : {}),
+        limit,
+      });
+      const items = rows.slice(0, limit);
+      const nextCursor = rows.length > limit ? items[items.length - 1]?.id : undefined;
+      return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
+    });
+  }
+
+  /**
+   * Caller-scoped task read — same assignee rule as decision eligibility, so
+   * task detail never leaks to a principal who couldn't decide it.
+   */
+  async getAssignedTask(actor: ActorContext, companyId: string, taskId: string) {
+    return this.uow.run(async (repos) => {
+      const task = await repos.approvalTasks.findById(companyId, taskId);
+      if (task === null) throw new OrgEntityNotFoundError('APPROVAL_TASK');
+      const instance = await repos.instances.findById(companyId, task.workflowInstanceId);
+      if (instance === null) throw new OrgEntityNotFoundError('WORKFLOW_INSTANCE');
+      const target = await this.scopeTargetForOperation(repos, companyId, instance.operationId);
+      await this.authorizer.assertPermission(actor.actorId, WORKFLOW_APPROVAL_READ, target);
+      await this.assertAssignee(repos, actor, task, instance, target);
+      return task;
+    });
+  }
+
+  /** Decisions on a task — visible to the task's assignees only. */
+  async listAssignedTaskDecisions(actor: ActorContext, companyId: string, taskId: string) {
+    return this.uow.run(async (repos) => {
+      const task = await repos.approvalTasks.findById(companyId, taskId);
+      if (task === null) throw new OrgEntityNotFoundError('APPROVAL_TASK');
+      const instance = await repos.instances.findById(companyId, task.workflowInstanceId);
+      if (instance === null) throw new OrgEntityNotFoundError('WORKFLOW_INSTANCE');
+      const target = await this.scopeTargetForOperation(repos, companyId, instance.operationId);
+      await this.authorizer.assertPermission(actor.actorId, WORKFLOW_APPROVAL_READ, target);
+      await this.assertAssignee(repos, actor, task, instance, target);
       return repos.approvalDecisions.listByTask(companyId, taskId);
     });
   }

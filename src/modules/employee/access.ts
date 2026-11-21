@@ -4,7 +4,11 @@ import type { ActorContext } from '../organization/types.js';
 import { auditEntry } from '../organization/service.js';
 import { OrgEntityNotFoundError, OrgValidationError } from '../organization/errors.js';
 import { AppError } from '../../common/errors/app-error.js';
-import { findRoleTemplate, PROJECT_LEADERSHIP_KEYS } from '../setup/role-templates.js';
+import {
+  findRoleTemplate,
+  FINANCE_ROLE_KEYS,
+  PROJECT_LEADERSHIP_KEYS,
+} from '../setup/role-templates.js';
 import { AccessDeniedError } from '../access-control/errors.js';
 import { passwordService } from '../identity/password.js';
 import type { MailService } from '../mail/service.js';
@@ -315,6 +319,29 @@ export class EmployeeAccessService {
       const principal = await tx.principal.findUnique({ where: { id: emp.principalId } });
       if (principal?.status !== 'ACTIVE' || principal.type !== 'USER') {
         throw new AppError(409, 'PRINCIPAL_INACTIVE', 'linked account must be an active user');
+      }
+      // Finance roles bind to placement: the employee must hold an effective
+      // membership in an ACTIVE FINANCE-category department of this company.
+      // Category is authoritative — name/baseHeadOfficeId never identify it.
+      if (FINANCE_ROLE_KEYS.has(tpl.key)) {
+        const now = new Date();
+        const finMembership = await tx.departmentMembership.findFirst({
+          where: {
+            companyId,
+            employeeId: emp.id,
+            startedAt: { lte: now },
+            OR: [{ endedAt: null }, { endedAt: { gt: now } }],
+            department: { is: { category: 'FINANCE', status: 'ACTIVE' } },
+          },
+          select: { id: true },
+        });
+        if (finMembership === null) {
+          throw new AppError(
+            409,
+            'FINANCE_MEMBERSHIP_REQUIRED',
+            'finance roles require an active membership in an active FINANCE department',
+          );
+        }
       }
       let role = await tx.role.findFirst({ where: { companyId, key: tpl.key, isSystem: true } });
       if (!role && typeof tx.role.create === 'function') {

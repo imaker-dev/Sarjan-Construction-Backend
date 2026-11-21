@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveTestDbUrl } from './test-db-url.js';
+import { resolveTestDbUrl } from '../integration/test-db-url.js';
 
 const BASE = 'postgresql://u:p@localhost:55432/erp_test';
 

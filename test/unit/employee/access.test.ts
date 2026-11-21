@@ -15,6 +15,8 @@ interface FakeStore {
   headOffices: Record<string, unknown>[];
   projects: Record<string, unknown>[];
   sites: Record<string, unknown>[];
+  departments: Record<string, unknown>[];
+  memberships: Record<string, unknown>[];
   auditLog: Record<string, unknown>[];
 }
 
@@ -146,15 +148,51 @@ function fakePrisma(store: FakeStore) {
     project: {
       findFirst: async ({ where }: Record<string, unknown>) => {
         const w = where as Record<string, unknown>;
-        return (
-          store.projects.find((p) => p.id === w.id && p.companyId === w.companyId) ?? null
-        );
+        return store.projects.find((p) => p.id === w.id && p.companyId === w.companyId) ?? null;
       },
     },
     site: {
       findFirst: async ({ where }: Record<string, unknown>) => {
         const w = where as Record<string, unknown>;
         return store.sites.find((s) => s.id === w.id && s.companyId === w.companyId) ?? null;
+      },
+    },
+    departmentMembership: {
+      findFirst: async ({ where }: Record<string, unknown>) => {
+        const w = where as {
+          companyId: string;
+          employeeId: string;
+          startedAt?: { lte?: Date };
+          OR?: { endedAt: null | { gt?: Date } }[];
+          department?: { is?: { category?: string; status?: string } };
+        };
+        return (
+          store.memberships.find((m) => {
+            if (m.companyId !== w.companyId || m.employeeId !== w.employeeId) return false;
+            if (w.startedAt?.lte !== undefined && (m.startedAt as Date) > w.startedAt.lte) {
+              return false;
+            }
+            if (w.OR !== undefined) {
+              const ok = w.OR.some((c) => {
+                if (c.endedAt === null) return m.endedAt === null;
+                const gt = c.endedAt.gt;
+                return gt !== undefined && (m.endedAt as Date) > gt;
+              });
+              if (!ok) return false;
+            }
+            const deptCond = w.department?.is;
+            if (deptCond !== undefined) {
+              const dept = store.departments.find((d) => d.id === m.departmentId);
+              if (deptCond.category !== undefined && dept?.category !== deptCond.category) {
+                return false;
+              }
+              if (deptCond.status !== undefined && dept?.status !== deptCond.status) {
+                return false;
+              }
+            }
+            return true;
+          }) ?? null
+        );
       },
     },
     auditLog: {
@@ -193,6 +231,21 @@ function store(over: Partial<FakeStore> = {}): FakeStore {
       { id: 'pr-other', companyId: 'OTHER', status: 'ACTIVE' },
     ],
     sites: [{ id: 'st-1', companyId: COMPANY, projectId: 'pr-1', status: 'ACTIVE' }],
+    departments: [
+      { id: 'd-fin', companyId: COMPANY, category: 'FINANCE', status: 'ACTIVE' },
+      { id: 'd-ops', companyId: COMPANY, category: 'OPERATIONS', status: 'ACTIVE' },
+      // Name trap: says "Finance" but is not the controlled FINANCE category.
+      {
+        id: 'd-name-trap',
+        companyId: COMPANY,
+        category: 'OPERATIONS',
+        status: 'ACTIVE',
+        name: 'Finance',
+      },
+      { id: 'd-fin-inactive', companyId: COMPANY, category: 'FINANCE', status: 'INACTIVE' },
+      { id: 'd-fin-other', companyId: 'OTHER', category: 'FINANCE', status: 'ACTIVE' },
+    ],
+    memberships: [],
     auditLog: [],
     ...over,
   };
@@ -437,8 +490,7 @@ describe('EmployeeAccessService.grant — project leadership (PD/PI)', () => {
     const secondAsg = await svc.grant(ACTOR, COMPANY, { ...pd('pr-1'), employeeId: 'e-2' });
     expect(secondAsg).toBeTruthy();
     const oldRow = s.roleAssignments.find((a) => a.id === firstAsg.id) as
-      | { revokedAt: Date | null }
-      | undefined;
+      { revokedAt: Date | null } | undefined;
     expect(oldRow?.revokedAt).not.toBeNull();
     expect(JSON.stringify(s.auditLog)).toContain('ROLE_ASSIGNMENT_REPLACED');
     // incumbent on a DIFFERENT project is untouched
@@ -494,6 +546,101 @@ describe('EmployeeAccessService.grant — project leadership (PD/PI)', () => {
     );
     expect(pdHolders).toHaveLength(1);
     expect(piHolders).toHaveLength(1);
+  });
+});
+
+describe('EmployeeAccessService.grant — Finance role eligibility', () => {
+  function finStore(memberships: Record<string, unknown>[] = []) {
+    const s = store();
+    first(s.employees).principalId = 'pri-9';
+    s.principals.push({ id: 'pri-9', status: 'ACTIVE', type: 'USER' });
+    s.roles.push(
+      { id: 'r-fm', companyId: COMPANY, key: 'FINANCE_MANAGER', isSystem: true },
+      { id: 'r-fs', companyId: COMPANY, key: 'FINANCE_STAFF', isSystem: true },
+      { id: 'r-own', companyId: COMPANY, key: 'COMPANY_OWNER', isSystem: true },
+    );
+    s.memberships = memberships;
+    return s;
+  }
+
+  const membership = (departmentId: string, over: Record<string, unknown> = {}) => ({
+    id: `mem-${departmentId}`,
+    companyId: COMPANY,
+    employeeId: 'e-1',
+    departmentId,
+    startedAt: new Date('2020-01-01'),
+    endedAt: null,
+    ...over,
+  });
+
+  const grant = (roleKey: string) => ({
+    employeeId: 'e-1',
+    roleKey,
+    scopeType: 'COMPANY' as const,
+  });
+
+  it('allows FINANCE_MANAGER and FINANCE_STAFF with an active FINANCE-dept membership', async () => {
+    const s = finStore([membership('d-fin')]);
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    const a1 = await svc.grant(ACTOR, COMPANY, grant('FINANCE_MANAGER'));
+    expect((a1 as Record<string, unknown>).roleId).toBe('r-fm');
+    const a2 = await svc.grant(ACTOR, COMPANY, grant('FINANCE_STAFF'));
+    expect((a2 as Record<string, unknown>).roleId).toBe('r-fs');
+  });
+
+  it('denies when the employee has no active FINANCE membership', async () => {
+    const svc = new EmployeeAccessService(fakePrisma(finStore()));
+    await expect(
+      svc.grant(ACTOR as never, COMPANY, grant('FINANCE_MANAGER')),
+    ).rejects.toMatchObject({ statusCode: 409, code: 'FINANCE_MEMBERSHIP_REQUIRED' });
+  });
+
+  it('denies when the FINANCE membership already ended', async () => {
+    const s = finStore([membership('d-fin', { endedAt: new Date('2021-01-01') })]);
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await expect(svc.grant(ACTOR as never, COMPANY, grant('FINANCE_STAFF'))).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'FINANCE_MEMBERSHIP_REQUIRED',
+    });
+  });
+
+  it('denies a future-dated FINANCE membership (not yet effective)', async () => {
+    const s = finStore([membership('d-fin', { startedAt: new Date('2999-01-01') })]);
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await expect(
+      svc.grant(ACTOR as never, COMPANY, grant('FINANCE_MANAGER')),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('denies non-FINANCE category — department named "Finance" does not count', async () => {
+    const s = finStore([membership('d-name-trap')]);
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await expect(
+      svc.grant(ACTOR as never, COMPANY, grant('FINANCE_MANAGER')),
+    ).rejects.toMatchObject({ statusCode: 409, code: 'FINANCE_MEMBERSHIP_REQUIRED' });
+  });
+
+  it('denies when the FINANCE department itself is inactive', async () => {
+    const s = finStore([membership('d-fin-inactive')]);
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await expect(
+      svc.grant(ACTOR as never, COMPANY, grant('FINANCE_MANAGER')),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('denies cross-company employees', async () => {
+    const s = finStore([membership('d-fin')]);
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await expect(
+      svc.grant(ACTOR as never, 'OTHER', grant('FINANCE_MANAGER')),
+    ).rejects.toBeInstanceOf(Error);
+  });
+
+  it('COMPANY_OWNER grants without any Finance membership', async () => {
+    const s = finStore();
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    const a = await svc.grant(ACTOR, COMPANY, grant('COMPANY_OWNER'));
+    expect((a as Record<string, unknown>).roleId).toBe('r-own');
   });
 });
 

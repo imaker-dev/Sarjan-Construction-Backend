@@ -153,6 +153,10 @@ export function makeInstRepos(store: InstStore): WorkflowInstanceRepos {
         const row = store.departments.find((d) => d.id === id && d.companyId === companyId);
         return row ? { ...row } : null;
       },
+      findDetail: async (companyId, id) => {
+        const row = store.departments.find((d) => d.id === id && d.companyId === companyId);
+        return row === undefined ? null : { ...row, baseHeadOffice: null };
+      },
       list: async () => [],
       create: async () => store.departments[0] as never,
       update: async () => store.departments[0] as never,
@@ -341,6 +345,55 @@ export function makeInstRepos(store: InstStore): WorkflowInstanceRepos {
                 t.workflowInstanceId === filter.workflowInstanceId) &&
               (filter?.assigneeValue === undefined || t.assigneeValue === filter.assigneeValue),
           )
+          .map((t) => ({ ...t })),
+      listPermissionKeyCandidates: async (companyId, filter) =>
+        store.approvalTasks
+          .filter(
+            (t) =>
+              t.companyId === companyId &&
+              t.assigneeType === 'PERMISSION_KEY' &&
+              (filter?.status === undefined || t.status === filter.status) &&
+              (filter?.workflowInstanceId === undefined ||
+                t.workflowInstanceId === filter.workflowInstanceId),
+          )
+          .map((t) => {
+            const instance = store.instances.find((i) => i.id === t.workflowInstanceId);
+            const operation = store.operations.find((o) => o.id === instance?.operationId);
+            return {
+              id: t.id,
+              assigneeValue: t.assigneeValue,
+              department: store.departments.find((d) => d.id === operation?.departmentId) ?? null,
+            };
+          }),
+      listAssigned: async (companyId, args) =>
+        store.approvalTasks
+          .filter(
+            (t) =>
+              t.companyId === companyId &&
+              (args.status === undefined || t.status === args.status) &&
+              (args.workflowInstanceId === undefined ||
+                t.workflowInstanceId === args.workflowInstanceId) &&
+              (args.cursor === undefined || t.id > args.cursor) &&
+              ((t.assigneeType === 'ROLE_KEY' &&
+                t.assigneeValue !== null &&
+                args.roleKeys.includes(t.assigneeValue)) ||
+                (t.assigneeType === 'INITIATOR' &&
+                  store.instances.find((i) => i.id === t.workflowInstanceId)
+                    ?.startedByPrincipalId === args.initiatorPrincipalId) ||
+                (t.assigneeType === 'DEPARTMENT_HEAD' &&
+                  args.departmentHeadEmployeeId !== undefined &&
+                  (() => {
+                    const instance = store.instances.find((i) => i.id === t.workflowInstanceId);
+                    const operation = store.operations.find((o) => o.id === instance?.operationId);
+                    return (
+                      store.departments.find((d) => d.id === operation?.departmentId)
+                        ?.headEmployeeId === args.departmentHeadEmployeeId
+                    );
+                  })()) ||
+                args.permissionTaskIds.includes(t.id)),
+          )
+          .sort((a, b) => a.id.localeCompare(b.id))
+          .slice(0, args.limit + 1)
           .map((t) => ({ ...t })),
     },
     submissions: {

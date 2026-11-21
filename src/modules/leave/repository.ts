@@ -3,9 +3,11 @@ import {
   type Employee,
   type LeaveBalance,
   type LeavePolicy,
+  type LeavePolicyVersion,
   type LeaveRequest,
   type LeaveRequestStatus,
   type LeaveType,
+  type LeaveTypeDef,
   type PrismaClient,
 } from '@prisma/client';
 import { scopedUpdate, type AuditRepository } from '../organization/repository.js';
@@ -13,22 +15,33 @@ import type { AuditRecord } from '../organization/types.js';
 import {
   InsufficientLeaveBalanceError,
   LeaveDateConflictError,
+  LeavePolicyNotFoundError,
   LeaveRequestStateError,
 } from './errors.js';
 import type {
   ListLeaveBalancesFilter,
   ListLeavePoliciesFilter,
   ListLeaveRequestsFilter,
+  ListLeaveTypeDefsFilter,
 } from './types.js';
 
 type Tx = Prisma.TransactionClient;
 
 export type LeaveRequestWithDetails = LeaveRequest & {
-  employee: Pick<
-    Employee,
-    'id' | 'employeeCode' | 'displayName' | 'designation' | 'principalId'
-  >;
+  employee: Pick<Employee, 'id' | 'employeeCode' | 'displayName' | 'designation' | 'principalId'>;
 };
+
+export type LeavePolicyWithTypeDef = LeavePolicy & {
+  typeDef: Pick<LeaveTypeDef, 'id' | 'code' | 'name' | 'leaveType'> | null;
+};
+
+/** New-style resolution target: company, an actual Department record, or an
+ *  individual employee. PROJECT/SITE remain only on pre-existing rows. */
+export interface LeavePolicyScopeTarget {
+  scopeType: 'COMPANY' | 'DEPARTMENT' | 'EMPLOYEE';
+  departmentId?: string;
+  employeeId?: string;
+}
 
 export interface LeaveRepos {
   policies: {
@@ -44,11 +57,94 @@ export interface LeaveRepos {
       data: Prisma.LeavePolicyUpdateInput,
       expectedVersion?: number,
     ): Promise<LeavePolicy>;
+    /** Active policy of a type at an exact scope target. */
+    findAtScope(
+      companyId: string,
+      target: LeavePolicyScopeTarget,
+      typeDefId: string,
+    ): Promise<LeavePolicy | null>;
+    countActiveReferencingTypeDef(companyId: string, typeDefId: string): Promise<number>;
     resolveEffective(
       companyId: string,
       leaveType: LeaveType,
-      criteria: { employeeId?: string; siteId?: string; projectId?: string },
+      criteria: {
+        employeeId?: string;
+        departmentId?: string;
+        siteId?: string;
+        projectId?: string;
+      },
     ): Promise<LeavePolicy>;
+  };
+  typeDefs: {
+    findById(companyId: string, id: string): Promise<LeaveTypeDef | null>;
+    findByLeaveType(companyId: string, leaveType: LeaveType): Promise<LeaveTypeDef | null>;
+    list(companyId: string, filter?: ListLeaveTypeDefsFilter): Promise<LeaveTypeDef[]>;
+    create(
+      companyId: string,
+      data: Omit<Prisma.LeaveTypeDefCreateInput, 'company'>,
+    ): Promise<LeaveTypeDef>;
+    update(
+      companyId: string,
+      id: string,
+      data: Prisma.LeaveTypeDefUpdateInput,
+      expectedVersion?: number,
+    ): Promise<LeaveTypeDef>;
+  };
+  versions: {
+    create(
+      companyId: string,
+      data: Omit<Prisma.LeavePolicyVersionCreateInput, 'company' | 'policy'> & {
+        policyId: string;
+      },
+    ): Promise<LeavePolicyVersion>;
+    findById(
+      companyId: string,
+      policyId: string,
+      versionId: string,
+    ): Promise<LeavePolicyVersion | null>;
+    list(companyId: string, policyId: string): Promise<LeavePolicyVersion[]>;
+    nextVersionNumber(companyId: string, policyId: string): Promise<number>;
+    countActive(companyId: string, policyId: string): Promise<number>;
+    /** Highest-version ACTIVE row with effectiveFrom <= asOf. */
+    findEffective(
+      companyId: string,
+      policyId: string,
+      asOf: Date,
+    ): Promise<LeavePolicyVersion | null>;
+    /** Earliest ACTIVE row with effectiveFrom strictly after `after` — used to
+     *  detect a version boundary inside a leave window. */
+    findNextEffective(
+      companyId: string,
+      policyId: string,
+      after: Date,
+    ): Promise<LeavePolicyVersion | null>;
+    /** ACTIVE row at an exact effectiveFrom — duplicate-date detection. */
+    findActiveAtDate(
+      companyId: string,
+      policyId: string,
+      effectiveFrom: Date,
+    ): Promise<LeavePolicyVersion | null>;
+    cancel(companyId: string, versionId: string): Promise<LeavePolicyVersion>;
+  };
+  departments: {
+    findById(companyId: string, id: string): Promise<{ id: string; status: string } | null>;
+  };
+  memberships: {
+    /** Memberships effective at `asOf` (startedAt <= asOf, not yet ended).
+     *  Omitting `asOf` returns currently-open memberships (endedAt IS NULL). */
+    findActiveByEmployee(
+      companyId: string,
+      employeeId: string,
+      asOf?: Date,
+    ): Promise<{ departmentId: string; isPrimary: boolean }[]>;
+    /** Memberships covering the whole [start, end] window — started on or
+     *  before `start` and not ended on or before `end`. */
+    findCoveringByEmployee(
+      companyId: string,
+      employeeId: string,
+      start: Date,
+      end: Date,
+    ): Promise<{ departmentId: string; isPrimary: boolean }[]>;
   };
   balances: {
     find(
@@ -122,11 +218,21 @@ export interface LeaveRepos {
     findByPrincipal(
       companyId: string,
       principalId: string,
-    ): Promise<{ id: string; displayName: string; status: string; principalId?: string | null } | null>;
+    ): Promise<{
+      id: string;
+      displayName: string;
+      status: string;
+      principalId?: string | null;
+    } | null>;
     findById(
       companyId: string,
       id: string,
-    ): Promise<{ id: string; displayName: string; status: string; principalId?: string | null } | null>;
+    ): Promise<{
+      id: string;
+      displayName: string;
+      status: string;
+      principalId?: string | null;
+    } | null>;
     lockForUpdate?(companyId: string, id: string): Promise<void>;
   };
   audit: AuditRepository;
@@ -167,6 +273,8 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
           companyId,
           ...(filter?.scopeType ? { scopeType: filter.scopeType } : {}),
           ...(filter?.leaveType ? { leaveType: filter.leaveType } : {}),
+          ...(filter?.typeDefId ? { typeDefId: filter.typeDefId } : {}),
+          ...(filter?.departmentId ? { departmentId: filter.departmentId } : {}),
           ...(filter?.projectId ? { projectId: filter.projectId } : {}),
           ...(filter?.siteId ? { siteId: filter.siteId } : {}),
           ...(filter?.employeeId ? { employeeId: filter.employeeId } : {}),
@@ -197,7 +305,12 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
     resolveEffective: async (
       companyId: string,
       leaveType: LeaveType,
-      criteria: { employeeId?: string; siteId?: string; projectId?: string },
+      criteria: {
+        employeeId?: string;
+        departmentId?: string;
+        siteId?: string;
+        projectId?: string;
+      },
     ): Promise<LeavePolicy> => {
       // 1. Employee-specific override
       if (criteria.employeeId) {
@@ -213,7 +326,24 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         if (empPolicy) return empPolicy;
       }
 
-      // 2. Site-specific override
+      // 2. Department override — via the caller-resolved primary membership.
+      // DEPARTMENT is checked before SITE/PROJECT: department policies are
+      // the explicit admin intent in the new model; site/project tiers only
+      // remain for legacy rows.
+      if (criteria.departmentId) {
+        const deptPolicy = await tx.leavePolicy.findFirst({
+          where: {
+            companyId,
+            leaveType,
+            scopeType: 'DEPARTMENT',
+            departmentId: criteria.departmentId,
+            isActive: true,
+          },
+        });
+        if (deptPolicy) return deptPolicy;
+      }
+
+      // 3. Site-specific override
       if (criteria.siteId) {
         const sitePolicy = await tx.leavePolicy.findFirst({
           where: {
@@ -227,7 +357,7 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         if (sitePolicy) return sitePolicy;
       }
 
-      // 3. Project-specific override
+      // 4. Project-specific override
       if (criteria.projectId) {
         const projPolicy = await tx.leavePolicy.findFirst({
           where: {
@@ -241,7 +371,7 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         if (projPolicy) return projPolicy;
       }
 
-      // 4. Company master default
+      // 5. Company master default
       const compPolicy = await tx.leavePolicy.findFirst({
         where: {
           companyId,
@@ -252,32 +382,26 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
       });
       if (compPolicy) return compPolicy;
 
-      // 5. Fallback in-memory default policy if none configured
-      return {
-        id: '00000000-0000-0000-0000-000000000000',
-        companyId,
-        scopeType: 'COMPANY',
-        projectId: null,
-        siteId: null,
-        employeeId: null,
-        leaveType,
-        name: `Default ${leaveType} Policy`,
-        description: 'Auto-generated fallback policy',
-        annualAllowance: new Prisma.Decimal(12),
-        accrualFrequency: 'ANNUAL',
-        maxConsecutiveDays: leaveType === 'CASUAL' ? 3 : null,
-        minNoticeDays: leaveType === 'PRIVILEGE' ? 15 : 0,
-        allowHalfDay: true,
-        sandwichRule: false,
-        carryoverMaxDays: new Prisma.Decimal(0),
-        encashable: false,
-        requiresDocAboveDays: leaveType === 'SICK' ? 2 : null,
-        isActive: true,
-        version: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+      // Fail closed — no fabricated defaults. Entitlement/compliance values
+      // must come from administrator-configured policies, never invented.
+      throw new LeavePolicyNotFoundError(
+        `No active ${leaveType} leave policy configured for this context`,
+      );
     },
+    findAtScope: (companyId: string, target: LeavePolicyScopeTarget, typeDefId: string) =>
+      tx.leavePolicy.findFirst({
+        where: {
+          companyId,
+          scopeType: target.scopeType,
+          typeDefId,
+          isActive: true,
+          ...(target.departmentId !== undefined ? { departmentId: target.departmentId } : {}),
+          ...(target.employeeId !== undefined ? { employeeId: target.employeeId } : {}),
+        },
+        orderBy: [{ createdAt: 'desc' }],
+      }),
+    countActiveReferencingTypeDef: (companyId: string, typeDefId: string) =>
+      tx.leavePolicy.count({ where: { companyId, typeDefId, isActive: true } }),
   };
 
   const balances = {
@@ -377,7 +501,9 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
           AND "year" = ${year}
       `;
       if (result === 0) {
-        throw new LeaveRequestStateError(`Leave balance record not found for employee ${employeeId}`);
+        throw new LeaveRequestStateError(
+          `Leave balance record not found for employee ${employeeId}`,
+        );
       }
       return tx.leaveBalance.findUniqueOrThrow({
         where: {
@@ -408,7 +534,9 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
           AND "year" = ${year}
       `;
       if (result === 0) {
-        throw new LeaveRequestStateError(`Leave balance record not found for employee ${employeeId}`);
+        throw new LeaveRequestStateError(
+          `Leave balance record not found for employee ${employeeId}`,
+        );
       }
       return tx.leaveBalance.findUniqueOrThrow({
         where: {
@@ -439,7 +567,9 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
           AND "year" = ${year}
       `;
       if (result === 0) {
-        throw new LeaveRequestStateError(`Leave balance record not found for employee ${employeeId}`);
+        throw new LeaveRequestStateError(
+          `Leave balance record not found for employee ${employeeId}`,
+        );
       }
       return tx.leaveBalance.findUniqueOrThrow({
         where: {
@@ -460,7 +590,13 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         where: { id, companyId },
         include: {
           employee: {
-            select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
+            select: {
+              id: true,
+              employeeCode: true,
+              displayName: true,
+              designation: true,
+              principalId: true,
+            },
           },
         },
       }),
@@ -476,7 +612,13 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
         },
         include: {
           employee: {
-            select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
+            select: {
+              id: true,
+              employeeCode: true,
+              displayName: true,
+              designation: true,
+              principalId: true,
+            },
           },
         },
         orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
@@ -491,7 +633,13 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
           },
           include: {
             employee: {
-              select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
+              select: {
+                id: true,
+                employeeCode: true,
+                displayName: true,
+                designation: true,
+                principalId: true,
+              },
             },
           },
         });
@@ -533,7 +681,13 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
             where: { id, companyId },
             include: {
               employee: {
-                select: { id: true, employeeCode: true, displayName: true, designation: true, principalId: true },
+                select: {
+                  id: true,
+                  employeeCode: true,
+                  displayName: true,
+                  designation: true,
+                  principalId: true,
+                },
               },
             },
           }),
@@ -573,7 +727,158 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
     },
   };
 
-  return { policies, balances, requests, employees, audit };
+  const typeDefs = {
+    findById: (companyId: string, id: string) =>
+      tx.leaveTypeDef.findFirst({ where: { id, companyId } }),
+    findByLeaveType: (companyId: string, leaveType: LeaveType) =>
+      tx.leaveTypeDef.findFirst({ where: { companyId, leaveType } }),
+    list: (companyId: string, filter?: ListLeaveTypeDefsFilter) =>
+      tx.leaveTypeDef.findMany({
+        where: {
+          companyId,
+          ...(filter?.status ? { status: filter.status } : {}),
+        },
+        orderBy: [{ code: 'asc' }],
+      }),
+    create: (companyId: string, data: Omit<Prisma.LeaveTypeDefCreateInput, 'company'>) =>
+      tx.leaveTypeDef.create({
+        data: { ...data, company: { connect: { id: companyId } } },
+      }),
+    update: (
+      companyId: string,
+      id: string,
+      data: Prisma.LeaveTypeDefUpdateInput,
+      expectedVersion?: number,
+    ) =>
+      scopedUpdate(
+        'LEAVE_TYPE_DEF',
+        { id, companyId },
+        data as Record<string, unknown>,
+        expectedVersion,
+        (args) => tx.leaveTypeDef.updateMany(args),
+        () => tx.leaveTypeDef.findFirst({ where: { id, companyId } }),
+      ),
+  };
+
+  const versions = {
+    create: (
+      companyId: string,
+      data: Omit<Prisma.LeavePolicyVersionCreateInput, 'company' | 'policy'> & {
+        policyId: string;
+      },
+    ) => {
+      const { policyId, ...rest } = data;
+      return tx.leavePolicyVersion.create({
+        data: {
+          ...rest,
+          company: { connect: { id: companyId } },
+          policy: { connect: { id_companyId: { id: policyId, companyId } } },
+        },
+      });
+    },
+    findById: (companyId: string, policyId: string, versionId: string) =>
+      tx.leavePolicyVersion.findFirst({ where: { id: versionId, policyId, companyId } }),
+    list: (companyId: string, policyId: string) =>
+      tx.leavePolicyVersion.findMany({
+        where: { policyId, companyId },
+        orderBy: [{ version: 'asc' }],
+      }),
+    nextVersionNumber: async (companyId: string, policyId: string) => {
+      const latest = await tx.leavePolicyVersion.findFirst({
+        where: { policyId, companyId },
+        orderBy: { version: 'desc' },
+        select: { version: true },
+      });
+      return (latest?.version ?? 0) + 1;
+    },
+    countActive: (companyId: string, policyId: string) =>
+      tx.leavePolicyVersion.count({
+        where: { policyId, companyId, status: 'ACTIVE' },
+      }),
+    findEffective: (companyId: string, policyId: string, asOf: Date) =>
+      tx.leavePolicyVersion.findFirst({
+        where: {
+          policyId,
+          companyId,
+          status: 'ACTIVE',
+          effectiveFrom: { lte: asOf },
+        },
+        orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
+      }),
+    findNextEffective: (companyId: string, policyId: string, after: Date) =>
+      tx.leavePolicyVersion.findFirst({
+        where: {
+          policyId,
+          companyId,
+          status: 'ACTIVE',
+          effectiveFrom: { gt: after },
+        },
+        orderBy: [{ effectiveFrom: 'asc' }, { version: 'asc' }],
+      }),
+    findActiveAtDate: (companyId: string, policyId: string, effectiveFrom: Date) =>
+      tx.leavePolicyVersion.findFirst({
+        where: {
+          policyId,
+          companyId,
+          status: 'ACTIVE',
+          effectiveFrom,
+        },
+      }),
+    cancel: async (companyId: string, versionId: string) => {
+      await tx.leavePolicyVersion.updateMany({
+        where: { id: versionId, companyId },
+        data: { status: 'ARCHIVED' },
+      });
+      const row = await tx.leavePolicyVersion.findFirst({
+        where: { id: versionId, companyId },
+      });
+      if (row === null) throw new Error('leave policy version vanished during cancel');
+      return row;
+    },
+  };
+
+  const departments = {
+    findById: (companyId: string, id: string) =>
+      tx.department.findFirst({ where: { id, companyId }, select: { id: true, status: true } }),
+  };
+
+  const memberships = {
+    findActiveByEmployee: (companyId: string, employeeId: string, asOf?: Date) =>
+      tx.departmentMembership.findMany({
+        where:
+          asOf === undefined
+            ? { companyId, employeeId, endedAt: null }
+            : {
+                companyId,
+                employeeId,
+                startedAt: { lte: asOf },
+                OR: [{ endedAt: null }, { endedAt: { gt: asOf } }],
+              },
+        select: { departmentId: true, isPrimary: true },
+      }),
+    findCoveringByEmployee: (companyId: string, employeeId: string, start: Date, end: Date) =>
+      tx.departmentMembership.findMany({
+        where: {
+          companyId,
+          employeeId,
+          startedAt: { lte: start },
+          OR: [{ endedAt: null }, { endedAt: { gt: end } }],
+        },
+        select: { departmentId: true, isPrimary: true },
+      }),
+  };
+
+  return {
+    policies,
+    typeDefs,
+    versions,
+    balances,
+    requests,
+    employees,
+    departments,
+    memberships,
+    audit,
+  };
 }
 
 export interface LeaveUnitOfWork {

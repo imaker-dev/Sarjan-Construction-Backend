@@ -124,14 +124,41 @@ export function makeDepartmentRepos(store: DeptStore): DepartmentRepos {
         const row = store.departments.find((d) => d.id === id && d.companyId === companyId);
         return row ? { ...row } : null;
       },
+      findDetail: async (companyId, id) => {
+        const row = store.departments.find((d) => d.id === id && d.companyId === companyId);
+        if (row === undefined) return null;
+        const ho = store.headOffices.find(
+          (h) => h.id === row.baseHeadOfficeId && h.companyId === companyId,
+        );
+        return {
+          ...row,
+          baseHeadOffice:
+            ho !== undefined
+              ? { id: ho.id, code: ho.code, name: ho.name, isPrimary: ho.isPrimary }
+              : null,
+        };
+      },
       list: async (companyId, filter) =>
-        store.departments.filter(
-          (d) =>
-            d.companyId === companyId &&
-            (filter?.status === undefined || d.status === filter.status) &&
-            (filter?.projectId === undefined || d.projectId === filter.projectId) &&
-            (filter?.siteId === undefined || d.siteId === filter.siteId),
-        ),
+        store.departments
+          .filter(
+            (d) =>
+              d.companyId === companyId &&
+              (filter?.status === undefined || d.status === filter.status) &&
+              (filter?.projectId === undefined || d.projectId === filter.projectId) &&
+              (filter?.siteId === undefined || d.siteId === filter.siteId),
+          )
+          .map((d) => {
+            const ho = store.headOffices.find(
+              (h) => h.id === d.baseHeadOfficeId && h.companyId === companyId,
+            );
+            return {
+              ...d,
+              baseHeadOffice:
+                ho !== undefined
+                  ? { id: ho.id, code: ho.code, name: ho.name, isPrimary: ho.isPrimary }
+                  : null,
+            };
+          }),
       create: async (companyId, data) => {
         if (store.departments.some((d) => d.companyId === companyId && d.code === data.code)) {
           throw new DuplicateCodeError('DEPARTMENT');

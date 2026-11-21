@@ -919,7 +919,7 @@ export class AttendanceService {
       if (isTargetingOther) {
         await this.authorizer.assertPermission(
           actor.actorId,
-          ATTENDANCE_MANAGE,
+          ATTENDANCE_READ,
           siteTarget(companyId, session.siteId),
         );
       }
@@ -1456,6 +1456,42 @@ export class AttendanceService {
           ).then((list) => list.filter((s): s is NonNullable<typeof s> => s !== null));
       const activeEmployeeSet = new Set<string>(activeSessions.map((s) => s.employeeId));
 
+      // Pre-batch TVT attendance grouped by business date — each item can map
+      // to a different date (its own punchInAt + per-employee dayStart).
+      const tvtEmployeeIdsByDate = new Map<string, Set<string>>();
+      for (const item of input.sessions) {
+        const policy = employeePolicyMap.get(item.employeeId) ?? basePolicy;
+        if (!policy.requireTvtGate) continue;
+        const businessDate = getBusinessDate(
+          new Date(item.punchInAt),
+          timezone,
+          policy.dayStartHour,
+          policy.dayStartMinute,
+        );
+        const ids = tvtEmployeeIdsByDate.get(businessDate) ?? new Set<string>();
+        ids.add(item.employeeId);
+        tvtEmployeeIdsByDate.set(businessDate, ids);
+      }
+      const attendedTvtSet = new Set<string>();
+      for (const [businessDate, employeeIds] of tvtEmployeeIdsByDate) {
+        if (repos.tvt.findAttendeesForSiteAndDate) {
+          const attendees = await repos.tvt.findAttendeesForSiteAndDate(
+            companyId,
+            site.id,
+            businessDate,
+            [...employeeIds],
+          );
+          for (const empId of attendees) attendedTvtSet.add(`${businessDate}|${empId}`);
+        } else {
+          await Promise.all(
+            [...employeeIds].map(async (empId) => {
+              const has = await repos.tvt.hasAttended(companyId, site.id, empId, businessDate);
+              if (has) attendedTvtSet.add(`${businessDate}|${empId}`);
+            }),
+          );
+        }
+      }
+
       let fallbackPersistedPolicyId: string | null = null;
       if (basePolicy.id === 'default-fallback') {
         const compPolicy = repos.policies.ensureDefaultPolicy
@@ -1565,12 +1601,7 @@ export class AttendanceService {
         }
 
         if (policy.requireTvtGate) {
-          const hasAttended = await repos.tvt.hasAttended(
-            companyId,
-            site.id,
-            item.employeeId,
-            businessDate,
-          );
+          const hasAttended = attendedTvtSet.has(`${businessDate}|${item.employeeId}`);
           if (!hasAttended) {
             if (policy.tvtGateAction === 'BLOCK') {
               results.push({

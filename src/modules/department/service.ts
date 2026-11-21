@@ -183,6 +183,17 @@ export class DepartmentService {
     });
   }
 
+  async getDepartment(actor: ActorContext, companyId: string, id: string) {
+    return this.uow.run(async ({ departments }) => {
+      const dept = await departments.findDetail(companyId, id);
+      if (dept === null) throw new OrgEntityNotFoundError('DEPARTMENT');
+      // Per-department scope read — a project/site-scoped grant can read its
+      // own departments but not company-level ones.
+      await this.authorizeForDepartment(actor, DEPT_READ, dept);
+      return dept;
+    });
+  }
+
   async listDepartments(
     actor: ActorContext,
     companyId: string,

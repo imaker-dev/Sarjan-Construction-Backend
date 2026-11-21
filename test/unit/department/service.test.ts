@@ -253,6 +253,70 @@ describe('authorization', () => {
   });
 });
 
+describe('getDepartment', () => {
+  it('returns the department with the embedded base head office', async () => {
+    store.headOffices.push({
+      id: 'ho1',
+      companyId: 'c1',
+      code: 'HQ',
+      name: 'Head Office — Patna',
+      isPrimary: true,
+    } as never);
+    const dept = fakeDepartment({ id: 'd1', scopeType: 'COMPANY', baseHeadOfficeId: 'ho1' });
+    store.departments.push(dept);
+    const detail = await service.getDepartment(actor, 'c1', 'd1');
+    expect(detail.id).toBe('d1');
+    expect(detail.baseHeadOffice).toEqual({
+      id: 'ho1',
+      code: 'HQ',
+      name: 'Head Office — Patna',
+      isPrimary: true,
+    });
+    // READ is asserted at the department's own scope, not just company-wide.
+    expect(authorizer.calls.at(-1)?.target).toEqual({
+      companyId: 'c1',
+      scopeType: 'COMPANY',
+      scopeId: 'c1',
+    });
+  });
+
+  it('listDepartments embeds the base head office on each row', async () => {
+    store.headOffices.push({
+      id: 'ho1',
+      companyId: 'c1',
+      code: 'HQ',
+      name: 'Head Office — Patna',
+      isPrimary: true,
+    } as never);
+    store.departments.push(
+      fakeDepartment({ id: 'd1', baseHeadOfficeId: 'ho1' }),
+      fakeDepartment({ id: 'd2', baseHeadOfficeId: null }),
+    );
+    const rows = await service.listDepartments(actor, 'c1');
+    expect(rows.find((d) => d.id === 'd1')?.baseHeadOffice?.code).toBe('HQ');
+    expect(rows.find((d) => d.id === 'd2')?.baseHeadOffice).toBeNull();
+  });
+
+  it('returns null embed when the department has no base head office', async () => {
+    store.departments.push(fakeDepartment({ id: 'd2', baseHeadOfficeId: null }));
+    const detail = await service.getDepartment(actor, 'c1', 'd2');
+    expect(detail.baseHeadOffice).toBeNull();
+  });
+
+  it('404s on missing or cross-company departments and denies without READ', async () => {
+    await expect(service.getDepartment(actor, 'c1', 'nope')).rejects.toThrow(
+      OrgEntityNotFoundError,
+    );
+    store.departments.push(fakeDepartment({ id: 'other', companyId: 'c2' }));
+    await expect(service.getDepartment(actor, 'c1', 'other')).rejects.toThrow(
+      OrgEntityNotFoundError,
+    );
+    const denying = new DepartmentService(new FakeDeptUoW(store), new FakeAuthorizer(false));
+    store.departments.push(fakeDepartment({ id: 'd3' }));
+    await expect(denying.getDepartment(actor, 'c1', 'd3')).rejects.toThrow(AccessDeniedError);
+  });
+});
+
 describe('no delete surface', () => {
   it('has no delete/remove operations', () => {
     const svc = service as unknown as Record<string, unknown>;

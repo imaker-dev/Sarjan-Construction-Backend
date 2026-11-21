@@ -10,7 +10,7 @@ export interface ScopeChain {
 }
 
 export interface AssignmentWithPermissions extends RoleAssignment {
-  role: { permissions: { permission: { key: string } }[] };
+  role: { key: string; permissions: { permission: { key: string } }[] };
 }
 
 export interface AccessRepository {
@@ -19,6 +19,16 @@ export interface AccessRepository {
     companyId: string,
     now: Date,
   ): Promise<AssignmentWithPermissions[]>;
+  /**
+   * Ongoing Finance-role eligibility: the principal's linked employee still
+   * holds an effective membership in an ACTIVE FINANCE-category department
+   * of this company. Same predicate as grant-time checks.
+   */
+  hasActiveFinanceMembership(
+    principalId: string,
+    companyId: string,
+    at: Date,
+  ): Promise<boolean>;
   companyExists(companyId: string): Promise<boolean>;
   resolveSiteChain(companyId: string, siteId: string): Promise<ScopeChain | null>;
   resolveProjectChain(companyId: string, projectId: string): Promise<ScopeChain | null>;
@@ -41,6 +51,17 @@ export function makeAccessRepository(prisma: PrismaClient): AccessRepository {
           role: { include: { permissions: { include: { permission: true } } } },
         },
       }),
+
+    hasActiveFinanceMembership: async (principalId, companyId, at) =>
+      (await prisma.departmentMembership.count({
+        where: {
+          companyId,
+          startedAt: { lte: at },
+          OR: [{ endedAt: null }, { endedAt: { gt: at } }],
+          employee: { is: { principalId } },
+          department: { is: { category: 'FINANCE', status: 'ACTIVE' } },
+        },
+      })) > 0,
 
     companyExists: async (companyId) =>
       (await prisma.company.findUnique({ where: { id: companyId }, select: { id: true } })) !==

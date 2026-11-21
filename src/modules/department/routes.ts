@@ -51,6 +51,9 @@ const ListQuery = Type.Object({
   projectId: Type.Optional(Type.String({ format: 'uuid' })),
   siteId: Type.Optional(Type.String({ format: 'uuid' })),
 });
+const Params = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+});
 
 function companyIdOf(request: FastifyRequest): string {
   const companyId = request.headers['x-company-id'];
@@ -91,6 +94,11 @@ export function departmentRoutes(service: DepartmentService) {
         const q = req.query as { status?: never; projectId?: string; siteId?: string };
         return service.listDepartments(actorOf(req), companyIdOf(req), q);
       },
+    );
+    // Detail uses auth() only — the service applies the per-department scope
+    // check (a SITE/PROJECT grant reads its own departments, not company ones).
+    app.get('/departments/:id', { schema: { params: Params }, ...auth() }, async (req) =>
+      service.getDepartment(actorOf(req), companyIdOf(req), (req.params as { id: string }).id),
     );
     app.patch(
       '/departments/:id',

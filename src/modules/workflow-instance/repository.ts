@@ -1,6 +1,7 @@
 import type {
   ApprovalTask,
   ApprovalTaskStatus,
+  Department,
   FormSubmission,
   PrismaClient,
   Workflow,
@@ -144,6 +145,39 @@ export interface ApprovalTaskRepository {
     companyId: string,
     filter?: { status?: string; workflowInstanceId?: string; assigneeValue?: string },
   ): Promise<ApprovalTask[]>;
+  /**
+   * PERMISSION_KEY tasks matching the status/instance filter, with the owning
+   * department resolved through the instance's pinned operation — the service
+   * evaluates each candidate's assigneeValue permission against that scope.
+   */
+  listPermissionKeyCandidates(
+    companyId: string,
+    filter?: { status?: string; workflowInstanceId?: string },
+  ): Promise<PermissionKeyTaskCandidate[]>;
+  /**
+   * "My tasks" page: tasks whose assignee rule the caller satisfies — one OR
+   * per assignee kind, so a caller only ever sees what they may decide.
+   */
+  listAssigned(
+    companyId: string,
+    args: {
+      roleKeys: string[];
+      initiatorPrincipalId?: string;
+      departmentHeadEmployeeId?: string;
+      permissionTaskIds: string[];
+      status?: string;
+      workflowInstanceId?: string;
+      cursor?: string;
+      limit: number;
+    },
+  ): Promise<ApprovalTask[]>;
+}
+
+export interface PermissionKeyTaskCandidate {
+  id: string;
+  assigneeValue: string | null;
+  /** Owning department of the instance's operation — null if dangling. */
+  department: Department | null;
 }
 
 // Persisted submission reads used by guard context + approval RETURN coupling.
@@ -324,6 +358,75 @@ export function makeWorkflowInstanceRepos(tx: Tx): WorkflowInstanceRepos {
           },
           orderBy: { id: 'asc' },
         }),
+      listPermissionKeyCandidates: async (companyId, filter) => {
+        const rows = await tx.approvalTask.findMany({
+          where: {
+            companyId,
+            assigneeType: 'PERMISSION_KEY',
+            ...(filter?.status ? { status: filter.status as never } : {}),
+            ...(filter?.workflowInstanceId
+              ? { workflowInstanceId: filter.workflowInstanceId }
+              : {}),
+          },
+          select: {
+            id: true,
+            assigneeValue: true,
+            instance: {
+              select: {
+                operationVersion: {
+                  select: { operation: { select: { department: true } } },
+                },
+              },
+            },
+          },
+        });
+        return rows.map((r) => ({
+          id: r.id,
+          assigneeValue: r.assigneeValue,
+          department: r.instance.operationVersion.operation.department,
+        }));
+      },
+      listAssigned: (companyId, args) => {
+        const or: Prisma.ApprovalTaskWhereInput[] = [
+          { assigneeType: 'ROLE_KEY', assigneeValue: { in: args.roleKeys } },
+        ];
+        if (args.initiatorPrincipalId !== undefined) {
+          or.push({
+            assigneeType: 'INITIATOR',
+            instance: { is: { startedByPrincipalId: args.initiatorPrincipalId } },
+          });
+        }
+        if (args.departmentHeadEmployeeId !== undefined) {
+          or.push({
+            assigneeType: 'DEPARTMENT_HEAD',
+            instance: {
+              is: {
+                operationVersion: {
+                  is: {
+                    operation: {
+                      is: { department: { is: { headEmployeeId: args.departmentHeadEmployeeId } } },
+                    },
+                  },
+                },
+              },
+            },
+          });
+        }
+        if (args.permissionTaskIds.length > 0) {
+          or.push({ id: { in: args.permissionTaskIds } });
+        }
+        return tx.approvalTask.findMany({
+          where: {
+            companyId,
+            ...(args.status ? { status: args.status as never } : {}),
+            ...(args.workflowInstanceId ? { workflowInstanceId: args.workflowInstanceId } : {}),
+            ...(args.cursor !== undefined ? { id: { gt: args.cursor } } : {}),
+            OR: or,
+          },
+          orderBy: { id: 'asc' },
+          take: args.limit + 1,
+        });
+      },
     },
     submissions: {
       findByInstanceForm: (companyId, workflowInstanceId, formVersionId) =>

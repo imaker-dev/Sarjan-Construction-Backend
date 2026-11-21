@@ -11,25 +11,39 @@ import {
   type LeaveService,
 } from './service.js';
 import {
+  AddLeavePolicyVersionBody,
   AllocateLeaveBalanceBody,
+  ArchiveLeavePolicyBody,
+  ArchiveLeaveTypeDefBody,
   CancelLeaveRequestBody,
   CreateLeavePolicyBody,
+  CreateLeaveTypeDefBody,
+  EffectiveLeavePolicyQuery,
   LeaveTypeEnum,
   ListLeaveBalancesQuery,
   ListLeavePoliciesQuery,
   ListLeaveRequestsQuery,
+  ListLeaveTypeDefsQuery,
   ReviewLeaveRequestBody,
   SubmitLeaveRequestBody,
   UpdateLeavePolicyBody,
+  UpdateLeaveTypeDefBody,
+  type AddLeavePolicyVersionInput,
   type AllocateLeaveBalanceInput,
+  type ArchiveLeavePolicyInput,
+  type ArchiveLeaveTypeDefInput,
   type CancelLeaveRequestInput,
   type CreateLeavePolicyInput,
+  type CreateLeaveTypeDefInput,
+  type EffectiveLeavePolicyCriteria,
   type ListLeaveBalancesFilter,
   type ListLeavePoliciesFilter,
   type ListLeaveRequestsFilter,
+  type ListLeaveTypeDefsFilter,
   type ReviewLeaveRequestInput,
   type SubmitLeaveRequestInput,
   type UpdateLeavePolicyInput,
+  type UpdateLeaveTypeDefInput,
 } from './types.js';
 import type { LeaveType } from '@prisma/client';
 
@@ -68,11 +82,9 @@ const EmployeeBalanceQuery = Type.Object({
   year: Type.Optional(Type.Integer({ minimum: 2000, maximum: 2100 })),
 });
 
-const EffectivePolicyQuery = Type.Object({
-  leaveType: LeaveTypeEnum,
-  siteId: Type.Optional(Type.String({ format: 'uuid' })),
-  projectId: Type.Optional(Type.String({ format: 'uuid' })),
-  employeeId: Type.Optional(Type.String({ format: 'uuid' })),
+const PolicyVersionParams = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  versionId: Type.String({ format: 'uuid' }),
 });
 
 export function leaveRoutes(service: LeaveService) {
@@ -82,6 +94,63 @@ export function leaveRoutes(service: LeaveService) {
     });
 
     // -------------------------------------------------------------------------
+    // Leave type definitions (administrator-configured vocabulary)
+    // -------------------------------------------------------------------------
+
+    app.post(
+      '/leave/types',
+      { schema: { body: CreateLeaveTypeDefBody }, ...perm(LEAVE_MANAGE) },
+      async (req, reply) => {
+        const created = await service.createTypeDef(
+          actorOf(req),
+          companyIdOf(req),
+          req.body as CreateLeaveTypeDefInput,
+        );
+        reply.code(201);
+        return created;
+      },
+    );
+
+    app.get(
+      '/leave/types',
+      { schema: { querystring: ListLeaveTypeDefsQuery }, ...perm(LEAVE_READ) },
+      async (req) => {
+        return service.listTypeDefs(
+          actorOf(req),
+          companyIdOf(req),
+          req.query as ListLeaveTypeDefsFilter,
+        );
+      },
+    );
+
+    app.patch(
+      '/leave/types/:id',
+      { schema: { params: PolicyParams, body: UpdateLeaveTypeDefBody }, ...perm(LEAVE_MANAGE) },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.updateTypeDef(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          req.body as UpdateLeaveTypeDefInput,
+        );
+      },
+    );
+
+    app.post(
+      '/leave/types/:id/archive',
+      {
+        schema: { params: PolicyParams, body: ArchiveLeaveTypeDefBody },
+        ...perm(LEAVE_MANAGE),
+      },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        const body = req.body as ArchiveLeaveTypeDefInput;
+        return service.archiveTypeDef(actorOf(req), companyIdOf(req), id, body.expectedVersion);
+      },
+    );
+
+    // -------------------------------------------------------------------------
     // Policies
     // -------------------------------------------------------------------------
 
@@ -89,13 +158,13 @@ export function leaveRoutes(service: LeaveService) {
       '/leave/policies',
       { schema: { body: CreateLeavePolicyBody }, ...perm(LEAVE_MANAGE) },
       async (req, reply) => {
-        const policy = await service.createPolicy(
+        const result = await service.createPolicy(
           actorOf(req),
           companyIdOf(req),
           req.body as CreateLeavePolicyInput,
         );
         reply.code(201);
-        return policy;
+        return result;
       },
     );
 
@@ -108,6 +177,27 @@ export function leaveRoutes(service: LeaveService) {
           companyIdOf(req),
           req.query as ListLeavePoliciesFilter,
         );
+      },
+    );
+
+    app.get(
+      '/leave/policies/effective',
+      { schema: { querystring: EffectiveLeavePolicyQuery }, ...perm(LEAVE_READ) },
+      async (req) => {
+        return service.resolveEffectiveConfig(
+          actorOf(req),
+          companyIdOf(req),
+          req.query as EffectiveLeavePolicyCriteria,
+        );
+      },
+    );
+
+    app.get(
+      '/leave/policies/:id',
+      { schema: { params: PolicyParams }, ...perm(LEAVE_READ) },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.getPolicy(actorOf(req), companyIdOf(req), id);
       },
     );
 
@@ -131,26 +221,53 @@ export function leaveRoutes(service: LeaveService) {
       },
     );
 
-    app.get(
-      '/leave/policies/effective',
-      { schema: { querystring: EffectivePolicyQuery }, ...perm(LEAVE_READ) },
+    app.post(
+      '/leave/policies/:id/archive',
+      {
+        schema: { params: PolicyParams, body: ArchiveLeavePolicyBody },
+        ...perm(LEAVE_MANAGE),
+      },
       async (req) => {
-        const query = req.query as {
-          leaveType: LeaveType;
-          siteId?: string;
-          projectId?: string;
-          employeeId?: string;
-        };
-        return service.resolveEffectivePolicy(
+        const { id } = req.params as { id: string };
+        const body = req.body as ArchiveLeavePolicyInput;
+        return service.archivePolicy(actorOf(req), companyIdOf(req), id, body.expectedVersion);
+      },
+    );
+
+    app.get(
+      '/leave/policies/:id/versions',
+      { schema: { params: PolicyParams }, ...perm(LEAVE_READ) },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.listVersions(actorOf(req), companyIdOf(req), id);
+      },
+    );
+
+    app.post(
+      '/leave/policies/:id/versions',
+      {
+        schema: { params: PolicyParams, body: AddLeavePolicyVersionBody },
+        ...perm(LEAVE_MANAGE),
+      },
+      async (req, reply) => {
+        const { id } = req.params as { id: string };
+        const version = await service.addVersion(
           actorOf(req),
           companyIdOf(req),
-          query.leaveType,
-          {
-            ...(query.siteId !== undefined ? { siteId: query.siteId } : {}),
-            ...(query.projectId !== undefined ? { projectId: query.projectId } : {}),
-            ...(query.employeeId !== undefined ? { employeeId: query.employeeId } : {}),
-          },
+          id,
+          req.body as AddLeavePolicyVersionInput,
         );
+        reply.code(201);
+        return version;
+      },
+    );
+
+    app.post(
+      '/leave/policies/:id/versions/:versionId/cancel',
+      { schema: { params: PolicyVersionParams, body: Type.Object({}) }, ...perm(LEAVE_MANAGE) },
+      async (req) => {
+        const { id, versionId } = req.params as { id: string; versionId: string };
+        return service.cancelVersion(actorOf(req), companyIdOf(req), id, versionId);
       },
     );
 

@@ -50,6 +50,8 @@ export interface ApprovalRepos extends WorkflowInstanceRepos {
   };
   employees: {
     findById(companyId: string, id: string): Promise<Employee | null>;
+    /** Principal → employee profile (DEPARTMENT_HEAD assignee resolution). */
+    findByPrincipalId(companyId: string, principalId: string): Promise<Employee | null>;
   };
   sites: {
     findChain(companyId: string, siteId: string): Promise<{ projectId: string } | null>;
@@ -98,6 +100,8 @@ export function makeApprovalRepos(tx: Tx): ApprovalRepos {
     },
     employees: {
       findById: (companyId, id) => tx.employee.findFirst({ where: { id, companyId } }),
+      findByPrincipalId: (companyId, principalId) =>
+        tx.employee.findFirst({ where: { companyId, principalId } }),
     },
     sites: {
       findChain: (companyId, siteId) =>

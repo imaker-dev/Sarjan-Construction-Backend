@@ -30,12 +30,70 @@ afterAll(async () => {
 
 async function makeApp(opts: { allow?: boolean } = {}) {
   const mockLeaveService = {
-    createPolicy: async (_actor: unknown, _cid: string, input: Record<string, unknown>) => ({
-      id: POL_ID,
+    createTypeDef: async (_actor: unknown, _cid: string, input: Record<string, unknown>) => ({
+      id: '00000000-0000-4000-8000-0000000000d1',
       companyId: CID,
+      status: 'ACTIVE',
+      version: 0,
       ...input,
     }),
+    listTypeDefs: async () => [{ id: '00000000-0000-4000-8000-0000000000d1', code: 'CL' }],
+    updateTypeDef: async (
+      _actor: unknown,
+      _cid: string,
+      id: string,
+      input: Record<string, unknown>,
+    ) => ({
+      id,
+      companyId: CID,
+      name: input.name ?? 'Casual Leave',
+      status: 'ACTIVE',
+    }),
+    archiveTypeDef: async (_actor: unknown, _cid: string, id: string) => ({
+      id,
+      companyId: CID,
+      status: 'ARCHIVED',
+    }),
+    createPolicy: async (_actor: unknown, _cid: string, input: Record<string, unknown>) => ({
+      policy: { id: POL_ID, companyId: CID, ...input },
+      version: { id: '00000000-0000-4000-8000-0000000000d2', version: 1 },
+    }),
     listPolicies: async () => [{ id: POL_ID, name: 'Casual Leave Policy' }],
+    getPolicy: async (_actor: unknown, _cid: string, id: string) => ({
+      id,
+      companyId: CID,
+      name: 'Casual Leave Policy',
+    }),
+    archivePolicy: async (_actor: unknown, _cid: string, id: string) => ({
+      id,
+      companyId: CID,
+      isActive: false,
+    }),
+    addVersion: async (
+      _actor: unknown,
+      _cid: string,
+      policyId: string,
+      input: Record<string, unknown>,
+    ) => ({
+      id: '00000000-0000-4000-8000-0000000000d3',
+      policyId,
+      version: 2,
+      status: 'ACTIVE',
+      ...input,
+    }),
+    listVersions: async (_actor: unknown, _cid: string, policyId: string) => [
+      { id: '00000000-0000-4000-8000-0000000000d2', policyId, version: 1, status: 'ACTIVE' },
+    ],
+    cancelVersion: async (_actor: unknown, _cid: string, _pid: string, vid: string) => ({
+      id: vid,
+      status: 'ARCHIVED',
+    }),
+    resolveEffectiveConfig: async () => ({
+      policy: { id: POL_ID, name: 'Effective Casual Leave' },
+      version: { id: '00000000-0000-4000-8000-0000000000d2', mode: 'NONE' },
+      typeDef: { id: '00000000-0000-4000-8000-0000000000d1', code: 'CL' },
+      resolvedVia: 'COMPANY',
+    }),
     updatePolicy: async (
       _actor: unknown,
       _cid: string,
@@ -173,6 +231,44 @@ describe('Leave Management Routes (/api/v1/leave)', () => {
     expect(res.statusCode).toBe(403);
   });
 
+  it('creates a leave type definition with 201', async () => {
+    app = await makeApp({ allow: true });
+    const token = app.tokenService.signAccessToken('admin1', 's1');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/leave/types',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-company-id': CID,
+      },
+      payload: { code: 'CL', name: 'Casual Leave', leaveType: 'CASUAL' },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json<{ id: string; code: string }>();
+    expect(body.code).toBe('CL');
+  });
+
+  it('lists and archives leave type definitions', async () => {
+    app = await makeApp({ allow: true });
+    const token = app.tokenService.signAccessToken('admin1', 's1');
+    const listRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/leave/types',
+      headers: { authorization: `Bearer ${token}`, 'x-company-id': CID },
+    });
+    expect(listRes.statusCode).toBe(200);
+
+    const TD = '00000000-0000-4000-8000-0000000000d1';
+    const archRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/leave/types/${TD}/archive`,
+      headers: { authorization: `Bearer ${token}`, 'x-company-id': CID },
+      payload: { expectedVersion: 0 },
+    });
+    expect(archRes.statusCode).toBe(200);
+    expect(archRes.json<{ status: string }>().status).toBe('ARCHIVED');
+  });
+
   it('creates a leave policy with 201', async () => {
     app = await makeApp({ allow: true });
     const token = app.tokenService.signAccessToken('admin1', 's1');
@@ -185,18 +281,39 @@ describe('Leave Management Routes (/api/v1/leave)', () => {
       },
       payload: {
         scopeType: 'COMPANY',
-        leaveType: 'CASUAL',
+        typeDefId: '00000000-0000-4000-8000-0000000000d1',
         name: 'Standard Casual Leave',
-        annualAllowance: 12,
-        allowHalfDay: true,
-        sandwichRule: false,
+        version: {
+          effectiveFrom: '2026-01-01',
+          mode: 'MONTHLY_CREDIT',
+          monthlyCreditAmount: 4,
+        },
       },
     });
 
     expect(res.statusCode).toBe(201);
-    const body = res.json<{ id: string; name: string }>();
-    expect(body.id).toBe(POL_ID);
-    expect(body.name).toBe('Standard Casual Leave');
+    const body = res.json<{ policy: { id: string; name: string } }>();
+    expect(body.policy.id).toBe(POL_ID);
+    expect(body.policy.name).toBe('Standard Casual Leave');
+  });
+
+  it('rejects a policy body that mixes accrual modes', async () => {
+    app = await makeApp({ allow: true });
+    const token = app.tokenService.signAccessToken('admin1', 's1');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/leave/policies',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-company-id': CID,
+      },
+      payload: {
+        scopeType: 'DEPARTMENT',
+        name: 'Missing department id',
+        version: { effectiveFrom: '2026-01-01', mode: 'NONE' },
+      },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it('lists leave policies', async () => {
@@ -238,12 +355,12 @@ describe('Leave Management Routes (/api/v1/leave)', () => {
     expect(body.name).toBe('Updated Casual Leave Policy');
   });
 
-  it('resolves effective leave policy', async () => {
+  it('resolves effective leave policy config', async () => {
     app = await makeApp({ allow: true });
     const token = app.tokenService.signAccessToken('admin1', 's1');
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/leave/policies/effective?leaveType=CASUAL',
+      url: `/api/v1/leave/policies/effective?typeDefId=00000000-0000-4000-8000-0000000000d1&employeeId=${EMP_ID}`,
       headers: {
         authorization: `Bearer ${token}`,
         'x-company-id': CID,
@@ -251,8 +368,63 @@ describe('Leave Management Routes (/api/v1/leave)', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json<{ id: string; name: string }>();
-    expect(body.id).toBe(POL_ID);
+    const body = res.json<{ policy: { id: string }; resolvedVia: string }>();
+    expect(body.policy.id).toBe(POL_ID);
+    expect(body.resolvedVia).toBe('COMPANY');
+  });
+
+  it('gets, archives, and versions a policy', async () => {
+    app = await makeApp({ allow: true });
+    const token = app.tokenService.signAccessToken('admin1', 's1');
+    const headers = { authorization: `Bearer ${token}`, 'x-company-id': CID };
+
+    const getRes = await app.inject({
+      method: 'GET',
+      url: `/api/v1/leave/policies/${POL_ID}`,
+      headers,
+    });
+    expect(getRes.statusCode).toBe(200);
+
+    const listRes = await app.inject({
+      method: 'GET',
+      url: `/api/v1/leave/policies/${POL_ID}/versions`,
+      headers,
+    });
+    expect(listRes.statusCode).toBe(200);
+    expect(listRes.json<unknown[]>()).toHaveLength(1);
+
+    const addRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/leave/policies/${POL_ID}/versions`,
+      headers,
+      payload: {
+        effectiveFrom: '2026-07-01',
+        mode: 'WORKED_DAYS_RATIO',
+        ratioThresholdDays: 20,
+        ratioEarnedAmount: 1,
+        expectedVersion: 0,
+      },
+    });
+    expect(addRes.statusCode).toBe(201);
+    expect(addRes.json<{ version: number }>().version).toBe(2);
+
+    const cancelRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/leave/policies/${POL_ID}/versions/00000000-0000-4000-8000-0000000000d3/cancel`,
+      headers,
+      payload: {},
+    });
+    expect(cancelRes.statusCode).toBe(200);
+    expect(cancelRes.json<{ status: string }>().status).toBe('ARCHIVED');
+
+    const archRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/leave/policies/${POL_ID}/archive`,
+      headers,
+      payload: { expectedVersion: 1 },
+    });
+    expect(archRes.statusCode).toBe(200);
+    expect(archRes.json<{ isActive: boolean }>().isActive).toBe(false);
   });
 
   it('allocates leave balance with 201', async () => {

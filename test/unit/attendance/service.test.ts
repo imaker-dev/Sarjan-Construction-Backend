@@ -1266,7 +1266,7 @@ describe('AttendanceService', () => {
         expect(authSpy).toHaveBeenCalledWith('u1', 'ATTENDANCE_MANAGE', expect.anything());
       });
 
-      it('Issue 9: getActiveSession targeting another employee asserts ATTENDANCE_MANAGE', async () => {
+      it('Issue 9: getActiveSession targeting another employee asserts ATTENDANCE_READ', async () => {
         const authSpy = vi.fn().mockResolvedValue(undefined);
         const mockAuthorizer = { assertPermission: authSpy };
 
@@ -1287,7 +1287,7 @@ describe('AttendanceService', () => {
         const session = await service.getActiveSession(actor, companyId, 'emp-other');
 
         expect(session?.id).toBe('sess-target');
-        expect(authSpy).toHaveBeenCalledWith('u1', 'ATTENDANCE_MANAGE', expect.anything());
+        expect(authSpy).toHaveBeenCalledWith('u1', 'ATTENDANCE_READ', expect.anything());
       });
 
       it('Issue 10: kioskOfflineSync rejects inactive employee, duplicate active, and TVT BLOCK', async () => {

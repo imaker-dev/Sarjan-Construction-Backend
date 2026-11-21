@@ -9,7 +9,11 @@ import { OrganizationService } from '../../src/modules/organization/service.js';
 import { PrismaOrgUnitOfWork } from '../../src/modules/organization/repository.js';
 import { reconcileHoAdminRoles } from '../../src/modules/setup/reconcile.js';
 import { SYSTEM_PRINCIPAL_ID } from '../../src/modules/setup/bootstrap.js';
-import { HO_ADMIN_PERMISSIONS } from '../../src/modules/setup/role-templates.js';
+import {
+  FINANCE_API_PERMISSIONS,
+  HO_ADMIN_PERMISSIONS,
+  TENANT_ROLE_TEMPLATES,
+} from '../../src/modules/setup/role-templates.js';
 import { resolveTestDbUrl } from './test-db-url.js';
 import type { ActorContext } from '../../src/modules/organization/types.js';
 
@@ -77,7 +81,7 @@ afterAll(async () => {
 });
 
 describe('Phase 1 — employee login + HO Admin (real PostgreSQL)', () => {
-  run('platform create provisions COMPANY_OWNER + HO_ADMIN system roles', async () => {
+  run('platform create provisions all tenant system role templates', async () => {
     if (prisma === undefined) throw new Error('unreachable');
     const res = await platform.createCompanyWithAdmin(OWNER, {
       companyCode: 'EA1',
@@ -90,15 +94,40 @@ describe('Phase 1 — employee login + HO Admin (real PostgreSQL)', () => {
       include: { permissions: true },
     });
     const keys = new Map(roles.map((r) => [r.key, r.permissions.map((rp) => rp.permissionId)]));
-    expect([...keys.keys()].sort()).toEqual(['COMPANY_OWNER', 'HO_ADMIN']);
+    expect([...keys.keys()].sort()).toEqual(TENANT_ROLE_TEMPLATES.map((t) => t.key).sort());
     const hoRole = roles.find((r) => r.key === 'HO_ADMIN') ?? expect.unreachable('ho role');
     const permKeys = await prisma.rolePermission.findMany({
       where: { roleId: hoRole.id },
       include: { permission: true },
     });
-    expect(permKeys.map((p) => p.permission.key).sort()).toEqual(
-      [...HO_ADMIN_PERMISSIONS].sort(),
-    );
+    expect(permKeys.map((p) => p.permission.key).sort()).toEqual([...HO_ADMIN_PERMISSIONS].sort());
+
+    // Company owner receives the full Finance API surface at onboarding —
+    // no db:reconcile catch-up needed for new tenants.
+    const ownerRole = roles.find((r) => r.key === 'COMPANY_OWNER') ?? expect.unreachable('owner');
+    const ownerKeys = await prisma.rolePermission.findMany({
+      where: { roleId: ownerRole.id },
+      include: { permission: true },
+    });
+    const ownerSet = new Set(ownerKeys.map((p) => p.permission.key));
+    for (const key of FINANCE_API_PERMISSIONS) {
+      expect(ownerSet.has(key), `owner missing ${key}`).toBe(true);
+    }
+    // Staff template stays least-privilege — no sensitive/payroll/export keys.
+    const staffRole = roles.find((r) => r.key === 'FINANCE_STAFF');
+    const staffKeys = await prisma.rolePermission.findMany({
+      where: { roleId: staffRole?.id ?? 'missing' },
+      include: { permission: true },
+    });
+    const staffSet = new Set(staffKeys.map((p) => p.permission.key));
+    for (const key of [
+      'FINANCE_EMPLOYEE_SENSITIVE_READ',
+      'FINANCE_PAYROLL_READ',
+      'FINANCE_PAYROLL_MANAGE',
+      'FINANCE_REPORT_EXPORT',
+    ]) {
+      expect(staffSet.has(key), `FINANCE_STAFF must not hold ${key}`).toBe(false);
+    }
   });
 
   run('invite → suspended principal + hashed code → claim activates', async () => {

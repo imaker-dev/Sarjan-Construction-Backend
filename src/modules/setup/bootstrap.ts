@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { passwordService } from '../identity/password.js';
 import type { ActorContext } from '../organization/types.js';
+import { FINANCE_API_PERMISSIONS } from './role-templates.js';
 
 /**
  * One-time operator bootstrap: initialize the PLATFORM — sentinel platform
@@ -52,6 +53,9 @@ export const TENANT_OWNER_PERMISSIONS: readonly string[] = [
   'FORM_CONFIGURE',
   'FORM_PUBLISH',
   'AUDIT_LOG_VIEW',
+  // Finance surface — same canonical list reconcile grants to existing
+  // tenants, so a freshly onboarded owner needs no catch-up run.
+  ...FINANCE_API_PERMISSIONS,
 ];
 export const PLATFORM_ADMIN_PERMISSIONS: readonly string[] = [
   'PLATFORM_COMPANY_CREATE',

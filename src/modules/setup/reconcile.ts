@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { SYSTEM_PRINCIPAL_ID } from './bootstrap.js';
-import { TENANT_ROLE_TEMPLATES } from './role-templates.js';
+import { FINANCE_API_PERMISSIONS, TENANT_ROLE_TEMPLATES } from './role-templates.js';
 
 /**
  * Additive owner-permission reconcile: grants only the employee keys to
@@ -30,6 +30,10 @@ export const RECONCILE_KEYS = [
   'FORM_CONFIGURE',
   'FORM_PUBLISH',
   'AUDIT_LOG_VIEW',
+  // Finance API keys — tenant owner administers the whole Finance surface,
+  // including the sensitive/payroll tiers that stay off staff templates.
+  // Shared with onboarding (TENANT_OWNER_PERMISSIONS) — one source of truth.
+  ...FINANCE_API_PERMISSIONS,
 ] as const;
 
 export interface ReconcileTx {
@@ -71,9 +75,15 @@ export async function reconcileOwnerPermissions(tx: ReconcileTx): Promise<number
   if (system === null) {
     throw new Error('SYSTEM bootstrap principal not found — run db:bootstrap first');
   }
+  // Tenant grants only — a COMPANY_OWNER role on the platform company is not a
+  // tenant admin and must not receive tenant permission keys.
+  const tenants = new Set(
+    (await tx.company.findMany({ where: { isPlatform: false } })).map((c) => c.id),
+  );
   const roles = await tx.role.findMany({ where: { key: 'COMPANY_OWNER', isSystem: true } });
   let changed = 0;
   for (const role of roles) {
+    if (!tenants.has(role.companyId)) continue;
     for (const key of RECONCILE_KEYS) {
       const permission = await tx.permission.upsert({
         where: { key },

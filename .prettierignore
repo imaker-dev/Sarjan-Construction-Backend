@@ -3,3 +3,5 @@ dist
 coverage
 package-lock.json
 rule.md
+# Formatted by `prisma format` instead — Prettier has no parser for it.
+prisma/schema.prisma

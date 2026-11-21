@@ -53,6 +53,10 @@ export function makeOperationRepos(store: OpStore): OperationRepos {
         const row = store.departments.find((d) => d.id === id && d.companyId === companyId);
         return row ? { ...row } : null;
       },
+      findDetail: async (companyId, id) => {
+        const row = store.departments.find((d) => d.id === id && d.companyId === companyId);
+        return row === undefined ? null : { ...row, baseHeadOffice: null };
+      },
       list: async () => [],
       create: async () => store.departments[0] as never,
       update: async () => store.departments[0] as never,

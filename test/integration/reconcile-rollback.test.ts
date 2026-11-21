@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 import { SYSTEM_PRINCIPAL_ID } from '../../src/modules/setup/bootstrap.js';
-import { reconcileOwnerPermissions } from '../../src/modules/setup/reconcile.js';
+import { reconcileOwnerPermissions, RECONCILE_KEYS } from '../../src/modules/setup/reconcile.js';
 import { resolveTestDbUrl } from './test-db-url.js';
 
 // Real-PostgreSQL rollback proof. Runs ONLY against the dedicated disposable
@@ -37,7 +37,8 @@ afterAll(async () => {
         companyId: fixtureIds.companyId,
       },
     });
-    await prisma.principal.deleteMany({ where: { id: SYSTEM_PRINCIPAL_ID } });
+    // SYSTEM_PRINCIPAL_ID is shared global bootstrap data — deleting it here
+    // races with platform-claim's bootstrap tx in parallel runs.
     await prisma.$disconnect();
     await pool.end();
   } else if (prisma !== undefined) {
@@ -66,14 +67,16 @@ describe('reconcileOwnerPermissions rollback (real PostgreSQL)', () => {
     await expect(
       prisma.$transaction(async (tx) => {
         const changed = await reconcileOwnerPermissions(tx);
-        expect(changed).toBe(8);
+        expect(changed).toBe(RECONCILE_KEYS.length);
         // Inside the tx the writes are visible — prove then abort.
-        expect(await tx.rolePermission.count({ where: { roleId: role.id } })).toBe(8);
+        expect(await tx.rolePermission.count({ where: { roleId: role.id } })).toBe(
+          RECONCILE_KEYS.length,
+        );
         expect(
           await tx.auditLog.count({
             where: { action: 'SYSTEM_PERMISSION_RECONCILED', entityId: role.id },
           }),
-        ).toBe(8);
+        ).toBe(RECONCILE_KEYS.length);
         throw new Error('force-rollback');
       }),
     ).rejects.toThrow('force-rollback');

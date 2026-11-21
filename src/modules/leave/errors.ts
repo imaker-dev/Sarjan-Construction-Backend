@@ -103,3 +103,69 @@ export class SelfApprovalNotAllowedError extends LeaveError {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic leave types & versioned policy configuration (Milestone 2A)
+// ---------------------------------------------------------------------------
+
+export class LeaveTypeDefNotFoundError extends LeaveError {
+  constructor(message = 'Leave type definition not found') {
+    super(message, 404, 'LEAVE_TYPE_DEF_NOT_FOUND');
+    this.name = 'LeaveTypeDefNotFoundError';
+  }
+}
+
+export class LeavePolicyVersionNotFoundError extends LeaveError {
+  constructor(message = 'Leave policy version not found') {
+    super(message, 404, 'LEAVE_POLICY_VERSION_NOT_FOUND');
+    this.name = 'LeavePolicyVersionNotFoundError';
+  }
+}
+
+export class NoEffectiveLeavePolicyError extends LeaveError {
+  constructor(message = 'No effective leave policy configuration for the given context') {
+    super(message, 404, 'NO_EFFECTIVE_LEAVE_POLICY');
+    this.name = 'NoEffectiveLeavePolicyError';
+  }
+}
+
+export class LeaveScopeShapeError extends LeaveError {
+  constructor(message: string) {
+    super(`Invalid leave policy scope: ${message}`, 400, 'LEAVE_SCOPE_SHAPE');
+    this.name = 'LeaveScopeShapeError';
+  }
+}
+
+export class LeavePolicyValidationError extends LeaveError {
+  constructor(field: string, message: string) {
+    super(`Invalid leave policy field '${field}': ${message}`, 400, 'LEAVE_POLICY_VALIDATION');
+    this.name = 'LeavePolicyValidationError';
+  }
+}
+
+export class AmbiguousLeaveScopeError extends LeaveError {
+  constructor(message = 'Employee has multiple active department memberships with no primary') {
+    super(message, 409, 'AMBIGUOUS_LEAVE_SCOPE');
+    this.name = 'AmbiguousLeaveScopeError';
+  }
+}
+
+export class LastActiveLeavePolicyVersionError extends LeaveError {
+  constructor(message = 'Cannot cancel the sole active version; archive the policy instead') {
+    super(message, 409, 'LAST_ACTIVE_LEAVE_POLICY_VERSION');
+    this.name = 'LastActiveLeavePolicyVersionError';
+  }
+}
+
+export class LeavePeriodBoundaryError extends LeaveError {
+  constructor(message: string) {
+    super(message, 409, 'LEAVE_PERIOD_BOUNDARY');
+    this.name = 'LeavePeriodBoundaryError';
+  }
+}
+
+export class InvalidLeavePolicyStateError extends LeaveError {
+  constructor(message: string) {
+    super(message, 400, 'INVALID_LEAVE_POLICY_STATE');
+    this.name = 'InvalidLeavePolicyStateError';
+  }
+}

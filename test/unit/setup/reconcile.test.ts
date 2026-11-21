@@ -12,6 +12,7 @@ interface Row extends Record<string, unknown> {
 
 interface RecStore {
   principals: Row[];
+  companies: Row[];
   roles: Row[];
   permissions: Row[];
   rolePermissions: Row[];
@@ -21,6 +22,7 @@ interface RecStore {
 function makeTx(): { tx: ReconcileTx; store: RecStore } {
   const store: RecStore = {
     principals: [{ id: SYSTEM_PRINCIPAL_ID }],
+    companies: [],
     roles: [],
     permissions: [],
     rolePermissions: [],
@@ -34,13 +36,7 @@ function makeTx(): { tx: ReconcileTx; store: RecStore } {
     },
     company: {
       findMany: async ({ where }) =>
-        store.roles
-          .filter((r) => Boolean(r.companyId) && !where.isPlatform)
-          .reduce<{ id: string }[]>((acc, r) => {
-            const cid = r.companyId as string;
-            if (!acc.some((c) => c.id === cid)) acc.push({ id: cid });
-            return acc;
-          }, []),
+        store.companies.filter((c) => c.isPlatform === where.isPlatform).map((c) => ({ id: c.id })),
     },
     role: {
       findMany: async ({ where }) =>
@@ -92,8 +88,25 @@ function makeTx(): { tx: ReconcileTx; store: RecStore } {
 }
 
 describe('reconcileOwnerPermissions', () => {
+  it('grants the leave keys (LEAVE_READ/MANAGE/APPLY/APPROVE) to Company Owner', async () => {
+    const { tx, store } = makeTx();
+    store.companies.push({ id: 'c1', isPlatform: false });
+    store.roles.push({ id: 'r-owner', key: 'COMPANY_OWNER', isSystem: true, companyId: 'c1' });
+    await reconcileOwnerPermissions(tx);
+    const permIds = new Map(store.permissions.map((p) => [p.id, p.key]));
+    const granted = new Set(
+      store.rolePermissions.map((rp) => permIds.get(rp.permissionId as string)),
+    );
+    expect(granted).toEqual(new Set(RECONCILE_KEYS));
+    expect(granted).toContain('LEAVE_READ');
+    expect(granted).toContain('LEAVE_MANAGE');
+    expect(granted).toContain('LEAVE_APPLY');
+    expect(granted).toContain('LEAVE_APPROVE');
+  });
+
   it('adds only the employee+compliance grants to COMPANY_OWNER system roles', async () => {
     const { tx, store } = makeTx();
+    store.companies.push({ id: 'c1', isPlatform: false });
     store.roles.push({ id: 'r-owner', key: 'COMPANY_OWNER', isSystem: true, companyId: 'c1' });
     store.roles.push({ id: 'r-other', key: 'SITE_MANAGER', isSystem: true, companyId: 'c1' });
     store.roles.push({ id: 'r-custom', key: 'COMPANY_OWNER', isSystem: false, companyId: 'c1' });
@@ -110,8 +123,20 @@ describe('reconcileOwnerPermissions', () => {
     ).toBe(true);
   });
 
+  it('excludes COMPANY_OWNER roles on the platform company', async () => {
+    const { tx, store } = makeTx();
+    store.companies.push({ id: 'plat', isPlatform: true });
+    store.companies.push({ id: 'c1', isPlatform: false });
+    store.roles.push({ id: 'r-plat', key: 'COMPANY_OWNER', isSystem: true, companyId: 'plat' });
+    store.roles.push({ id: 'r-owner', key: 'COMPANY_OWNER', isSystem: true, companyId: 'c1' });
+    await reconcileOwnerPermissions(tx);
+    expect(store.rolePermissions.every((rp) => rp.roleId === 'r-owner')).toBe(true);
+    expect(store.auditLog.every((a) => a.entityId === 'r-owner')).toBe(true);
+  });
+
   it('is idempotent: second run adds no grants and writes no audit', async () => {
     const { tx, store } = makeTx();
+    store.companies.push({ id: 'c1', isPlatform: false });
     store.roles.push({ id: 'r-owner', key: 'COMPANY_OWNER', isSystem: true, companyId: 'c1' });
     await reconcileOwnerPermissions(tx);
     const grants = store.rolePermissions.length;

@@ -109,10 +109,24 @@ model Company {
   attendanceSessions    AttendanceSession[]
   attendanceBreaks      AttendanceBreak[]
   leavePolicies         LeavePolicy[]
+  leaveTypeDefs         LeaveTypeDef[]
+  leavePolicyVersions   LeavePolicyVersion[]
   leaveBalances         LeaveBalance[]
   leaveRequests         LeaveRequest[]
   safetyTvtSessions     SafetyTvtSession[]
   safetyTvtAttendees    SafetyTvtAttendee[]
+  holidayCalendars      HolidayCalendar[]
+  holidays              Holiday[]
+  workSchedules         WorkSchedule[]
+  holidayCategories     HolidayCategory[]
+  workScheduleRevisions WorkScheduleRevision[]
+  workScheduleOverrides WorkScheduleOverride[]
+  projectBudgets        ProjectBudget[]
+  budgetRevisions       BudgetRevision[]
+  budgetRevisionLines   BudgetRevisionLine[]
+  budgetReviewDecisions BudgetReviewDecision[]
+  cashFlowForecasts     CashFlowForecast[]
+  cashFlowForecastLines CashFlowForecastLine[]
 }
 
 model HeadOffice {
@@ -176,14 +190,17 @@ model Project {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
-  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  headOffice      HeadOffice       @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  company            Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  headOffice         HeadOffice         @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
   sites              Site[]
   roleAssignments    RoleAssignment[]
   departments        Department[]
   documents          Document[]
   attendancePolicies AttendancePolicy[]
   leavePolicies      LeavePolicy[]
+  workSchedules      WorkSchedule[]
+  projectBudgets     ProjectBudget[]
+  cashFlowForecasts  CashFlowForecast[]
 
   @@unique([companyId, code])
   // Referenced by Site's composite FK (projectId, companyId).
@@ -220,8 +237,8 @@ model Site {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  project         Project          @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project            Project             @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
   roleAssignments    RoleAssignment[]
   departments        Department[]
   documents          Document[]
@@ -229,6 +246,7 @@ model Site {
   leavePolicies      LeavePolicy[]
   attendanceSessions AttendanceSession[]
   safetyTvtSessions  SafetyTvtSession[]
+  workSchedules      WorkSchedule[]
 
   // Site codes are unique within a project (approved decision).
   @@unique([projectId, code])
@@ -359,6 +377,9 @@ model Principal {
   linkedDocuments          DocumentLink[]       @relation("DocumentLinker")
   unlinkedDocuments        DocumentLink[]       @relation("DocumentUnlinker")
   notifications            Notification[]
+  submittedBudgetRevisions BudgetRevision[]     @relation("BudgetRevisionSubmitter")
+  decidedBudgetRevisions   BudgetRevision[]     @relation("BudgetRevisionDecider")
+  budgetReviewDecisions    BudgetReviewDecision[]
 }
 
 // Company-scoped workforce record. Login linkage is optional — most labourers
@@ -395,6 +416,7 @@ model Employee {
   leaveBalances      LeaveBalance[]
   leaveRequests      LeaveRequest[]
   safetyTvtAttendees SafetyTvtAttendee[]
+  workSchedules      WorkSchedule[]
 
   // Employee code is unique within a company.
   @@unique([companyId, employeeCode])
@@ -616,6 +638,8 @@ model Department {
   operations           Operation[]
   memberships          DepartmentMembership[]
   departmentOperations DepartmentOperation[]
+  workSchedules        WorkSchedule[]
+  leavePolicies        LeavePolicy[]
 
   // Scoped code uniqueness — company-wide rows are unambiguous; the same code
   // may repeat inside distinct project/site scopes (partial indexes in SQL).
@@ -1520,66 +1544,71 @@ enum OvertimeMode {
   P_MULTIPLIER
 }
 
+// Shared scope vocabulary for effective-dated configuration records
+// (attendance policies, leave policies, work schedules). DEPARTMENT targets the
+// real Department record — an HO-based department (e.g. Finance) stays
+// company-scoped for authorization; its baseHeadOfficeId is location only.
 enum AttendancePolicyScope {
   COMPANY
+  DEPARTMENT
   PROJECT
   SITE
   EMPLOYEE
 }
 
 model AttendancePolicy {
-  id                   String                @id @default(uuid()) @db.Uuid
-  companyId            String                @db.Uuid
-  scope                AttendancePolicyScope @default(COMPANY)
-  projectId            String?               @db.Uuid
-  siteId               String?               @db.Uuid
-  employeeId           String?               @db.Uuid
-  name                 String
-  description          String?
+  id          String                @id @default(uuid()) @db.Uuid
+  companyId   String                @db.Uuid
+  scope       AttendancePolicyScope @default(COMPANY)
+  projectId   String?               @db.Uuid
+  siteId      String?               @db.Uuid
+  employeeId  String?               @db.Uuid
+  name        String
+  description String?
 
   // 8:00 AM - 8:00 AM Construction cycle anchor
-  dayStartHour         Int                   @default(8)
-  dayStartMinute       Int                   @default(0)
+  dayStartHour   Int @default(8)
+  dayStartMinute Int @default(0)
 
   // Shift & Work thresholds in minutes
-  shiftDurationMins    Int                   @default(480) // 8 hours
-  halfDayThresholdMins Int                   @default(240) // 4 hours
-  fullDayThresholdMins Int                   @default(480) // 8 hours
+  shiftDurationMins    Int @default(480) // 8 hours
+  halfDayThresholdMins Int @default(240) // 4 hours
+  fullDayThresholdMins Int @default(480) // 8 hours
 
   // Break Policy
-  breakMode            BreakMode             @default(FIXED)
-  fixedBreakMins       Int                   @default(60)
-  minWorkForBreakMins  Int                   @default(240)
-  maxDynamicBreakMins  Int                   @default(90)
+  breakMode           BreakMode @default(FIXED)
+  fixedBreakMins      Int       @default(60)
+  minWorkForBreakMins Int       @default(240)
+  maxDynamicBreakMins Int       @default(90)
 
   // Overtime Policy
-  overtimeMode         OvertimeMode          @default(HOURLY)
-  minOvertimeMins      Int                   @default(30)
-  otSlabMins           Int                   @default(30)
+  overtimeMode     OvertimeMode @default(HOURLY)
+  minOvertimeMins  Int          @default(30)
+  otSlabMins       Int          @default(30)
   // Dynamic P Multiplier Slabs (JSON array):
   // e.g. [{"minExtraMins": 120, "pUnit": 0.5}, {"minExtraMins": 240, "pUnit": 1.0}, {"minExtraMins": 480, "pUnit": 2.0}]
-  pMultiplierSlabs     Json?
+  pMultiplierSlabs Json?
 
   // Geofence & Punch Controls
-  geofenceStrict       Boolean               @default(true)
-  allowMobilePunch     Boolean               @default(true)
-  allowKioskPunch      Boolean               @default(true)
-  allowBiometric       Boolean               @default(true)
+  geofenceStrict   Boolean @default(true)
+  allowMobilePunch Boolean @default(true)
+  allowKioskPunch  Boolean @default(true)
+  allowBiometric   Boolean @default(true)
 
   // Safety Toolbox Talk (TVT) Gate
-  requireTvtGate       Boolean               @default(false)
-  tvtGateAction        String                @default("FLAG") // "BLOCK" | "FLAG"
+  requireTvtGate Boolean @default(false)
+  tvtGateAction  String  @default("FLAG") // "BLOCK" | "FLAG"
 
-  status               OrgNodeStatus         @default(ACTIVE)
-  version              Int                   @default(0)
-  createdAt            DateTime              @default(now()) @db.Timestamptz
-  updatedAt            DateTime              @updatedAt @db.Timestamptz
+  status    OrgNodeStatus @default(ACTIVE)
+  version   Int           @default(0)
+  createdAt DateTime      @default(now()) @db.Timestamptz
+  updatedAt DateTime      @updatedAt @db.Timestamptz
 
-  company              Company               @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  project              Project?              @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  site                 Site?                 @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  employee             Employee?             @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
-  sessions             AttendanceSession[]
+  company  Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project  Project?            @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site     Site?               @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  employee Employee?           @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  sessions AttendanceSession[]
 
   @@unique([id, companyId])
   @@index([companyId, scope])
@@ -1589,66 +1618,66 @@ model AttendancePolicy {
 }
 
 model AttendanceSession {
-  id                     String                  @id @default(uuid()) @db.Uuid
-  companyId              String                  @db.Uuid
-  employeeId             String                  @db.Uuid
-  siteId                 String                  @db.Uuid
-  policyId               String                  @db.Uuid
+  id         String @id @default(uuid()) @db.Uuid
+  companyId  String @db.Uuid
+  employeeId String @db.Uuid
+  siteId     String @db.Uuid
+  policyId   String @db.Uuid
 
   // Business date for the 8 AM - 8 AM construction cycle, e.g. "2026-11-17"
-  businessDate           String                  @db.VarChar(10)
-  status                 AttendanceSessionStatus @default(IN_PROGRESS)
-  source                 AttendanceSource        @default(MOBILE_SELF)
+  businessDate String                  @db.VarChar(10)
+  status       AttendanceSessionStatus @default(IN_PROGRESS)
+  source       AttendanceSource        @default(MOBILE_SELF)
 
   // Punch In details
-  punchInAt              DateTime                @db.Timestamptz
-  punchInLat             Decimal?                @db.Decimal(10, 7)
-  punchInLng             Decimal?                @db.Decimal(10, 7)
-  punchInDistanceM       Int?
-  punchInWithinGeofence   Boolean                 @default(true)
-  punchInRemarks         String?
-  punchInSupervisorId    String?                 @db.Uuid
+  punchInAt             DateTime @db.Timestamptz
+  punchInLat            Decimal? @db.Decimal(10, 7)
+  punchInLng            Decimal? @db.Decimal(10, 7)
+  punchInDistanceM      Int?
+  punchInWithinGeofence Boolean  @default(true)
+  punchInRemarks        String?
+  punchInSupervisorId   String?  @db.Uuid
 
   // Punch Out details
-  punchOutAt             DateTime?               @db.Timestamptz
-  punchOutLat            Decimal?                @db.Decimal(10, 7)
-  punchOutLng            Decimal?                @db.Decimal(10, 7)
+  punchOutAt             DateTime? @db.Timestamptz
+  punchOutLat            Decimal?  @db.Decimal(10, 7)
+  punchOutLng            Decimal?  @db.Decimal(10, 7)
   punchOutDistanceM      Int?
-  punchOutWithinGeofence  Boolean?
+  punchOutWithinGeofence Boolean?
   punchOutRemarks        String?
-  punchOutSupervisorId   String?                 @db.Uuid
+  punchOutSupervisorId   String?   @db.Uuid
 
   // Computed durations (minutes)
-  grossDurationMins      Int                     @default(0)
-  breakDurationMins      Int                     @default(0)
-  netDurationMins        Int                     @default(0)
+  grossDurationMins Int @default(0)
+  breakDurationMins Int @default(0)
+  netDurationMins   Int @default(0)
 
   // Present & Overtime Units
-  presentUnits           Decimal                 @default(0) @db.Decimal(3, 1)
-  overtimePUnits         Decimal                 @default(0) @db.Decimal(3, 1)
-  totalPUnits            Decimal                 @default(0) @db.Decimal(3, 1)
-  overtimeHours          Decimal                 @default(0) @db.Decimal(4, 2)
+  presentUnits   Decimal @default(0) @db.Decimal(3, 1)
+  overtimePUnits Decimal @default(0) @db.Decimal(3, 1)
+  totalPUnits    Decimal @default(0) @db.Decimal(3, 1)
+  overtimeHours  Decimal @default(0) @db.Decimal(4, 2)
 
   // Anomaly / Flags
-  isFlagged              Boolean                 @default(false)
-  flagReason             String?
-  approvedBy             String?                 @db.Uuid
-  approvedAt             DateTime?               @db.Timestamptz
+  isFlagged  Boolean   @default(false)
+  flagReason String?
+  approvedBy String?   @db.Uuid
+  approvedAt DateTime? @db.Timestamptz
 
   // Offline Kiosk & Sync Support
-  clientSessionId        String?                 @db.Uuid
-  syncBatchId            String?                 @db.Uuid
-  isSyncedOffline        Boolean                 @default(false)
+  clientSessionId String? @db.Uuid
+  syncBatchId     String? @db.Uuid
+  isSyncedOffline Boolean @default(false)
 
-  version                Int                     @default(0)
-  createdAt              DateTime                @default(now()) @db.Timestamptz
-  updatedAt              DateTime                @updatedAt @db.Timestamptz
+  version   Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
 
-  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  employee               Employee                @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
-  site                   Site                    @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  policy                 AttendancePolicy        @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
-  breaks                 AttendanceBreak[]
+  company  Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee Employee          @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  site     Site              @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  policy   AttendancePolicy  @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
+  breaks   AttendanceBreak[]
 
   @@unique([id, companyId])
   @@index([companyId, businessDate])
@@ -1659,20 +1688,20 @@ model AttendanceSession {
 }
 
 model AttendanceBreak {
-  id           String            @id @default(uuid()) @db.Uuid
-  companyId    String            @db.Uuid
-  sessionId    String            @db.Uuid
-  breakType    String            @default("LUNCH")
-  startedAt    DateTime          @db.Timestamptz
-  endedAt      DateTime?         @db.Timestamptz
-  durationMins Int               @default(0)
-  isApproved   Boolean           @default(true)
+  id           String    @id @default(uuid()) @db.Uuid
+  companyId    String    @db.Uuid
+  sessionId    String    @db.Uuid
+  breakType    String    @default("LUNCH")
+  startedAt    DateTime  @db.Timestamptz
+  endedAt      DateTime? @db.Timestamptz
+  durationMins Int       @default(0)
+  isApproved   Boolean   @default(true)
   remarks      String?
-  createdAt    DateTime          @default(now()) @db.Timestamptz
-  updatedAt    DateTime          @updatedAt @db.Timestamptz
+  createdAt    DateTime  @default(now()) @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @db.Timestamptz
 
-  company      Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  session      AttendanceSession @relation(fields: [sessionId, companyId], references: [id, companyId], onDelete: Cascade)
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  session AttendanceSession @relation(fields: [sessionId, companyId], references: [id, companyId], onDelete: Cascade)
 
   @@unique([id, companyId])
   @@index([companyId, sessionId])
@@ -1698,6 +1727,15 @@ enum LeaveAccrualFrequency {
   NONE
 }
 
+// Accrual rule kinds supported by LeavePolicyVersion. A mode picks which of
+// the version's parameter columns apply — enforced by the lpv_mode_fields
+// CHECK constraint and service validation.
+enum LeaveAccrualMode {
+  MONTHLY_CREDIT
+  WORKED_DAYS_RATIO
+  NONE
+}
+
 enum LeaveRequestStatus {
   PENDING
   APPROVED
@@ -1711,57 +1749,143 @@ enum HalfDayPortion {
 }
 
 model LeavePolicy {
-  id                    String                @id @default(uuid()) @db.Uuid
-  companyId             String                @db.Uuid
-  scopeType             AttendancePolicyScope @default(COMPANY)
-  projectId             String?               @db.Uuid
-  siteId                String?               @db.Uuid
-  employeeId            String?               @db.Uuid
-  leaveType             LeaveType
-  name                  String
-  description           String?
-  annualAllowance       Decimal               @default(12) @db.Decimal(4, 1)
-  accrualFrequency      LeaveAccrualFrequency @default(ANNUAL)
-  maxConsecutiveDays    Int?
-  minNoticeDays         Int                   @default(0)
-  allowHalfDay          Boolean               @default(true)
-  sandwichRule          Boolean               @default(false)
-  carryoverMaxDays      Decimal               @default(0) @db.Decimal(4, 1)
-  encashable            Boolean               @default(false)
-  requiresDocAboveDays  Int?
-  isActive              Boolean               @default(true)
-  version               Int                   @default(0)
-  createdAt             DateTime              @default(now()) @db.Timestamptz
-  updatedAt             DateTime              @updatedAt @db.Timestamptz
+  id                   String                @id @default(uuid()) @db.Uuid
+  companyId            String                @db.Uuid
+  scopeType            AttendancePolicyScope @default(COMPANY)
+  // DEPARTMENT-scoped policies reference the real Department record regardless
+  // of where that department sits (HO / project / site). Location is not a
+  // separate scope.
+  departmentId         String?               @db.Uuid
+  projectId            String?               @db.Uuid
+  siteId               String?               @db.Uuid
+  employeeId           String?               @db.Uuid
+  // Administrator-defined leave type (new-style policies). NULL on rows that
+  // predate dynamic types — those keep their leaveType enum value below.
+  typeDefId            String?               @db.Uuid
+  // Legacy enum key kept for pre-existing policies and request/balance gating.
+  // NULL on policies for fully custom types with no enum counterpart.
+  leaveType            LeaveType?
+  name                 String
+  description          String?
+  annualAllowance      Decimal               @default(12) @db.Decimal(4, 1)
+  accrualFrequency     LeaveAccrualFrequency @default(ANNUAL)
+  maxConsecutiveDays   Int?
+  minNoticeDays        Int                   @default(0)
+  allowHalfDay         Boolean               @default(true)
+  sandwichRule         Boolean               @default(false)
+  carryoverMaxDays     Decimal               @default(0) @db.Decimal(4, 1)
+  encashable           Boolean               @default(false)
+  requiresDocAboveDays Int?
+  isActive             Boolean               @default(true)
+  version              Int                   @default(0)
+  createdAt            DateTime              @default(now()) @db.Timestamptz
+  updatedAt            DateTime              @updatedAt @db.Timestamptz
 
-  company               Company               @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  project               Project?              @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  site                  Site?                 @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  employee              Employee?             @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  company    Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  department Department?          @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  project    Project?             @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site       Site?                @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  employee   Employee?            @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  typeDef    LeaveTypeDef?        @relation(fields: [typeDefId, companyId], references: [id, companyId], onDelete: Restrict)
+  versions   LeavePolicyVersion[]
 
   @@unique([id, companyId])
   @@index([companyId, scopeType, leaveType])
+  @@index([companyId, departmentId])
+  @@index([companyId, typeDefId])
   @@index([companyId, projectId])
   @@index([companyId, siteId])
   @@index([companyId, employeeId])
 }
 
-model LeaveBalance {
-  id               String    @id @default(uuid()) @db.Uuid
-  companyId        String    @db.Uuid
-  employeeId       String    @db.Uuid
-  leaveType        LeaveType
-  year             Int
-  allocatedDays    Decimal   @default(0) @db.Decimal(4, 1)
-  usedDays         Decimal   @default(0) @db.Decimal(4, 1)
-  pendingDays      Decimal   @default(0) @db.Decimal(4, 1)
-  carriedOverDays  Decimal   @default(0) @db.Decimal(4, 1)
-  version          Int       @default(0)
-  createdAt        DateTime  @default(now()) @db.Timestamptz
-  updatedAt        DateTime  @updatedAt @db.Timestamptz
+// Company-configured leave type vocabulary. Replaces the closed LeaveType
+// enum for new policy authoring: administrators define types (Casual, Sick,
+// Earned, Comp Off, Loss of Pay, or anything custom) with no built-in
+// entitlement amounts. `leaveType` maps a definition back to a built-in enum
+// value when one exists — backfilled definitions and any def the admin
+// explicitly maps. NULL for fully custom types. ARCHIVED defs stay valid on
+// existing policies but cannot be used for new ones.
+model LeaveTypeDef {
+  id          String        @id @default(uuid()) @db.Uuid
+  companyId   String        @db.Uuid
+  code        String // normalized, unique within the company
+  name        String
+  description String?
+  leaveType   LeaveType?
+  status      OrgNodeStatus @default(ACTIVE)
+  version     Int           @default(0)
+  createdAt   DateTime      @default(now()) @db.Timestamptz
+  updatedAt   DateTime      @updatedAt @db.Timestamptz
 
-  company          Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  employee         Employee  @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  company  Company       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  policies LeavePolicy[]
+
+  @@unique([companyId, code])
+  // At most one def may map to a given built-in enum value per company
+  // (multiple NULL rows allowed — custom types have no enum mapping).
+  @@unique([companyId, leaveType])
+  // Referenced by LeavePolicy's composite same-company FK.
+  @@unique([id, companyId])
+  @@index([companyId, status, id])
+}
+
+// Immutable, effective-dated accrual configuration for a LeavePolicy. Mirrors
+// the WorkSchedule identity/revision split: the policy row holds scope +
+// identity; every accrual-mode change is a new version row covering
+// [effectiveFrom, next ACTIVE version's effectiveFrom). Past submissions
+// always resolve against the version effective on their date — version rows
+// are never updated, only appended or cancelled (status ARCHIVED, retained).
+//
+// Modes (all administrator-configured, no code changes):
+//   - MONTHLY_CREDIT: monthlyCreditAmount days credited per month
+//     (e.g. 4 => "4 days of Casual Leave per month").
+//   - WORKED_DAYS_RATIO: whole-threshold credits only —
+//     credits = floor((eligibleDays + residualDays) / ratioThresholdDays)
+//             * ratioEarnedAmount; only the remainder carries forward
+//     (e.g. threshold 20, earned 2 => "2 days Earned Leave per 20 worked days").
+//   - NONE: type exists but accrues nothing automatically.
+model LeavePolicyVersion {
+  id                   String           @id @default(uuid()) @db.Uuid
+  policyId             String           @db.Uuid
+  companyId            String           @db.Uuid
+  version              Int
+  effectiveFrom        DateTime         @db.Date
+  mode                 LeaveAccrualMode
+  monthlyCreditAmount  Decimal?         @db.Decimal(4, 1)
+  ratioThresholdDays   Int?
+  ratioEarnedAmount    Decimal?         @db.Decimal(4, 1)
+  status               OrgNodeStatus    @default(ACTIVE)
+  note                 String?
+  // Verbatim snapshot of the pre-versioning config for migrated legacy
+  // policies — preserves their original fields losslessly.
+  legacyConfig         Json?
+  createdByPrincipalId String?          @db.Uuid
+  createdAt            DateTime         @default(now()) @db.Timestamptz
+
+  company Company     @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  policy  LeavePolicy @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([policyId, version])
+  @@index([policyId, effectiveFrom, version])
+  @@index([companyId])
+}
+
+model LeaveBalance {
+  id              String    @id @default(uuid()) @db.Uuid
+  companyId       String    @db.Uuid
+  employeeId      String    @db.Uuid
+  leaveType       LeaveType
+  year            Int
+  allocatedDays   Decimal   @default(0) @db.Decimal(4, 1)
+  usedDays        Decimal   @default(0) @db.Decimal(4, 1)
+  pendingDays     Decimal   @default(0) @db.Decimal(4, 1)
+  carriedOverDays Decimal   @default(0) @db.Decimal(4, 1)
+  version         Int       @default(0)
+  createdAt       DateTime  @default(now()) @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @db.Timestamptz
+
+  company  Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee Employee @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
 
   @@unique([id, companyId])
   @@unique([companyId, employeeId, leaveType, year])
@@ -1769,27 +1893,27 @@ model LeaveBalance {
 }
 
 model LeaveRequest {
-  id               String             @id @default(uuid()) @db.Uuid
-  companyId        String             @db.Uuid
-  employeeId       String             @db.Uuid
-  leaveType        LeaveType
-  startDate        DateTime           @db.Date
-  endDate          DateTime           @db.Date
-  isHalfDay        Boolean            @default(false)
-  halfDayPortion   HalfDayPortion?
-  totalDays        Decimal            @db.Decimal(4, 1)
-  reason           String
-  documentId       String?            @db.Uuid
-  status           LeaveRequestStatus @default(PENDING)
-  reviewedBy       String?            @db.Uuid
-  reviewedAt       DateTime?          @db.Timestamptz
-  reviewRemarks    String?
-  version          Int                @default(0)
-  createdAt        DateTime           @default(now()) @db.Timestamptz
-  updatedAt        DateTime           @updatedAt @db.Timestamptz
+  id             String             @id @default(uuid()) @db.Uuid
+  companyId      String             @db.Uuid
+  employeeId     String             @db.Uuid
+  leaveType      LeaveType
+  startDate      DateTime           @db.Date
+  endDate        DateTime           @db.Date
+  isHalfDay      Boolean            @default(false)
+  halfDayPortion HalfDayPortion?
+  totalDays      Decimal            @db.Decimal(4, 1)
+  reason         String
+  documentId     String?            @db.Uuid
+  status         LeaveRequestStatus @default(PENDING)
+  reviewedBy     String?            @db.Uuid
+  reviewedAt     DateTime?          @db.Timestamptz
+  reviewRemarks  String?
+  version        Int                @default(0)
+  createdAt      DateTime           @default(now()) @db.Timestamptz
+  updatedAt      DateTime           @updatedAt @db.Timestamptz
 
-  company          Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  employee         Employee           @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  company  Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee Employee @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
 
   @@unique([id, companyId])
   @@index([companyId, employeeId, status])
@@ -1801,42 +1925,445 @@ model LeaveRequest {
 // ---------------------------------------------------------------------------
 
 model SafetyTvtSession {
-  id           String              @id @default(uuid()) @db.Uuid
-  companyId    String              @db.Uuid
-  siteId       String              @db.Uuid
-  businessDate String              @db.VarChar(10) // YYYY-MM-DD
+  id           String   @id @default(uuid()) @db.Uuid
+  companyId    String   @db.Uuid
+  siteId       String   @db.Uuid
+  businessDate String   @db.VarChar(10) // YYYY-MM-DD
   topic        String
-  conductedAt  DateTime            @default(now()) @db.Timestamptz
-  conductedBy  String              @db.Uuid // Employee ID / Supervisor
+  conductedAt  DateTime @default(now()) @db.Timestamptz
+  conductedBy  String   @db.Uuid // Employee ID / Supervisor
   remarks      String?
-  version      Int                 @default(0)
-  createdAt    DateTime            @default(now()) @db.Timestamptz
-  updatedAt    DateTime            @updatedAt @db.Timestamptz
+  version      Int      @default(0)
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @updatedAt @db.Timestamptz
 
-  company      Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  site         Site                @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  attendees    SafetyTvtAttendee[]
+  company   Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  site      Site                @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  attendees SafetyTvtAttendee[]
 
   @@unique([id, companyId])
   @@index([companyId, siteId, businessDate])
 }
 
 model SafetyTvtAttendee {
-  id         String           @id @default(uuid()) @db.Uuid
-  companyId  String           @db.Uuid
-  sessionId  String           @db.Uuid
-  employeeId String           @db.Uuid
-  attendedAt DateTime         @default(now()) @db.Timestamptz
-  createdAt  DateTime         @default(now()) @db.Timestamptz
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @db.Uuid
+  sessionId  String   @db.Uuid
+  employeeId String   @db.Uuid
+  attendedAt DateTime @default(now()) @db.Timestamptz
+  createdAt  DateTime @default(now()) @db.Timestamptz
 
-  company    Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  session    SafetyTvtSession @relation(fields: [sessionId, companyId], references: [id, companyId], onDelete: Cascade)
-  employee   Employee         @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  company  Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  session  SafetyTvtSession @relation(fields: [sessionId, companyId], references: [id, companyId], onDelete: Cascade)
+  employee Employee         @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
 
   @@unique([id, companyId])
   @@unique([sessionId, employeeId])
   @@index([companyId, employeeId])
 }
 
+// ---------------------------------------------------------------------------
+// Work Schedules & Holiday Calendars (Milestone: dynamic attendance foundation)
+// ---------------------------------------------------------------------------
 
+// Disposition of a date-specific schedule override: force the date WORKING or
+// OFF regardless of the pattern evaluation.
+enum ScheduleOverrideKind {
+  WORKING
+  OFF
+}
 
+// Company-owned reusable holiday calendar. Assigned to scopes exclusively via
+// WorkScheduleRevision — the schedule is the single source of truth for "which
+// holidays apply to whom". No entitlement or statutory content lives here.
+model HolidayCalendar {
+  id          String        @id @default(uuid()) @db.Uuid
+  companyId   String        @db.Uuid
+  code        String // normalized, unique within the company
+  name        String
+  description String?
+  status      OrgNodeStatus @default(ACTIVE)
+  version     Int           @default(0)
+  createdAt   DateTime      @default(now()) @db.Timestamptz
+  updatedAt   DateTime      @updatedAt @db.Timestamptz
+
+  company   Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  holidays  Holiday[]
+  revisions WorkScheduleRevision[]
+
+  @@unique([companyId, code])
+  // Referenced by Holiday's and WorkScheduleRevision's composite FKs.
+  @@unique([id, companyId])
+  @@index([companyId, status, id])
+}
+
+// Administrator-defined holiday category vocabulary. Categories are pure
+// labels — they carry no entitlement or legal meaning — and are fully
+// company-configured (no seeded set). ARCHIVED categories stay valid on
+// existing holidays but cannot be used for new ones.
+model HolidayCategory {
+  id          String        @id @default(uuid()) @db.Uuid
+  companyId   String        @db.Uuid
+  code        String // normalized, unique within the company
+  name        String
+  description String?
+  status      OrgNodeStatus @default(ACTIVE)
+  version     Int           @default(0)
+  createdAt   DateTime      @default(now()) @db.Timestamptz
+  updatedAt   DateTime      @updatedAt @db.Timestamptz
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  holidays Holiday[]
+
+  @@unique([companyId, code])
+  // Referenced by Holiday's composite same-company FK.
+  @@unique([id, companyId])
+  @@index([companyId, status, id])
+}
+
+model Holiday {
+  id          String        @id @default(uuid()) @db.Uuid
+  companyId   String        @db.Uuid
+  calendarId  String        @db.Uuid
+  date        DateTime      @db.Date
+  name        String
+  categoryId  String        @db.Uuid
+  // ARCHIVED = cancelled: the row is retained for audit/history and no longer
+  // counts in classification. Only one ACTIVE holiday per (calendarId, date) —
+  // enforced by a partial unique index in migration SQL.
+  status      OrgNodeStatus @default(ACTIVE)
+  cancelledAt DateTime?     @db.Timestamptz
+  createdAt   DateTime      @default(now()) @db.Timestamptz
+  updatedAt   DateTime      @updatedAt @db.Timestamptz
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  calendar HolidayCalendar @relation(fields: [calendarId, companyId], references: [id, companyId], onDelete: Restrict)
+  category HolidayCategory @relation(fields: [categoryId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@index([companyId, calendarId, date])
+  @@index([companyId, categoryId])
+}
+
+// Effective-dated work schedule identity for a company / department / project /
+// site / employee target. Scope shape is enforced in the service: exactly the
+// scope's own reference column is populated. DEPARTMENT references the real
+// Department record regardless of where that department is located (HO vs
+// project/site). effectiveFrom/effectiveTo bound the whole schedule's validity
+// window; overlap of ACTIVE schedules at the same target is prevented by the
+// work_schedule_no_overlap exclusion constraint (migration SQL). The working
+// pattern itself lives in immutable WorkScheduleRevision rows — past dates
+// always resolve against the revision effective on that date.
+model WorkSchedule {
+  id            String                @id @default(uuid()) @db.Uuid
+  companyId     String                @db.Uuid
+  scopeType     AttendancePolicyScope @default(COMPANY)
+  departmentId  String?               @db.Uuid
+  projectId     String?               @db.Uuid
+  siteId        String?               @db.Uuid
+  employeeId    String?               @db.Uuid
+  name          String
+  description   String?
+  effectiveFrom DateTime              @db.Date
+  effectiveTo   DateTime?             @db.Date // inclusive; NULL = open-ended
+  status        OrgNodeStatus         @default(ACTIVE)
+  // Set when the schedule is archived. Resolution treats the schedule as
+  // applicable for asOf < archivedAt so archiving never rewrites the
+  // classification of already-past dates.
+  archivedAt    DateTime?             @db.Timestamptz
+  version       Int                   @default(0)
+  createdAt     DateTime              @default(now()) @db.Timestamptz
+  updatedAt     DateTime              @updatedAt @db.Timestamptz
+
+  company    Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  department Department?            @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  project    Project?               @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site       Site?                  @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  employee   Employee?              @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  revisions  WorkScheduleRevision[]
+  overrides  WorkScheduleOverride[]
+
+  @@unique([id, companyId])
+  @@index([companyId, scopeType])
+  @@index([companyId, departmentId])
+  @@index([companyId, projectId])
+  @@index([companyId, siteId])
+  @@index([companyId, employeeId])
+}
+
+// Immutable, append-only pattern version of a WorkSchedule. A revision covers
+// [effectiveFrom, next ACTIVE revision's effectiveFrom); a same-date tie is
+// broken by the higher revision number. Configuration columns never update —
+// corrections are made by adding a new revision or cancelling a mistaken one.
+// Pattern model (all administrator-configurable, no code changes needed):
+//   - workingWeekdays: ISO weekday numbers 0 (Sun) .. 6 (Sat). May be EMPTY
+//     only when rotationWorkingOffsets defines a pure rotating cycle.
+//   - offNthWeekdays: JSON [{weekday: 0..6, nths: [-1,1..5]}] — monthly
+//     positional offs, e.g. [{weekday:6, nths:[2,4]}] = 2nd & 4th Saturdays;
+//     -1 means the last occurrence of that weekday in the month.
+//   - rotation*: continuous cycle anchored to rotationAnchor —
+//     (date - anchor) mod rotationLengthDays gives the cycle offset;
+//     rotationWorkingOffsets force WORKING, rotationOffOffsets force OFF
+//     (and win over working sources). Covers N-on/M-off rosters and any
+//     fixed-length alternate-week pattern.
+model WorkScheduleRevision {
+  id                     String        @id @default(uuid()) @db.Uuid
+  scheduleId             String        @db.Uuid
+  companyId              String        @db.Uuid
+  revision               Int
+  effectiveFrom          DateTime      @db.Date
+  timezone               String
+  workingWeekdays        Int[]
+  offNthWeekdays         Json? // validated array shape, see comment above
+  rotationAnchor         DateTime?     @db.Date
+  rotationLengthDays     Int?
+  rotationWorkingOffsets Int[]
+  rotationOffOffsets     Int[]
+  holidayCalendarId      String?       @db.Uuid
+  // CANCELLED revisions are retained for audit but never applied.
+  status                 OrgNodeStatus @default(ACTIVE)
+  note                   String?
+  createdByPrincipalId   String?       @db.Uuid
+  createdAt              DateTime      @default(now()) @db.Timestamptz
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  schedule        WorkSchedule     @relation(fields: [scheduleId, companyId], references: [id, companyId], onDelete: Restrict)
+  holidayCalendar HolidayCalendar? @relation(fields: [holidayCalendarId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([scheduleId, revision])
+  @@index([scheduleId, effectiveFrom, revision])
+  @@index([companyId, holidayCalendarId])
+}
+
+// Date-specific override on a schedule: a declared working day or off day that
+// beats every other classification input for that date. ARCHIVED = cancelled;
+// one ACTIVE override per (scheduleId, date) via partial unique index.
+model WorkScheduleOverride {
+  id                   String               @id @default(uuid()) @db.Uuid
+  scheduleId           String               @db.Uuid
+  companyId            String               @db.Uuid
+  date                 DateTime             @db.Date
+  disposition          ScheduleOverrideKind
+  name                 String?
+  status               OrgNodeStatus        @default(ACTIVE)
+  cancelledAt          DateTime?            @db.Timestamptz
+  createdByPrincipalId String?              @db.Uuid
+  createdAt            DateTime             @default(now()) @db.Timestamptz
+  updatedAt            DateTime             @updatedAt @db.Timestamptz
+
+  company  Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  schedule WorkSchedule @relation(fields: [scheduleId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@index([companyId, scheduleId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Finance — Project Budgets & Cash-Flow Forecasts
+// ---------------------------------------------------------------------------
+// Money is Decimal(18,2) — never floating point. Budget revisions are
+// append-only (submit/decide transitions only — no PATCH). Forecasts are
+// mutable documents with optimistic concurrency; their revision counter
+// increments on each revise for auditability.
+// "Costs" reads are derived from APPROVED revisions + forecasts only —
+// no Finance transaction ledger exists yet, so actuals are never fabricated.
+
+enum BudgetRevisionStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  RETURNED
+}
+
+enum BudgetCategory {
+  MATERIAL
+  LABOUR
+  EQUIPMENT
+  SUBCONTRACT
+  OVERHEAD
+  CONTINGENCY
+  OTHER
+}
+
+enum BudgetReviewAction {
+  APPROVE
+  REJECT
+  RETURN
+}
+
+enum CashFlowDirection {
+  INFLOW
+  OUTFLOW
+}
+
+enum CashFlowCategory {
+  CLIENT_RECEIPT
+  ADVANCE_RECEIPT
+  RETENTION_RELEASE
+  MATERIAL
+  LABOUR
+  EQUIPMENT
+  SUBCONTRACT
+  OVERHEAD
+  TAX
+  OTHER
+}
+
+// Identity record for a project budget. The authoritative money content
+// lives in immutable BudgetRevision rows; latestApprovedRevisionId is a
+// back-pointer set only by an APPROVE decision.
+model ProjectBudget {
+  id                       String        @id @default(uuid()) @db.Uuid
+  companyId                String        @db.Uuid
+  projectId                String        @db.Uuid
+  code                     String // normalized, unique per project
+  name                     String
+  description              String?
+  currency                 String        @db.VarChar(3) // ISO 4217
+  status                   OrgNodeStatus @default(ACTIVE)
+  latestApprovedRevisionId String?       @db.Uuid
+  idempotencyKey           String?
+  requestFingerprint       String? // sha256 of the semantic command
+  version                  Int           @default(0)
+  createdAt                DateTime      @default(now()) @db.Timestamptz
+  updatedAt                DateTime      @updatedAt @db.Timestamptz
+
+  company   Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project   Project          @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  revisions BudgetRevision[]
+
+  // latestApprovedRevisionId has NO Prisma relation — its composite FK
+  // (latestApprovedRevisionId, id, companyId) → BudgetRevision(id, budgetId,
+  // companyId) is hand-added in the migration, guaranteeing the pointer can
+  // only name a revision of this budget in this company.
+  @@unique([companyId, projectId, code])
+  // Referenced by BudgetRevision's composite FK (budgetId, companyId).
+  @@unique([id, companyId])
+  // Project-scoped budget lists: WHERE companyId = ? AND projectId = ? [AND status = ?].
+  @@index([companyId, projectId, status, id])
+}
+
+// Immutable budget content: lines are inserted once with the revision;
+// the row itself only ever moves through the review state machine.
+model BudgetRevision {
+  id                    String               @id @default(uuid()) @db.Uuid
+  companyId             String               @db.Uuid
+  budgetId              String               @db.Uuid
+  revision              Int // strictly increasing per budget
+  status                BudgetRevisionStatus @default(DRAFT)
+  totalAmount           Decimal              @default(0) @db.Decimal(18, 2)
+  notes                 String?
+  submittedByPrincipalId String?             @db.Uuid
+  submittedAt           DateTime?            @db.Timestamptz
+  decidedByPrincipalId  String?              @db.Uuid
+  decidedAt             DateTime?            @db.Timestamptz
+  idempotencyKey        String?
+  requestFingerprint    String? // sha256 of the semantic command
+  version               Int                  @default(0)
+  createdAt             DateTime             @default(now()) @db.Timestamptz
+  updatedAt             DateTime             @updatedAt @db.Timestamptz
+
+  company     Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  budget      ProjectBudget           @relation(fields: [budgetId, companyId], references: [id, companyId], onDelete: Restrict)
+  submittedBy Principal?              @relation("BudgetRevisionSubmitter", fields: [submittedByPrincipalId], references: [id], onDelete: Restrict)
+  decidedBy   Principal?              @relation("BudgetRevisionDecider", fields: [decidedByPrincipalId], references: [id], onDelete: Restrict)
+  lines       BudgetRevisionLine[]
+  decisions   BudgetReviewDecision[]
+
+  @@unique([companyId, budgetId, revision])
+  // Referenced by BudgetRevisionLine/BudgetReviewDecision composite FKs.
+  @@unique([id, companyId])
+  // Referenced by ProjectBudget's (latestApprovedRevisionId, id, companyId)
+  // composite FK: the pointer can only name a revision of this budget.
+  @@unique([id, budgetId, companyId])
+  // Revision inbox per budget (+status).
+  @@index([companyId, budgetId, status, id])
+}
+
+// One immutable line of a budget revision — no update/delete paths.
+model BudgetRevisionLine {
+  id          String         @id @default(uuid()) @db.Uuid
+  companyId   String         @db.Uuid
+  revisionId  String         @db.Uuid
+  category    BudgetCategory
+  description String
+  amount      Decimal        @db.Decimal(18, 2)
+  sortOrder   Int            @default(0)
+  createdAt   DateTime       @default(now()) @db.Timestamptz
+
+  company  Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  revision BudgetRevision @relation(fields: [revisionId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@index([companyId, revisionId, sortOrder, id])
+}
+
+// Append-only review outcome — exactly the decisions applied to a revision.
+model BudgetReviewDecision {
+  id                 String             @id @default(uuid()) @db.Uuid
+  companyId          String             @db.Uuid
+  revisionId         String             @db.Uuid
+  action             BudgetReviewAction
+  actorPrincipalId   String?            @db.Uuid
+  actorType          String
+  reason             String?
+  idempotencyKey     String?
+  requestFingerprint String?
+  eventKey           String             @unique @db.Uuid
+  decidedAt          DateTime           @default(now()) @db.Timestamptz
+  createdAt          DateTime           @default(now()) @db.Timestamptz
+
+  company  Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  revision BudgetRevision @relation(fields: [revisionId, companyId], references: [id, companyId], onDelete: Restrict)
+  actor    Principal?     @relation(fields: [actorPrincipalId], references: [id], onDelete: Restrict)
+
+  // Decision history for a revision.
+  @@index([companyId, revisionId, decidedAt, id])
+}
+
+// Planning document: expected receipts/spend over an effective period.
+// Header + lines are replaced atomically on revise (version-guarded);
+// `revision` counts those edits for readability of audit history.
+model CashFlowForecast {
+  id                 String        @id @default(uuid()) @db.Uuid
+  companyId          String        @db.Uuid
+  projectId          String        @db.Uuid
+  name               String
+  description        String?
+  currency           String        @db.VarChar(3)
+  periodStart        DateTime      @db.Date
+  periodEnd          DateTime      @db.Date
+  status             OrgNodeStatus @default(ACTIVE)
+  revision           Int           @default(1)
+  idempotencyKey     String?
+  requestFingerprint String?
+  version            Int           @default(0)
+  createdAt          DateTime      @default(now()) @db.Timestamptz
+  updatedAt          DateTime      @updatedAt @db.Timestamptz
+
+  company Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project Project                @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  lines   CashFlowForecastLine[]
+
+  @@unique([id, companyId])
+  // Project-scoped forecast lists (+status).
+  @@index([companyId, projectId, status, id])
+  // Overlap/period queries: WHERE companyId = ? AND projectId = ? AND periodStart <= ? AND periodEnd >= ?.
+  @@index([companyId, projectId, periodStart, periodEnd])
+}
+
+model CashFlowForecastLine {
+  id           String            @id @default(uuid()) @db.Uuid
+  companyId    String            @db.Uuid
+  forecastId   String            @db.Uuid
+  direction    CashFlowDirection
+  category     CashFlowCategory
+  amount       Decimal           @db.Decimal(18, 2)
+  expectedDate DateTime?         @db.Date
+  description  String?
+  sortOrder    Int               @default(0)
+  createdAt    DateTime          @default(now()) @db.Timestamptz
+
+  company  Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  forecast CashFlowForecast @relation(fields: [forecastId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@index([companyId, forecastId, sortOrder, id])
+}

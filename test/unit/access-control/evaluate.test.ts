@@ -26,7 +26,7 @@ function assignment(over: Partial<AssignmentWithPermissions>): AssignmentWithPer
     revokedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
-    role: { permissions: [{ permission: { key: 'ORG_SITE_READ' } }] },
+    role: { key: 'SOME_ROLE', permissions: [{ permission: { key: 'ORG_SITE_READ' } }] },
     ...over,
   };
 }
@@ -85,6 +85,7 @@ describe('AccessControlService.hasPermission', () => {
     assignments: AssignmentWithPermissions[],
     chain: ScopeChain | null,
     principal: Principal | null = activePrincipal,
+    hasFinanceMembership = false,
   ) {
     const principalsRepo: PrincipalRepository = {
       findByLoginId: async () => null,
@@ -92,6 +93,7 @@ describe('AccessControlService.hasPermission', () => {
     };
     const access: AccessRepository = {
       assignmentsForPrincipal: async () => assignments,
+      hasActiveFinanceMembership: async () => hasFinanceMembership,
       companyExists: async () => true,
       resolveSiteChain: async () => chain,
       resolveProjectChain: async () => chain,
@@ -117,7 +119,7 @@ describe('AccessControlService.hasPermission', () => {
     const svc = serviceWith(
       [
         assignment({
-          role: { permissions: [{ permission: { key: 'OTHER_KEY' } }] },
+          role: { key: 'OTHER_ROLE', permissions: [{ permission: { key: 'OTHER_KEY' } }] },
         }),
       ],
       siteChain,
@@ -154,5 +156,80 @@ describe('AccessControlService.hasPermission', () => {
     await expect(svc.assertPermission('p1', 'ORG_SITE_READ', target)).rejects.toThrow(
       AccessDeniedError,
     );
+  });
+
+  describe('Finance-role membership gate', () => {
+    const financeAssignment = () =>
+      assignment({
+        role: {
+          key: 'FINANCE_STAFF',
+          permissions: [{ permission: { key: 'FINANCE_BUDGET_READ' } }],
+        },
+      });
+    const finTarget = { companyId: 'c1', scopeType: 'COMPANY' as const, scopeId: 'c1' };
+
+    it('grants a Finance permission while an active FINANCE membership exists', async () => {
+      const svc = serviceWith([financeAssignment()], siteChain, activePrincipal, true);
+      await expect(svc.hasPermission('p1', 'FINANCE_BUDGET_READ', finTarget)).resolves.toBe(true);
+    });
+
+    it('denies immediately once the last FINANCE membership is gone', async () => {
+      const svc = serviceWith([financeAssignment()], siteChain, activePrincipal, false);
+      await expect(svc.hasPermission('p1', 'FINANCE_BUDGET_READ', finTarget)).resolves.toBe(
+        false,
+      );
+    });
+
+    it('COMPANY_OWNER keeps Finance access without membership', async () => {
+      const svc = serviceWith(
+        [
+          assignment({
+            role: {
+              key: 'COMPANY_OWNER',
+              permissions: [{ permission: { key: 'FINANCE_BUDGET_READ' } }],
+            },
+          }),
+        ],
+        siteChain,
+        activePrincipal,
+        false,
+      );
+      await expect(svc.hasPermission('p1', 'FINANCE_BUDGET_READ', finTarget)).resolves.toBe(true);
+    });
+
+    it('a non-finance grant alongside a finance grant still passes without membership', async () => {
+      const svc = serviceWith(
+        [
+          financeAssignment(),
+          assignment({
+            role: {
+              key: 'HO_ADMIN',
+              permissions: [{ permission: { key: 'FINANCE_BUDGET_READ' } }],
+            },
+          }),
+        ],
+        siteChain,
+        activePrincipal,
+        false,
+      );
+      await expect(svc.hasPermission('p1', 'FINANCE_BUDGET_READ', finTarget)).resolves.toBe(true);
+    });
+
+    it('finance role without placement grants nothing — even non-finance keys', async () => {
+      const svc = serviceWith(
+        [
+          assignment({
+            role: {
+              key: 'FINANCE_STAFF',
+              permissions: [{ permission: { key: 'ORG_SITE_READ' } }],
+            },
+          }),
+        ],
+        siteChain,
+        activePrincipal,
+        false,
+      );
+      await expect(svc.hasPermission('p1', 'ORG_SITE_READ', target)).resolves.toBe(false);
+    });
   });
 });

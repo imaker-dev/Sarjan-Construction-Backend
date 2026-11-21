@@ -89,7 +89,7 @@ export interface SiteRepository {
 
 // Append-only: no update or delete methods by design.
 export interface AuditRepository {
-  record(entry: AuditRecord): Promise<void>;
+  record: (entry: AuditRecord) => Promise<void>;
 }
 
 export interface OrgRepos {

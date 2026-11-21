@@ -30,3 +30,9 @@ export interface ApprovalTaskListFilter {
   workflowInstanceId?: string;
   assigneeValue?: string;
 }
+
+export interface ApprovalTaskPage {
+  items: ApprovalTask[];
+  /** Present when more assigned tasks exist after the returned page. */
+  nextCursor?: string;
+}

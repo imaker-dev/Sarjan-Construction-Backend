@@ -131,6 +131,9 @@ export function makeApprovalTestRepos(store: ApprovalStore): ApprovalRepos {
     employees: {
       findById: async (companyId, id) =>
         store.employees.find((e) => e.id === id && e.companyId === companyId) ?? null,
+      findByPrincipalId: async (companyId, principalId) =>
+        store.employees.find((e) => e.principalId === principalId && e.companyId === companyId) ??
+        null,
     },
     sites: {
       findChain: async (companyId, siteId) =>

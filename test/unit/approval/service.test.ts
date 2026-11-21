@@ -469,3 +469,102 @@ describe('task reads', () => {
     await expect(service.listDecisions(actor, 'c2', id)).rejects.toThrow(OrgEntityNotFoundError);
   });
 });
+
+describe('caller-scoped task reads (REST surface)', () => {
+  // task() always returns the first seed — this suite seeds several.
+  function lastTask() {
+    const t = store.approvalTasks[store.approvalTasks.length - 1];
+    if (t === undefined) throw new Error('no seeded task');
+    return t;
+  }
+
+  it('listAssignedTasks returns only tasks the caller satisfies', async () => {
+    // PERMISSION_KEY — caller holds the pinned key.
+    seed();
+    const granted = lastTask().id;
+    // ROLE_KEY — caller holds the role.
+    seed(approvalDef, { assigneeType: 'ROLE_KEY', assigneeValue: 'FINANCE_MANAGER' });
+    const byRole = lastTask().id;
+    store.roleAssignments.push(fakeAssignment({ role: { key: 'FINANCE_MANAGER' } }));
+    // INITIATOR — caller started the instance.
+    seed(approvalDef, { assigneeType: 'INITIATOR', assigneeValue: null });
+    inst().startedByPrincipalId = 'principal-1';
+    const asInitiator = lastTask().id;
+    // DEPARTMENT_HEAD — caller's employee heads the operation's department.
+    seed(approvalDef, { assigneeType: 'DEPARTMENT_HEAD', assigneeValue: null });
+    dept().headEmployeeId = 'e1';
+    store.employees.push({ id: 'e1', companyId: 'c1', principalId: 'principal-1' } as Employee);
+    const asHead = lastTask().id;
+    // A task the caller cannot satisfy — excluded.
+    seed(approvalDef, { assigneeType: 'ROLE_KEY', assigneeValue: 'HO_ADMIN' });
+
+    const page = await service.listAssignedTasks(actor, 'c1');
+    const ids = page.items.map((t) => t.id);
+    expect(ids).toEqual([granted, byRole, asInitiator, asHead]);
+  });
+
+  it('listAssignedTasks excludes PERMISSION_KEY tasks the caller lacks', async () => {
+    seed();
+    const strict = new FakeApprovalAuthorizer(true, new Set());
+    const svc = new ApprovalService(new FakeApprovalUoW(store), strict);
+    const page = await svc.listAssignedTasks(actor, 'c1');
+    expect(page.items.length).toBe(0);
+  });
+
+  it('listAssignedTasks honors status filter and cursor pagination', async () => {
+    seed();
+    seed(approvalDef, { status: 'APPROVED' });
+    seed();
+    const pendingOnly = await service.listAssignedTasks(actor, 'c1', { status: 'PENDING' });
+    expect(pendingOnly.items.length).toBe(2);
+    const first = await service.listAssignedTasks(actor, 'c1', undefined, { limit: 2 });
+    expect(first.items.length).toBe(2);
+    expect(first.nextCursor).toBe(first.items[1]?.id);
+    const rest = await service.listAssignedTasks(actor, 'c1', undefined, {
+      limit: 2,
+      ...(first.nextCursor !== undefined ? { cursor: first.nextCursor } : {}),
+    });
+    expect(rest.items.length).toBe(1);
+    expect(rest.nextCursor).toBeUndefined();
+  });
+
+  it('listAssignedTasks still requires WORKFLOW_APPROVAL_READ', async () => {
+    const denied = new ApprovalService(
+      new FakeApprovalUoW(store),
+      new FakeApprovalAuthorizer(false),
+    );
+    await expect(denied.listAssignedTasks(actor, 'c1')).rejects.toThrow(AccessDeniedError);
+  });
+
+  it('getAssignedTask exposes the task to its assignee only', async () => {
+    seed();
+    const id = task().id;
+    const read = await service.getAssignedTask(actor, 'c1', id);
+    expect(read.id).toBe(id);
+    // Same READ permission, but the role-key assignee doesn't match.
+    seed(approvalDef, { assigneeType: 'ROLE_KEY', assigneeValue: 'HO_ADMIN' });
+    await expect(service.getAssignedTask(actor, 'c1', lastTask().id)).rejects.toThrow(
+      NotTaskAssigneeError,
+    );
+    // No READ permission at all.
+    const denied = new ApprovalService(
+      new FakeApprovalUoW(store),
+      new FakeApprovalAuthorizer(false),
+    );
+    await expect(denied.getAssignedTask(actor, 'c1', id)).rejects.toThrow(AccessDeniedError);
+  });
+
+  it('listAssignedTaskDecisions is assignee-gated like task detail', async () => {
+    seed();
+    const id = task().id;
+    await service.decideTask(actor, 'c1', id, { action: 'APPROVE' });
+    const decisions = await service.listAssignedTaskDecisions(actor, 'c1', id);
+    expect(decisions.length).toBe(1);
+    // A different actor without the pinned key cannot see the decision trail.
+    const other = new FakeApprovalAuthorizer(true, new Set());
+    const svc = new ApprovalService(new FakeApprovalUoW(store), other);
+    await expect(
+      svc.listAssignedTaskDecisions({ actorId: 'principal-2', actorType: 'USER' }, 'c1', id),
+    ).rejects.toThrow(NotTaskAssigneeError);
+  });
+});

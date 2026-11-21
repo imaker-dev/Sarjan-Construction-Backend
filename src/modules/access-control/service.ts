@@ -2,6 +2,7 @@ import type { RoleAssignment, ScopeType } from '@prisma/client';
 import type { PrincipalRepository } from '../auth/repository.js';
 import type { AccessRepository, ScopeChain } from './repository.js';
 import { AccessDeniedError } from './errors.js';
+import { FINANCE_ROLE_KEYS } from '../setup/role-templates.js';
 
 export interface ScopeTarget {
   companyId: string;
@@ -75,10 +76,22 @@ export class AccessControlService {
       target.companyId,
       this.now(),
     );
-    return assignments.some(
+    const granted = assignments.filter(
       (a) =>
         scopeCovers(a, chain) &&
         a.role.permissions.some((rp) => rp.permission.key === permissionKey),
+    );
+    // A non-Finance grant (e.g. COMPANY_OWNER — no placement requirement)
+    // satisfies the permission immediately.
+    if (granted.some((a) => !FINANCE_ROLE_KEYS.has(a.role.key))) return true;
+    if (granted.length === 0) return false;
+    // Finance-role assignments additionally require current placement in an
+    // ACTIVE FINANCE department — fail-closed when the last such membership
+    // has ended or the department has left ACTIVE status.
+    return this.deps.access.hasActiveFinanceMembership(
+      principalId,
+      target.companyId,
+      this.now(),
     );
   }
 

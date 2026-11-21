@@ -176,7 +176,13 @@ describe('memberships', () => {
     adminHolder();
     const emp = fakeEmployee({ companyId: 'c1', id: 'emp-101', displayName: 'Jane Builder' });
     store.employees.push(emp);
-    const dept = fakeDepartment({ companyId: 'c1', id: 'dept-202', name: 'Finance & Accounts', code: 'FIN', status: 'ACTIVE' });
+    const dept = fakeDepartment({
+      companyId: 'c1',
+      id: 'dept-202',
+      name: 'Finance & Accounts',
+      code: 'FIN',
+      status: 'ACTIVE',
+    });
     store.departments.push(dept);
 
     const created = await svc.addMembership(actor, 'c1', emp.id, {
@@ -196,5 +202,132 @@ describe('memberships', () => {
     expect(list[0]?.department?.name).toBe('Finance & Accounts');
     expect(list[0]?.employee?.id).toBe(emp.id);
     expect(list[0]?.employee?.displayName).toBe('Jane Builder');
+  });
+
+  describe('endMembership — Finance role cascade', () => {
+    const seedMembership = (
+      departmentId: string,
+      over: Record<string, unknown> = {},
+    ): import('@prisma/client').DepartmentMembership => ({
+      id: `m-${departmentId}-${Math.random().toString(36).slice(2, 8)}`,
+      companyId: 'c1',
+      employeeId: 'emp-1',
+      departmentId,
+      isPrimary: false,
+      startedAt: new Date('2020-01-01'),
+      endedAt: null,
+      version: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...over,
+    });
+
+    const financeSetup = () => {
+      adminHolder();
+      store.employees.push(
+        fakeEmployee({ companyId: 'c1', id: 'emp-1', status: 'ACTIVE', principalId: 'p-emp' }),
+      );
+      store.departments.push(
+        fakeDepartment({ companyId: 'c1', id: 'd-fin', category: 'FINANCE', status: 'ACTIVE' }),
+        fakeDepartment({ companyId: 'c1', id: 'd-fin2', category: 'FINANCE', status: 'ACTIVE' }),
+        fakeDepartment({ companyId: 'c1', id: 'd-ops', category: 'OPERATIONS', status: 'ACTIVE' }),
+      );
+      store.roleAssignments.push(
+        {
+          id: 'a-fin',
+          companyId: 'c1',
+          principalId: 'p-emp',
+          revokedAt: null,
+          effectiveFrom: null,
+          effectiveTo: null,
+          roleKey: 'FINANCE_STAFF',
+        },
+        {
+          id: 'a-mgr',
+          companyId: 'c1',
+          principalId: 'p-emp',
+          revokedAt: null,
+          effectiveFrom: null,
+          effectiveTo: null,
+          roleKey: 'FINANCE_MANAGER',
+        },
+        {
+          id: 'a-ops',
+          companyId: 'c1',
+          principalId: 'p-emp',
+          revokedAt: null,
+          effectiveFrom: null,
+          effectiveTo: null,
+          roleKey: 'HO_ADMIN',
+        },
+      );
+    };
+
+    const assignment = (id: string) => store.roleAssignments.find((a) => a.id === id);
+
+    it('ending the last active FINANCE membership revokes only finance roles, audited', async () => {
+      financeSetup();
+      const m = seedMembership('d-fin');
+      store.memberships.push(m);
+      const res = await svc.endMembership(actor, 'c1', 'emp-1', m.id, 0);
+      expect(res?.endedAt).not.toBeNull();
+      expect(assignment('a-fin')?.revokedAt).not.toBeNull();
+      expect(assignment('a-mgr')?.revokedAt).not.toBeNull();
+      // Non-finance assignments are untouched.
+      expect(assignment('a-ops')?.revokedAt).toBeNull();
+      const revokes = store.auditLog.filter((a) => a.action === 'ACCESS_ROLE_REVOKED');
+      expect(revokes).toHaveLength(2);
+      expect(store.auditLog.some((a) => a.action === 'MEMBERSHIP_ENDED')).toBe(true);
+    });
+
+    it('ending one of two FINANCE memberships keeps finance roles until the last ends', async () => {
+      financeSetup();
+      const m1 = seedMembership('d-fin', { id: 'm-1' });
+      const m2 = seedMembership('d-fin2', { id: 'm-2' });
+      store.memberships.push(m1, m2);
+      await svc.endMembership(actor, 'c1', 'emp-1', 'm-1', 0);
+      expect(assignment('a-fin')?.revokedAt).toBeNull();
+      expect(assignment('a-mgr')?.revokedAt).toBeNull();
+      await svc.endMembership(actor, 'c1', 'emp-1', 'm-2', 0);
+      expect(assignment('a-fin')?.revokedAt).not.toBeNull();
+      expect(assignment('a-mgr')?.revokedAt).not.toBeNull();
+      expect(assignment('a-ops')?.revokedAt).toBeNull();
+    });
+
+    it('ending a non-finance membership still revokes when no finance membership remains', async () => {
+      financeSetup();
+      const m = seedMembership('d-ops');
+      store.memberships.push(m);
+      await svc.endMembership(actor, 'c1', 'emp-1', m.id, 0);
+      // Fail-closed: the assignment should never have existed without a
+      // FINANCE membership; ending any membership re-checks and revokes.
+      expect(assignment('a-fin')?.revokedAt).not.toBeNull();
+      expect(assignment('a-ops')?.revokedAt).toBeNull();
+    });
+
+    it('leaves finance roles when a FINANCE membership survives elsewhere', async () => {
+      financeSetup();
+      const fin = seedMembership('d-fin');
+      const ops = seedMembership('d-ops', { id: 'm-ops' });
+      store.memberships.push(fin, ops);
+      await svc.endMembership(actor, 'c1', 'emp-1', 'm-ops', 0);
+      expect(assignment('a-fin')?.revokedAt).toBeNull();
+      expect(assignment('a-mgr')?.revokedAt).toBeNull();
+    });
+
+    it('membership end without any role assignments is a no-op cascade', async () => {
+      adminHolder();
+      store.employees.push(
+        fakeEmployee({ companyId: 'c1', id: 'emp-1', status: 'ACTIVE', principalId: 'p-emp' }),
+      );
+      store.departments.push(
+        fakeDepartment({ companyId: 'c1', id: 'd-ops', category: 'OPERATIONS', status: 'ACTIVE' }),
+      );
+      const m = seedMembership('d-ops');
+      store.memberships.push(m);
+      const res = await svc.endMembership(actor, 'c1', 'emp-1', m.id, 0);
+      expect(res?.endedAt).not.toBeNull();
+      expect(store.auditLog.filter((a) => a.action === 'ACCESS_ROLE_REVOKED')).toHaveLength(0);
+    });
   });
 });

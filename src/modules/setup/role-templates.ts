@@ -15,6 +15,8 @@ export const HO_ADMIN_PERMISSIONS: readonly string[] = [
   'ATTENDANCE_RECORD',
   'ATTENDANCE_READ',
   'ATTENDANCE_MANAGE',
+  'WORK_SCHEDULE_READ',
+  'WORK_SCHEDULE_MANAGE',
   'LEAVE_APPLY',
   'LEAVE_READ',
   'LEAVE_APPROVE',
@@ -30,6 +32,84 @@ export const PROJECT_LEADERSHIP_KEYS: ReadonlySet<string> = new Set([
   PROJECT_INCHARGE_ROLE_KEY,
 ]);
 
+/**
+ * Finance API permission keys (tenant scope). These gate REST routes only —
+ * they are deliberately separate from the FINANCE and payroll operation keys
+ * in the operation catalogue, which gate employee command eligibility.
+ */
+/**
+ * Roles whose assignment requires an active membership in an ACTIVE
+ * FINANCE-category department. COMPANY_OWNER is deliberately absent —
+ * the tenant admin keeps Finance access without department placement.
+ */
+export const FINANCE_ROLE_KEYS: ReadonlySet<string> = new Set([
+  'FINANCE_MANAGER',
+  'FINANCE_STAFF',
+]);
+
+export const FINANCE_API_PERMISSIONS: readonly string[] = [
+  'FINANCE_DASHBOARD_READ',
+  'FINANCE_PORTFOLIO_READ',
+  'FINANCE_EMPLOYEE_READ',
+  'FINANCE_EMPLOYEE_SENSITIVE_READ',
+  'FINANCE_BUDGET_READ',
+  'FINANCE_BUDGET_MANAGE',
+  'FINANCE_WALLET_READ',
+  'FINANCE_WALLET_MANAGE',
+  'FINANCE_QUOTATION_READ',
+  'FINANCE_QUOTATION_MANAGE',
+  'FINANCE_BILLING_READ',
+  'FINANCE_BILLING_MANAGE',
+  'FINANCE_PAYROLL_READ',
+  'FINANCE_PAYROLL_MANAGE',
+  'FINANCE_REPORT_READ',
+  'FINANCE_REPORT_EXPORT',
+];
+
+/** Shared non-finance baseline every Finance staffer needs to work at all. */
+const FINANCE_STAFF_BASE_PERMISSIONS: readonly string[] = [
+  'ORG_COMPANY_READ',
+  'ORG_HEAD_OFFICE_READ',
+  'ORG_PROJECT_READ',
+  'ORG_SITE_READ',
+  'DEPARTMENT_READ',
+  'EMPLOYEE_READ',
+  'OPERATION_READ',
+  'FORM_READ',
+  'FORM_SUBMISSION_READ',
+  'FORM_SUBMISSION_WRITE',
+  'WORKFLOW_INSTANCE_READ',
+  'WORKFLOW_APPROVAL_READ',
+  'WORKFLOW_APPROVAL_DECIDE',
+  'DOCUMENT_UPLOAD',
+  'DOCUMENT_READ',
+  'NOTIFICATION_READ',
+  'ATTENDANCE_RECORD',
+  'ATTENDANCE_READ',
+  'WORK_SCHEDULE_READ',
+  'LEAVE_APPLY',
+  'LEAVE_READ',
+];
+
+/**
+ * Least-privilege Finance staffer: day-to-day billing/wallet/quotation work,
+ * budget read, and report read. Explicitly NO payroll, sensitive-employee,
+ * budget-manage, or report-export keys — those stay FINANCE_MANAGER/owner.
+ */
+export const FINANCE_STAFF_API_PERMISSIONS: readonly string[] = [
+  'FINANCE_DASHBOARD_READ',
+  'FINANCE_PORTFOLIO_READ',
+  'FINANCE_EMPLOYEE_READ',
+  'FINANCE_BUDGET_READ',
+  'FINANCE_WALLET_READ',
+  'FINANCE_WALLET_MANAGE',
+  'FINANCE_QUOTATION_READ',
+  'FINANCE_QUOTATION_MANAGE',
+  'FINANCE_BILLING_READ',
+  'FINANCE_BILLING_MANAGE',
+  'FINANCE_REPORT_READ',
+];
+
 export const PROJECT_DIRECTOR_PERMISSIONS: readonly string[] = [
   'ORG_PROJECT_READ',
   'ORG_SITE_READ',
@@ -39,6 +119,7 @@ export const PROJECT_DIRECTOR_PERMISSIONS: readonly string[] = [
   'FORM_READ',
   'COMPLIANCE_READ',
   'ATTENDANCE_READ',
+  'WORK_SCHEDULE_READ',
   'LEAVE_READ',
   'LEAVE_APPROVE',
 ];
@@ -52,6 +133,7 @@ export const PROJECT_INCHARGE_PERMISSIONS: readonly string[] = [
   'ATTENDANCE_RECORD',
   'ATTENDANCE_READ',
   'ATTENDANCE_MANAGE',
+  'WORK_SCHEDULE_READ',
   'LEAVE_APPLY',
   'LEAVE_READ',
   'LEAVE_APPROVE',
@@ -91,6 +173,8 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
       'ATTENDANCE_RECORD',
       'ATTENDANCE_READ',
       'ATTENDANCE_MANAGE',
+      'WORK_SCHEDULE_READ',
+      'WORK_SCHEDULE_MANAGE',
       'LEAVE_APPLY',
       'LEAVE_READ',
       'LEAVE_APPROVE',
@@ -110,6 +194,7 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
       'ATTENDANCE_RECORD',
       'ATTENDANCE_READ',
       'ATTENDANCE_MANAGE',
+      'WORK_SCHEDULE_READ',
       'LEAVE_APPLY',
       'LEAVE_READ',
       'LEAVE_APPROVE',
@@ -128,6 +213,49 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
     permissions: PROJECT_INCHARGE_PERMISSIONS,
   },
   {
+    key: 'FINANCE_MANAGER',
+    name: 'Finance Manager',
+    scopeShape: 'COMPANY',
+    permissions: [
+      'ORG_COMPANY_READ',
+      'ORG_HEAD_OFFICE_READ',
+      'ORG_PROJECT_READ',
+      'ORG_SITE_READ',
+      'DEPARTMENT_READ',
+      'EMPLOYEE_READ',
+      'EMPLOYEE_MANAGE',
+      'EMPLOYEE_INVITE',
+      'ROLE_ASSIGNMENT_READ',
+      'OPERATION_READ',
+      'FORM_READ',
+      'FORM_SUBMISSION_READ',
+      'FORM_SUBMISSION_WRITE',
+      'WORKFLOW_INSTANCE_READ',
+      'WORKFLOW_APPROVAL_READ',
+      'WORKFLOW_APPROVAL_DECIDE',
+      'DOCUMENT_UPLOAD',
+      'DOCUMENT_READ',
+      'NOTIFICATION_READ',
+      'COMPLIANCE_READ',
+      'COMPLIANCE_MANAGE',
+      'ATTENDANCE_READ',
+      'ATTENDANCE_MANAGE',
+      'WORK_SCHEDULE_READ',
+      'WORK_SCHEDULE_MANAGE',
+      'LEAVE_APPLY',
+      'LEAVE_READ',
+      'LEAVE_APPROVE',
+      'LEAVE_MANAGE',
+      ...FINANCE_API_PERMISSIONS,
+    ],
+  },
+  {
+    key: 'FINANCE_STAFF',
+    name: 'Finance Staff',
+    scopeShape: 'COMPANY',
+    permissions: [...FINANCE_STAFF_BASE_PERMISSIONS, ...FINANCE_STAFF_API_PERMISSIONS],
+  },
+  {
     key: 'DEPT_HEAD',
     name: 'Department Head',
     scopeShape: 'COMPANY',
@@ -138,6 +266,7 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
       'OPERATION_EMPLOYEE_ASSIGN',
       'FORM_READ',
       'FORM_CONFIGURE',
+      'WORK_SCHEDULE_READ',
       'LEAVE_APPLY',
       'LEAVE_READ',
       'LEAVE_APPROVE',
@@ -157,6 +286,7 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
       'FORM_READ',
       'ATTENDANCE_RECORD',
       'ATTENDANCE_READ',
+      'WORK_SCHEDULE_READ',
       'LEAVE_APPLY',
       'LEAVE_READ',
     ],
@@ -164,27 +294,29 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
 ];
 const ROLE_KEY_ALIASES: Record<string, string> = {
   'HEAD OFFICE ADMIN': 'HO_ADMIN',
-  'HEAD_OFFICE_ADMIN': 'HO_ADMIN',
+  HEAD_OFFICE_ADMIN: 'HO_ADMIN',
   'HO ADMIN': 'HO_ADMIN',
-  'HO_ADMIN': 'HO_ADMIN',
+  HO_ADMIN: 'HO_ADMIN',
   'COMPANY OWNER': 'COMPANY_OWNER',
-  'COMPANY_OWNER': 'COMPANY_OWNER',
+  COMPANY_OWNER: 'COMPANY_OWNER',
   'PROJECT MANAGER': 'PROJECT_MANAGER',
-  'PROJECT_MANAGER': 'PROJECT_MANAGER',
+  PROJECT_MANAGER: 'PROJECT_MANAGER',
   'SITE ENGINEER': 'SITE_ENGINEER',
-  'SITE_ENGINEER': 'SITE_ENGINEER',
+  SITE_ENGINEER: 'SITE_ENGINEER',
   'DEPARTMENT HEAD': 'DEPT_HEAD',
   'DEPT HEAD': 'DEPT_HEAD',
-  'DEPT_HEAD': 'DEPT_HEAD',
+  DEPT_HEAD: 'DEPT_HEAD',
+  'FINANCE MANAGER': 'FINANCE_MANAGER',
+  FINANCE_MANAGER: 'FINANCE_MANAGER',
+  'FINANCE STAFF': 'FINANCE_STAFF',
+  FINANCE_STAFF: 'FINANCE_STAFF',
   EMPLOYEE: 'EMPLOYEE',
 };
 
 export function findRoleTemplate(key: string): TenantRoleTemplate | undefined {
   const normalized = key.trim().toUpperCase().replace(/\s+/g, ' ');
   const resolvedKey =
-    ROLE_KEY_ALIASES[normalized] ??
-    ROLE_KEY_ALIASES[normalized.replace(/\s+/g, '_')] ??
-    key.trim();
+    ROLE_KEY_ALIASES[normalized] ?? ROLE_KEY_ALIASES[normalized.replace(/\s+/g, '_')] ?? key.trim();
   return (
     TENANT_ROLE_TEMPLATES.find((t) => t.key === resolvedKey) ??
     TENANT_ROLE_TEMPLATES.find(
@@ -248,8 +380,7 @@ export async function provisionTenantRoles(
     const toAdd = expectedIds
       .filter((id) => !existingIds.has(id))
       .map((permissionId) => ({ roleId: role.id, permissionId }));
-    if (toAdd.length > 0)
-      await tx.rolePermission.createMany({ data: toAdd, skipDuplicates: true });
+    if (toAdd.length > 0) await tx.rolePermission.createMany({ data: toAdd, skipDuplicates: true });
     await tx.auditLog.create({
       data: {
         action: toAdd.length > 0 ? 'ROLE_TEMPLATE_RECONCILED' : 'ROLE_TEMPLATE_VERIFIED',
