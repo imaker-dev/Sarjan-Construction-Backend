@@ -3,7 +3,7 @@
 --
 -- * Money is DECIMAL(18,2) — never float.
 -- * BudgetRevision/BudgetRevisionLine are append-only in application code:
---   revision rows move DRAFT → SUBMITTED → APPROVED/REJECTED/RETURNED only
+--   revision rows move DRAFT -> SUBMITTED -> APPROVED/REJECTED/RETURNED only
 --   through submit/decide commands; lines are inserted once with the revision.
 -- * Idempotency: partial unique indexes on idempotencyKey let retried
 --   creates/decisions replay safely instead of duplicating records.

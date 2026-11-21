@@ -11,6 +11,7 @@ import {
 } from './service.js';
 import {
   AddTvtAttendeesBody,
+  CalculateDailyReportBody,
   CreatePolicyBody,
   CreateTvtSessionBody,
   DailySummaryQuery,
@@ -18,15 +19,21 @@ import {
   KioskBatchPunchInBody,
   KioskBatchPunchOutBody,
   KioskOfflineSyncBody,
+  ListDailyReportsQuery,
   ListSessionsQuery,
   ListTvtSessionsQuery,
+  LockDailyReportBody,
   MusterRollRangeQuery,
   PunchInBody,
   PunchOutBody,
   RegularizeSessionBody,
+  RejectDailyReportBody,
   StartBreakBody,
+  UpdateDailyReportBody,
+  UpdateLabourSummaryBody,
   UpdatePolicyBody,
   type AddTvtAttendeesInput,
+  type CalculateDailyReportInput,
   type CreatePolicyInput,
   type CreateTvtSessionInput,
   type DailySummaryFilter,
@@ -34,13 +41,18 @@ import {
   type KioskBatchPunchInInput,
   type KioskBatchPunchOutInput,
   type KioskOfflineSyncInput,
+  type ListDailyReportsFilter,
   type ListSessionsFilter,
   type ListTvtSessionsFilter,
+  type LockDailyReportInput,
   type MusterRollRangeFilter,
   type PunchInInput,
   type PunchOutInput,
   type RegularizeSessionInput,
+  type RejectDailyReportInput,
   type StartBreakInput,
+  type UpdateDailyReportInput,
+  type UpdateLabourSummaryInput,
 } from './types.js';
 
 function companyIdOf(request: FastifyRequest): string {
@@ -71,6 +83,15 @@ const SessionParams = Type.Object({
 
 const TvtParams = Type.Object({
   id: Type.String({ format: 'uuid' }),
+});
+
+const DailyReportParams = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+});
+
+const DailyReportLabourSummaryParams = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  summaryId: Type.String({ format: 'uuid' }),
 });
 
 const EffectivePolicyQuery = Type.Object({
@@ -408,6 +429,153 @@ export function attendanceRoutes(service: AttendanceService) {
           companyIdOf(req),
           req.query as MusterRollRangeFilter,
         );
+      },
+    );
+
+    // -----------------------------------------------------------------------
+    // Daily Site Report (DSR) & End-of-Day Settlement Engine Routes
+    // -----------------------------------------------------------------------
+
+    app.post(
+      '/attendance/daily-reports/calculate',
+      { schema: { body: CalculateDailyReportBody }, ...perm(ATTENDANCE_MANAGE) },
+      async (req, reply) => {
+        const result = await service.calculateDailyReport(
+          actorOf(req),
+          companyIdOf(req),
+          req.body as CalculateDailyReportInput,
+        );
+        reply.status(200);
+        return result;
+      },
+    );
+
+    app.get(
+      '/attendance/daily-reports',
+      { schema: { querystring: ListDailyReportsQuery }, ...perm(ATTENDANCE_READ) },
+      async (req) => {
+        return service.getDailyReports(
+          actorOf(req),
+          companyIdOf(req),
+          req.query as ListDailyReportsFilter,
+        );
+      },
+    );
+
+    app.get(
+      '/attendance/daily-reports/:id',
+      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_READ) },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.getDailyReportById(actorOf(req), companyIdOf(req), id);
+      },
+    );
+
+    app.patch(
+      '/attendance/daily-reports/:id',
+      {
+        schema: {
+          params: DailyReportParams,
+          body: UpdateDailyReportBody,
+        },
+        ...perm(ATTENDANCE_MANAGE),
+      },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.updateDailyReport(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          req.body as UpdateDailyReportInput,
+        );
+      },
+    );
+
+    app.patch(
+      '/attendance/daily-reports/:id/labour-summary/:summaryId',
+      {
+        schema: {
+          params: DailyReportLabourSummaryParams,
+          body: UpdateLabourSummaryBody,
+        },
+        ...perm(ATTENDANCE_MANAGE),
+      },
+      async (req) => {
+        const { id, summaryId } = req.params as { id: string; summaryId: string };
+        return service.updateLabourSummary(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          summaryId,
+          req.body as UpdateLabourSummaryInput,
+        );
+      },
+    );
+
+    app.post(
+      '/attendance/daily-reports/:id/submit',
+      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_RECORD) },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.submitDailyReport(actorOf(req), companyIdOf(req), id);
+      },
+    );
+
+    app.post(
+      '/attendance/daily-reports/:id/approve',
+      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_MANAGE) },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.approveDailyReport(actorOf(req), companyIdOf(req), id);
+      },
+    );
+
+    app.post(
+      '/attendance/daily-reports/:id/reject',
+      {
+        schema: {
+          params: DailyReportParams,
+          body: RejectDailyReportBody,
+        },
+        ...perm(ATTENDANCE_MANAGE),
+      },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.rejectDailyReport(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          req.body as RejectDailyReportInput,
+        );
+      },
+    );
+
+    app.post(
+      '/attendance/daily-reports/:id/lock',
+      {
+        schema: {
+          params: DailyReportParams,
+          body: Type.Optional(LockDailyReportBody),
+        },
+        ...perm(ATTENDANCE_MANAGE),
+      },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.lockDailyReport(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          req.body as LockDailyReportInput,
+        );
+      },
+    );
+
+    app.get(
+      '/attendance/daily-reports/:id/audit-trail',
+      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_READ) },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        return service.getDailyReportAuditTrail(actorOf(req), companyIdOf(req), id);
       },
     );
   };

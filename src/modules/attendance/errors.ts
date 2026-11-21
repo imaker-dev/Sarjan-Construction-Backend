@@ -107,3 +107,40 @@ export class AttendanceValidationError extends AttendanceError {
   }
 }
 
+export class DailyReportNotFoundError extends AttendanceError {
+  constructor(id: string) {
+    super(`Daily site report ${id} not found`, 404, 'DAILY_REPORT_NOT_FOUND');
+    this.name = 'DailyReportNotFoundError';
+  }
+}
+
+export class DailyReportAlreadyLockedError extends AttendanceError {
+  constructor(id: string) {
+    super(
+      `Daily site report ${id} is locked and cannot be modified`,
+      409,
+      'DAILY_REPORT_ALREADY_LOCKED',
+    );
+    this.name = 'DailyReportAlreadyLockedError';
+  }
+}
+
+export class DailyReportInvalidStateTransitionError extends AttendanceError {
+  constructor(currentStatus: string, targetStatus: string) {
+    super(
+      `Cannot transition daily site report from ${currentStatus} to ${targetStatus}`,
+      422,
+      'DAILY_REPORT_INVALID_STATE_TRANSITION',
+    );
+    this.name = 'DailyReportInvalidStateTransitionError';
+  }
+}
+
+export class DailyReportConflictError extends AttendanceError {
+  constructor(message: string) {
+    super(message, 409, 'DAILY_REPORT_CONFLICT');
+    this.name = 'DailyReportConflictError';
+  }
+}
+
+

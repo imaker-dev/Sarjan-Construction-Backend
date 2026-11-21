@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import type { AttendanceBreak, AttendancePolicy, AttendancePolicyScope, AttendanceSession } from '@prisma/client';
+import type {
+  AttendanceBreak,
+  AttendancePolicy,
+  AttendancePolicyScope,
+  AttendanceSession,
+  DailySiteReport,
+  DailySiteReportLabour,
+  LabourCategory,
+  Prisma,
+} from '@prisma/client';
 import type { ScopeTarget } from '../access-control/service.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import {
@@ -7,6 +16,9 @@ import {
   AttendanceEntityNotFoundError,
   AttendanceValidationError,
   BreakAlreadyActiveError,
+  DailyReportAlreadyLockedError,
+  DailyReportInvalidStateTransitionError,
+  DailyReportNotFoundError,
   GeofenceBreachError,
   InvalidDateRangeError,
   NoActiveBreakError,
@@ -15,6 +27,7 @@ import {
   TvtSafetyBriefingRequiredError,
 } from './errors.js';
 import type {
+  AttendanceRepos,
   AttendanceSessionWithDetails,
   AttendanceUnitOfWork,
 } from './repository.js';
@@ -25,6 +38,7 @@ import {
   getBusinessDate,
   MAX_MUSTER_ROLL_DAYS,
   type AddTvtAttendeesInput,
+  type CalculateDailyReportInput,
   type CreatePolicyInput,
   type CreateTvtSessionInput,
   type DailySummaryFilter,
@@ -32,13 +46,18 @@ import {
   type KioskBatchPunchInInput,
   type KioskBatchPunchOutInput,
   type KioskOfflineSyncInput,
+  type ListDailyReportsFilter,
   type ListSessionsFilter,
   type ListTvtSessionsFilter,
+  type LockDailyReportInput,
   type MusterRollRangeFilter,
   type PunchInInput,
   type PunchOutInput,
   type RegularizeSessionInput,
+  type RejectDailyReportInput,
   type StartBreakInput,
+  type UpdateDailyReportInput,
+  type UpdateLabourSummaryInput,
   type UpdatePolicyInput,
 } from './types.js';
 
@@ -872,6 +891,26 @@ export class AttendanceService {
           },
         }),
       );
+
+      // Auto-recalculate active DSR if one exists in DRAFT or SUBMITTED
+      const existingReport = await repos.dailyReports.findBySiteAndDate(
+        companyId,
+        session.siteId,
+        session.businessDate,
+      );
+      if (
+        existingReport &&
+        (existingReport.status === 'DRAFT' || existingReport.status === 'SUBMITTED')
+      ) {
+        await this.internalRecalculateReport(
+          repos,
+          companyId,
+          session.siteId,
+          session.businessDate,
+          actor.actorId,
+          `Session ${sessionId} regularized`,
+        );
+      }
 
       return updated;
     });
@@ -1904,5 +1943,552 @@ export class AttendanceService {
     }
 
     return this.uow.run((repos) => repos.sessions.getMusterRollRange(companyId, filter));
+  }
+
+  // -------------------------------------------------------------------------
+  // Daily Site Report (DSR) & End-of-Day Settlement Engine
+  // -------------------------------------------------------------------------
+
+  private async internalRecalculateReport(
+    repos: AttendanceRepos,
+    companyId: string,
+    siteId: string,
+    businessDate: string,
+    actorId?: string,
+    reason?: string,
+  ) {
+    const site = await repos.sites.findById(companyId, siteId);
+    if (!site) return null;
+
+    const summary = await repos.sessions.getDailySummary(companyId, siteId, businessDate);
+    const sessions = summary.sessions;
+
+    let catAStaffCount = 0;
+    let catAStaffUnits = 0;
+    let catBDirectCount = 0;
+    let catBDirectUnits = 0;
+    let catCSubconCount = 0;
+    let catCSubconUnits = 0;
+
+    const labourMap = new Map<
+      string,
+      {
+        category: LabourCategory;
+        tradeCategory: string;
+        headcount: number;
+        presentUnits: number;
+        overtimeHours: number;
+      }
+    >();
+
+    for (const s of sessions) {
+      const trade = (s.employee.tradeCategory ?? 'GENERAL').toUpperCase();
+      let cat: LabourCategory = 'CAT_B_DIRECT_LABOUR';
+
+      if (
+        trade.includes('STAFF') ||
+        trade.includes('ENGINEER') ||
+        trade.includes('MANAGER') ||
+        trade.includes('SUPERVISOR') ||
+        trade.includes('OFFICE') ||
+        trade.includes('HSE') ||
+        trade.includes('QS') ||
+        trade.includes('STORE') ||
+        trade.includes('ACCOUNTS')
+      ) {
+        cat = 'CAT_A_STAFF';
+        catAStaffCount += 1;
+        catAStaffUnits += Number(s.presentUnits);
+      } else if (
+        trade.includes('SUBCON') ||
+        trade.includes('GANG') ||
+        trade.includes('CONTRACTOR')
+      ) {
+        cat = 'CAT_C_SUBCONTRACTOR';
+        catCSubconCount += 1;
+        catCSubconUnits += Number(s.presentUnits);
+      } else {
+        cat = 'CAT_B_DIRECT_LABOUR';
+        catBDirectCount += 1;
+        catBDirectUnits += Number(s.presentUnits);
+      }
+
+      const key = `${cat}:${trade}`;
+      const entry = labourMap.get(key) ?? {
+        category: cat,
+        tradeCategory: trade,
+        headcount: 0,
+        presentUnits: 0,
+        overtimeHours: 0,
+      };
+      entry.headcount += 1;
+      entry.presentUnits += Number(s.presentUnits);
+      entry.overtimeHours += Number(s.overtimeHours);
+      labourMap.set(key, entry);
+    }
+
+    const labourSummaries = Array.from(labourMap.values());
+
+    const totalWorkersHeadcount = sessions.length;
+    const totalPresentUnits = summary.totalPresentUnits;
+    const totalOvertimeHours = summary.totalOvertimeHours;
+    const totalOvertimePUnits = summary.totalOvertimePUnits;
+    const totalFlaggedSessions = sessions.filter((s) => s.isFlagged).length;
+
+    const report = await repos.dailyReports.upsert(companyId, {
+      siteId,
+      projectId: site.projectId,
+      businessDate,
+      totalWorkersHeadcount,
+      totalPresentUnits,
+      totalOvertimeHours,
+      totalOvertimePUnits,
+      totalFlaggedSessions,
+      catAStaffCount,
+      catAStaffUnits,
+      catBDirectCount,
+      catBDirectUnits,
+      catCSubconCount,
+      catCSubconUnits,
+      labourSummaries,
+    });
+
+    if (actorId && reason) {
+      await repos.dailyReports.addAuditLog(companyId, report.id, {
+        actorId,
+        action: 'AUTO_CALCULATED',
+        reason,
+      });
+    }
+
+    return report;
+  }
+
+  async calculateDailyReport(
+    actor: ActorContext,
+    companyId: string,
+    input: CalculateDailyReportInput,
+  ): Promise<DailySiteReport & { labourSummaries: DailySiteReportLabour[] }> {
+    await this.authorizer.assertPermission(
+      actor.actorId,
+      ATTENDANCE_MANAGE,
+      siteTarget(companyId, input.siteId),
+    );
+
+    return this.uow.run(async (repos) => {
+      const existing = await repos.dailyReports.findBySiteAndDate(
+        companyId,
+        input.siteId,
+        input.businessDate,
+      );
+      if (existing?.status === 'LOCKED') {
+        throw new DailyReportAlreadyLockedError(existing.id);
+      }
+
+      // Auto-close in-progress sessions at settlement
+      const summary = await repos.sessions.getDailySummary(
+        companyId,
+        input.siteId,
+        input.businessDate,
+      );
+      for (const s of summary.sessions) {
+        if (s.status === 'IN_PROGRESS') {
+          await repos.sessions.update(companyId, s.id, {
+            status: 'AUTO_CLOSED',
+            isFlagged: true,
+            flagReason: 'MISSING_PUNCH_OUT',
+            punchOutRemarks: 'Auto-closed at daily settlement due to missing punch out',
+          });
+        }
+      }
+
+      const report = await this.internalRecalculateReport(
+        repos,
+        companyId,
+        input.siteId,
+        input.businessDate,
+        actor.actorId,
+        'Triggered manual calculation',
+      );
+      if (!report) {
+        throw new AttendanceEntityNotFoundError('Site', input.siteId);
+      }
+      return report;
+    });
+  }
+
+  async getDailyReports(
+    actor: ActorContext,
+    companyId: string,
+    filter: ListDailyReportsFilter,
+  ) {
+    if (filter.siteId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        siteTarget(companyId, filter.siteId),
+      );
+    } else {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        companyTarget(companyId),
+      );
+    }
+    return this.uow.run((repos) => repos.dailyReports.list(companyId, filter));
+  }
+
+  async getDailyReportById(actor: ActorContext, companyId: string, id: string) {
+    return this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, id);
+      if (!report) {
+        throw new DailyReportNotFoundError(id);
+      }
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        siteTarget(companyId, report.siteId),
+      );
+      return report;
+    });
+  }
+
+  async updateDailyReport(
+    actor: ActorContext,
+    companyId: string,
+    id: string,
+    input: UpdateDailyReportInput,
+  ) {
+    return this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, id);
+      if (!report) throw new DailyReportNotFoundError(id);
+      if (report.status === 'LOCKED') throw new DailyReportAlreadyLockedError(id);
+
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        siteTarget(companyId, report.siteId),
+      );
+
+      const updateData: Prisma.DailySiteReportUpdateInput = {
+        ...(input.weather ? { weather: input.weather } : {}),
+        ...(input.weatherStoppageHours !== undefined
+          ? { weatherStoppageHours: input.weatherStoppageHours }
+          : {}),
+        ...(input.workProgressNotes !== undefined
+          ? { workProgressNotes: input.workProgressNotes }
+          : {}),
+        ...(input.siteObstaclesRemarks !== undefined
+          ? { siteObstaclesRemarks: input.siteObstaclesRemarks }
+          : {}),
+        ...(input.safetyIncidentReported !== undefined
+          ? { safetyIncidentReported: input.safetyIncidentReported }
+          : {}),
+        ...(input.safetyNotes !== undefined ? { safetyNotes: input.safetyNotes } : {}),
+      };
+
+      const updated = await repos.dailyReports.update(
+        companyId,
+        id,
+        updateData,
+        input.version,
+      );
+
+      await repos.dailyReports.addAuditLog(companyId, id, {
+        actorId: actor.actorId,
+        action: 'EDITED_HEADER',
+        reason: 'Updated report header & conditions',
+      });
+
+      return updated;
+    });
+  }
+
+  async updateLabourSummary(
+    actor: ActorContext,
+    companyId: string,
+    id: string,
+    summaryId: string,
+    input: UpdateLabourSummaryInput,
+  ) {
+    return this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, id);
+      if (!report) throw new DailyReportNotFoundError(id);
+      if (report.status === 'LOCKED') throw new DailyReportAlreadyLockedError(id);
+
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        siteTarget(companyId, report.siteId),
+      );
+
+      await repos.dailyReports.updateLabourSummary(companyId, id, summaryId, {
+        ...(input.headcount !== undefined ? { headcount: input.headcount } : {}),
+        ...(input.presentUnits !== undefined ? { presentUnits: input.presentUnits } : {}),
+        ...(input.overtimeHours !== undefined ? { overtimeHours: input.overtimeHours } : {}),
+        ...(input.remarks !== undefined ? { remarks: input.remarks } : {}),
+      });
+
+      // Re-aggregate parent report totals from all labour summaries
+      const allSummaries = await repos.dailyReports.findById(companyId, id);
+      if (allSummaries) {
+        let totalWorkersHeadcount = 0;
+        let totalPresentUnits = 0;
+        let totalOvertimeHours = 0;
+        let catAStaffCount = 0;
+        let catAStaffUnits = 0;
+        let catBDirectCount = 0;
+        let catBDirectUnits = 0;
+        let catCSubconCount = 0;
+        let catCSubconUnits = 0;
+
+        for (const s of allSummaries.labourSummaries) {
+          totalWorkersHeadcount += s.headcount;
+          totalPresentUnits += Number(s.presentUnits);
+          totalOvertimeHours += Number(s.overtimeHours);
+
+          if (s.category === 'CAT_A_STAFF') {
+            catAStaffCount += s.headcount;
+            catAStaffUnits += Number(s.presentUnits);
+          } else if (s.category === 'CAT_C_SUBCONTRACTOR') {
+            catCSubconCount += s.headcount;
+            catCSubconUnits += Number(s.presentUnits);
+          } else {
+            catBDirectCount += s.headcount;
+            catBDirectUnits += Number(s.presentUnits);
+          }
+        }
+
+        await repos.dailyReports.update(companyId, id, {
+          totalWorkersHeadcount,
+          totalPresentUnits,
+          totalOvertimeHours,
+          catAStaffCount,
+          catAStaffUnits,
+          catBDirectCount,
+          catBDirectUnits,
+          catCSubconCount,
+          catCSubconUnits,
+        });
+      }
+
+      await repos.dailyReports.addAuditLog(companyId, id, {
+        actorId: actor.actorId,
+        action: 'EDITED_LABOUR_SUMMARY',
+        reason: input.reason,
+      });
+
+      return repos.dailyReports.findById(companyId, id);
+    });
+  }
+
+  async submitDailyReport(actor: ActorContext, companyId: string, id: string) {
+    return this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, id);
+      if (!report) throw new DailyReportNotFoundError(id);
+      if (report.status === 'LOCKED') throw new DailyReportAlreadyLockedError(id);
+      if (report.status !== 'DRAFT' && report.status !== 'REJECTED') {
+        throw new DailyReportInvalidStateTransitionError(report.status, 'SUBMITTED');
+      }
+
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_RECORD,
+        siteTarget(companyId, report.siteId),
+      );
+
+      const emp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+
+      const updated = await repos.dailyReports.update(companyId, id, {
+        status: 'SUBMITTED',
+        submittedAt: new Date(),
+        rejectionReason: null,
+        ...(emp ? { submittedBy: { connect: { id_companyId: { id: emp.id, companyId } } } } : {}),
+      });
+
+      await repos.dailyReports.addAuditLog(companyId, id, {
+        actorId: actor.actorId,
+        action: 'SUBMITTED',
+        reason: 'Submitted for PM review',
+      });
+
+      return updated;
+    });
+  }
+
+  async approveDailyReport(actor: ActorContext, companyId: string, id: string) {
+    return this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, id);
+      if (!report) throw new DailyReportNotFoundError(id);
+      if (report.status === 'LOCKED') throw new DailyReportAlreadyLockedError(id);
+      if (report.status !== 'SUBMITTED' && report.status !== 'DRAFT') {
+        throw new DailyReportInvalidStateTransitionError(report.status, 'APPROVED');
+      }
+
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        siteTarget(companyId, report.siteId),
+      );
+
+      const emp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+
+      const updated = await repos.dailyReports.update(companyId, id, {
+        status: 'APPROVED',
+        approvedAt: new Date(),
+        ...(emp ? { approvedBy: { connect: { id_companyId: { id: emp.id, companyId } } } } : {}),
+      });
+
+      await repos.dailyReports.addAuditLog(companyId, id, {
+        actorId: actor.actorId,
+        action: 'APPROVED',
+        reason: 'Approved by Project Manager',
+      });
+
+      return updated;
+    });
+  }
+
+  async rejectDailyReport(
+    actor: ActorContext,
+    companyId: string,
+    id: string,
+    input: RejectDailyReportInput,
+  ) {
+    return this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, id);
+      if (!report) throw new DailyReportNotFoundError(id);
+      if (report.status === 'LOCKED') throw new DailyReportAlreadyLockedError(id);
+      if (report.status !== 'SUBMITTED') {
+        throw new DailyReportInvalidStateTransitionError(report.status, 'REJECTED');
+      }
+
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        siteTarget(companyId, report.siteId),
+      );
+
+      const updated = await repos.dailyReports.update(companyId, id, {
+        status: 'REJECTED',
+        rejectionReason: input.reason,
+      });
+
+      await repos.dailyReports.addAuditLog(companyId, id, {
+        actorId: actor.actorId,
+        action: 'REJECTED',
+        reason: input.reason,
+      });
+
+      return updated;
+    });
+  }
+
+  async lockDailyReport(
+    actor: ActorContext,
+    companyId: string,
+    id: string,
+    input?: LockDailyReportInput,
+  ) {
+    return this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, id);
+      if (!report) throw new DailyReportNotFoundError(id);
+      if (report.status === 'LOCKED') throw new DailyReportAlreadyLockedError(id);
+      if (report.status !== 'APPROVED') {
+        throw new DailyReportInvalidStateTransitionError(report.status, 'LOCKED');
+      }
+
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        siteTarget(companyId, report.siteId),
+      );
+
+      const emp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+
+      const updated = await repos.dailyReports.update(companyId, id, {
+        status: 'LOCKED',
+        lockedAt: new Date(),
+        ...(emp ? { lockedBy: { connect: { id_companyId: { id: emp.id, companyId } } } } : {}),
+      });
+
+      await repos.dailyReports.addAuditLog(companyId, id, {
+        actorId: actor.actorId,
+        action: 'LOCKED',
+        reason: input?.reason ?? 'Locked by HO Admin for payroll and billing',
+      });
+
+      return updated;
+    });
+  }
+
+  async getDailyReportAuditTrail(actor: ActorContext, companyId: string, id: string) {
+    return this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, id);
+      if (!report) throw new DailyReportNotFoundError(id);
+
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        siteTarget(companyId, report.siteId),
+      );
+
+      return repos.dailyReports.getAuditLogs(companyId, id);
+    });
+  }
+
+  async settleAllActiveSites(companyId?: string): Promise<{ settledCount: number }> {
+    return this.uow.run(async (repos) => {
+      const sites = await repos.dailyReports.getActiveSitesForSettlement(companyId);
+      let settledCount = 0;
+      const now = new Date();
+
+      for (const site of sites) {
+        try {
+          const siteDetails = await repos.sites.findById(site.companyId, site.id);
+          const tz = siteDetails?.project.timezone ?? 'Asia/Kolkata';
+          const businessDate = getBusinessDate(now, tz);
+
+          const existing = await repos.dailyReports.findBySiteAndDate(
+            site.companyId,
+            site.id,
+            businessDate,
+          );
+          if (existing?.status === 'LOCKED') {
+            continue;
+          }
+
+          const summary = await repos.sessions.getDailySummary(
+            site.companyId,
+            site.id,
+            businessDate,
+          );
+          for (const s of summary.sessions) {
+            if (s.status === 'IN_PROGRESS') {
+              await repos.sessions.update(site.companyId, s.id, {
+                status: 'AUTO_CLOSED',
+                isFlagged: true,
+                flagReason: 'MISSING_PUNCH_OUT',
+                punchOutRemarks: 'Auto-closed at daily settlement due to missing punch out',
+              });
+            }
+          }
+
+          await this.internalRecalculateReport(
+            repos,
+            site.companyId,
+            site.id,
+            businessDate,
+            'SYSTEM',
+            'Scheduled end-of-day settlement',
+          );
+          settledCount += 1;
+        } catch {
+          // Continue to next site on individual site failure
+        }
+      }
+
+      return { settledCount };
+    });
   }
 }

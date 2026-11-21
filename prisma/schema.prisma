@@ -127,6 +127,9 @@ model Company {
   budgetReviewDecisions BudgetReviewDecision[]
   cashFlowForecasts     CashFlowForecast[]
   cashFlowForecastLines CashFlowForecastLine[]
+  dailySiteReports       DailySiteReport[]
+  dailySiteReportLabours DailySiteReportLabour[]
+  dailyReportAuditLogs   DailyReportAuditLog[]
 }
 
 model HeadOffice {
@@ -201,6 +204,7 @@ model Project {
   workSchedules      WorkSchedule[]
   projectBudgets     ProjectBudget[]
   cashFlowForecasts  CashFlowForecast[]
+  dailySiteReports   DailySiteReport[]
 
   @@unique([companyId, code])
   // Referenced by Site's composite FK (projectId, companyId).
@@ -247,6 +251,7 @@ model Site {
   attendanceSessions AttendanceSession[]
   safetyTvtSessions  SafetyTvtSession[]
   workSchedules      WorkSchedule[]
+  dailySiteReports   DailySiteReport[]
 
   // Site codes are unique within a project (approved decision).
   @@unique([projectId, code])
@@ -417,6 +422,9 @@ model Employee {
   leaveRequests      LeaveRequest[]
   safetyTvtAttendees SafetyTvtAttendee[]
   workSchedules      WorkSchedule[]
+  dsrSubmissions     DailySiteReport[]      @relation("DsrSubmittedBy")
+  dsrApprovals       DailySiteReport[]      @relation("DsrApprovedBy")
+  dsrLocks           DailySiteReport[]      @relation("DsrLockedBy")
 
   // Employee code is unique within a company.
   @@unique([companyId, employeeCode])
@@ -1706,6 +1714,141 @@ model AttendanceBreak {
   @@unique([id, companyId])
   @@index([companyId, sessionId])
 }
+
+// ---------------------------------------------------------------------------
+// Daily Site Report (DSR) & End-of-Day Settlement Engine
+// ---------------------------------------------------------------------------
+
+enum DailyReportStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  LOCKED
+}
+
+enum WeatherCondition {
+  CLEAR
+  OVERCAST
+  LIGHT_RAIN
+  HEAVY_RAIN
+  STORMY
+  EXTREME_HEAT
+}
+
+enum LabourCategory {
+  CAT_A_STAFF
+  CAT_B_DIRECT_LABOUR
+  CAT_C_SUBCONTRACTOR
+}
+
+model DailySiteReport {
+  id                    String            @id @default(uuid()) @db.Uuid
+  companyId             String            @db.Uuid
+  projectId             String            @db.Uuid
+  siteId                String            @db.Uuid
+  businessDate          String            @db.VarChar(10) // e.g. "2026-11-21"
+  status                DailyReportStatus @default(DRAFT)
+
+  // Site & Environmental Conditions
+  weather               WeatherCondition  @default(CLEAR)
+  weatherStoppageHours  Decimal           @default(0) @db.Decimal(4, 2)
+  workProgressNotes     String?           @db.Text
+  siteObstaclesRemarks  String?           @db.Text
+  safetyIncidentReported Boolean          @default(false)
+  safetyNotes           String?           @db.Text
+
+  // Aggregated Workforce Totals (Materialized Snapshot)
+  totalWorkersHeadcount Int               @default(0)
+  totalPresentUnits     Decimal           @default(0) @db.Decimal(6, 1)
+  totalOvertimeHours    Decimal           @default(0) @db.Decimal(6, 2)
+  totalOvertimePUnits   Decimal           @default(0) @db.Decimal(6, 1)
+  totalFlaggedSessions  Int               @default(0)
+
+  // Category Breakdown Totals
+  catAStaffCount        Int               @default(0)
+  catAStaffUnits        Decimal           @default(0) @db.Decimal(6, 1)
+  catBDirectCount       Int               @default(0)
+  catBDirectUnits       Decimal           @default(0) @db.Decimal(6, 1)
+  catCSubconCount       Int               @default(0)
+  catCSubconUnits       Decimal           @default(0) @db.Decimal(6, 1)
+
+  // Workflow Sign-off metadata
+  submittedById         String?           @db.Uuid
+  submittedAt           DateTime?         @db.Timestamptz
+  approvedById          String?           @db.Uuid
+  approvedAt            DateTime?         @db.Timestamptz
+  rejectionReason       String?           @db.Text
+  lockedById            String?           @db.Uuid
+  lockedAt              DateTime?         @db.Timestamptz
+
+  version               Int               @default(0)
+  createdAt             DateTime          @default(now()) @db.Timestamptz
+  updatedAt             DateTime          @updatedAt @db.Timestamptz
+
+  company               Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project               Project           @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site                  Site              @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  submittedBy           Employee?         @relation("DsrSubmittedBy", fields: [submittedById, companyId], references: [id, companyId], onDelete: SetNull)
+  approvedBy            Employee?         @relation("DsrApprovedBy", fields: [approvedById, companyId], references: [id, companyId], onDelete: SetNull)
+  lockedBy              Employee?         @relation("DsrLockedBy", fields: [lockedById, companyId], references: [id, companyId], onDelete: SetNull)
+
+  labourSummaries       DailySiteReportLabour[]
+  auditLogs             DailyReportAuditLog[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, siteId, businessDate])
+  @@index([companyId, siteId, businessDate])
+  @@index([companyId, status])
+  @@index([companyId, businessDate])
+}
+
+model DailySiteReportLabour {
+  id                    String            @id @default(uuid()) @db.Uuid
+  companyId             String            @db.Uuid
+  reportId              String            @db.Uuid
+  category              LabourCategory
+
+  // Specific Subcontractor or Department grouping
+  subcontractorId       String?           @db.Uuid
+  subcontractorName     String?           @db.VarChar(150)
+  tradeCategory         String            @db.VarChar(100)
+
+  headcount             Int               @default(0)
+  presentUnits          Decimal           @default(0) @db.Decimal(6, 1)
+  overtimeHours         Decimal           @default(0) @db.Decimal(6, 2)
+  remarks               String?           @db.VarChar(255)
+
+  createdAt             DateTime          @default(now()) @db.Timestamptz
+  updatedAt             DateTime          @updatedAt @db.Timestamptz
+
+  company               Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  report                DailySiteReport   @relation(fields: [reportId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([id, companyId])
+  @@index([companyId, reportId])
+  @@index([companyId, category])
+}
+
+model DailyReportAuditLog {
+  id                    String            @id @default(uuid()) @db.Uuid
+  companyId             String            @db.Uuid
+  reportId              String            @db.Uuid
+  actorId               String            @db.Uuid
+  action                String            @db.VarChar(60) // "CREATED", "AUTO_CALCULATED", "EDITED_HEADER", "REGULARIZED_SESSION", "APPROVED", "LOCKED", "REJECTED"
+  fieldName             String?           @db.VarChar(100)
+  oldValue              String?           @db.Text
+  newValue              String?           @db.Text
+  reason                String            @db.VarChar(255)
+  createdAt             DateTime          @default(now()) @db.Timestamptz
+
+  company               Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  report                DailySiteReport   @relation(fields: [reportId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([id, companyId])
+  @@index([companyId, reportId, createdAt])
+}
+
 
 // ---------------------------------------------------------------------------
 // Leave Management (Milestone Phase 2)

@@ -500,6 +500,46 @@ const OPERATION_DOCS: Record<
     summary: 'Range muster roll period settlement export',
     permission: 'ATTENDANCE_READ',
   },
+  'POST /attendance/daily-reports/calculate': {
+    summary: 'Auto-calculate or re-calculate daily site report for a business date',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'GET /attendance/daily-reports': {
+    summary: 'List daily site reports with site, date range and status filters',
+    permission: 'ATTENDANCE_READ',
+  },
+  'GET /attendance/daily-reports/:id': {
+    summary: 'Get daily site report details with labour breakdown and session totals',
+    permission: 'ATTENDANCE_READ',
+  },
+  'PATCH /attendance/daily-reports/:id': {
+    summary: 'Update daily site report header, weather, work progress and safety notes',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'PATCH /attendance/daily-reports/:id/labour-summary/:summaryId': {
+    summary: 'Adjust labour summary headcount or hours with mandatory justification reason',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'POST /attendance/daily-reports/:id/submit': {
+    summary: 'Submit daily site report for Project Manager review',
+    permission: 'ATTENDANCE_RECORD',
+  },
+  'POST /attendance/daily-reports/:id/approve': {
+    summary: 'Approve daily site report by Project Manager',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'POST /attendance/daily-reports/:id/reject': {
+    summary: 'Reject daily site report with revision notes',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'POST /attendance/daily-reports/:id/lock': {
+    summary: 'Lock and freeze daily site report for immutable payroll and billing certification',
+    permission: 'ATTENDANCE_MANAGE',
+  },
+  'GET /attendance/daily-reports/:id/audit-trail': {
+    summary: 'Fetch audit log history of changes made to daily site report',
+    permission: 'ATTENDANCE_READ',
+  },
   'POST /leave/policies': {
     summary: 'Create leave policy',
     permission: 'LEAVE_MANAGE',

@@ -3,18 +3,25 @@ import type {
   AttendancePolicy,
   AttendancePolicyScope,
   AttendanceSession,
+  DailyReportAuditLog,
+  DailyReportStatus,
+  DailySiteReport,
+  DailySiteReportLabour,
   Employee,
+  LabourCategory,
   Prisma,
   PrismaClient,
   SafetyTvtAttendee,
   SafetyTvtSession,
   Site,
+  WeatherCondition,
 } from '@prisma/client';
 import { scopedUpdate, type AuditRepository } from '../organization/repository.js';
 import type { AuditRecord } from '../organization/types.js';
-import { ActiveSessionExistsError } from './errors.js';
+import { ActiveSessionExistsError, AttendanceEntityNotFoundError } from './errors.js';
 import {
   DEFAULT_ATTENDANCE_POLICY,
+  type ListDailyReportsFilter,
   type ListSessionsFilter,
   type MusterRollRangeFilter,
 } from './types.js';
@@ -217,6 +224,105 @@ export interface AttendanceRepos {
       companyId: string,
       ids: string[],
     ): Promise<{ id: string; displayName: string; status: string }[]>;
+  };
+  dailyReports: {
+    findById(
+      companyId: string,
+      id: string,
+    ): Promise<
+      | (DailySiteReport & {
+          labourSummaries: DailySiteReportLabour[];
+          auditLogs: DailyReportAuditLog[];
+          site: Pick<Site, 'id' | 'code' | 'name'>;
+          project: { id: string; code: string; name: string };
+          submittedBy?: { id: string; employeeCode: string; displayName: string } | null;
+          approvedBy?: { id: string; employeeCode: string; displayName: string } | null;
+          lockedBy?: { id: string; employeeCode: string; displayName: string } | null;
+        })
+      | null
+    >;
+    findBySiteAndDate(
+      companyId: string,
+      siteId: string,
+      businessDate: string,
+    ): Promise<
+      | (DailySiteReport & {
+          labourSummaries: DailySiteReportLabour[];
+        })
+      | null
+    >;
+    list(
+      companyId: string,
+      filter: ListDailyReportsFilter,
+    ): Promise<{
+      items: (DailySiteReport & {
+        site: Pick<Site, 'id' | 'code' | 'name'>;
+        project: { id: string; code: string; name: string };
+      })[];
+      total: number;
+    }>;
+    upsert(
+      companyId: string,
+      data: {
+        siteId: string;
+        projectId: string;
+        businessDate: string;
+        status?: DailyReportStatus;
+        weather?: WeatherCondition;
+        weatherStoppageHours?: number | Prisma.Decimal;
+        workProgressNotes?: string | null;
+        siteObstaclesRemarks?: string | null;
+        safetyIncidentReported?: boolean;
+        safetyNotes?: string | null;
+        totalWorkersHeadcount: number;
+        totalPresentUnits: number | Prisma.Decimal;
+        totalOvertimeHours: number | Prisma.Decimal;
+        totalOvertimePUnits: number | Prisma.Decimal;
+        totalFlaggedSessions: number;
+        catAStaffCount: number;
+        catAStaffUnits: number | Prisma.Decimal;
+        catBDirectCount: number;
+        catBDirectUnits: number | Prisma.Decimal;
+        catCSubconCount: number;
+        catCSubconUnits: number | Prisma.Decimal;
+        labourSummaries?: {
+          category: LabourCategory;
+          subcontractorId?: string | null;
+          subcontractorName?: string | null;
+          tradeCategory: string;
+          headcount: number;
+          presentUnits: number | Prisma.Decimal;
+          overtimeHours: number | Prisma.Decimal;
+          remarks?: string | null;
+        }[];
+      },
+    ): Promise<DailySiteReport & { labourSummaries: DailySiteReportLabour[] }>;
+    update(
+      companyId: string,
+      id: string,
+      data: Prisma.DailySiteReportUpdateInput,
+      expectedVersion?: number,
+    ): Promise<DailySiteReport>;
+    updateLabourSummary(
+      companyId: string,
+      reportId: string,
+      summaryId: string,
+      data: Prisma.DailySiteReportLabourUpdateInput,
+    ): Promise<DailySiteReportLabour>;
+    addAuditLog(
+      companyId: string,
+      reportId: string,
+      data: {
+        actorId: string;
+        action: string;
+        fieldName?: string;
+        oldValue?: string;
+        newValue?: string;
+        reason: string;
+      },
+    ): Promise<DailyReportAuditLog>;
+    getAuditLogs(companyId: string, reportId: string): Promise<DailyReportAuditLog[]>;
+    getActiveSitesForSettlement(companyId?: string): Promise<{ id: string; companyId: string; projectId: string }[]>;
   };
   audit: AuditRepository;
 }
@@ -904,6 +1010,208 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         });
         return rows.map((r) => r.employeeId);
       },
+    },
+    dailyReports: {
+      findById: (companyId, id) =>
+        tx.dailySiteReport.findFirst({
+          where: { id, companyId },
+          include: {
+            labourSummaries: { orderBy: { category: 'asc' } },
+            auditLogs: { orderBy: { createdAt: 'desc' } },
+            site: { select: { id: true, code: true, name: true } },
+            project: { select: { id: true, code: true, name: true } },
+            submittedBy: { select: { id: true, employeeCode: true, displayName: true } },
+            approvedBy: { select: { id: true, employeeCode: true, displayName: true } },
+            lockedBy: { select: { id: true, employeeCode: true, displayName: true } },
+          },
+        }),
+
+      findBySiteAndDate: (companyId, siteId, businessDate) =>
+        tx.dailySiteReport.findFirst({
+          where: { companyId, siteId, businessDate },
+          include: {
+            labourSummaries: { orderBy: { category: 'asc' } },
+          },
+        }),
+
+      list: async (companyId, filter) => {
+        const where: Prisma.DailySiteReportWhereInput = {
+          companyId,
+          ...(filter.siteId ? { siteId: filter.siteId } : {}),
+          ...(filter.status ? { status: filter.status } : {}),
+          ...(filter.fromDate || filter.toDate
+            ? {
+                businessDate: {
+                  ...(filter.fromDate ? { gte: filter.fromDate } : {}),
+                  ...(filter.toDate ? { lte: filter.toDate } : {}),
+                },
+              }
+            : {}),
+        };
+
+        const [items, total] = await Promise.all([
+          tx.dailySiteReport.findMany({
+            where,
+            include: {
+              site: { select: { id: true, code: true, name: true } },
+              project: { select: { id: true, code: true, name: true } },
+            },
+            orderBy: [{ businessDate: 'desc' }, { createdAt: 'desc' }],
+            take: filter.limit ?? 20,
+            skip: filter.offset ?? 0,
+          }),
+          tx.dailySiteReport.count({ where }),
+        ]);
+
+        return { items, total };
+      },
+
+      upsert: async (companyId, data) => {
+        const existing = await tx.dailySiteReport.findFirst({
+          where: {
+            companyId,
+            siteId: data.siteId,
+            businessDate: data.businessDate,
+          },
+        });
+
+        let report: DailySiteReport;
+
+        if (existing) {
+          report = await tx.dailySiteReport.update({
+            where: { id: existing.id },
+            data: {
+              totalWorkersHeadcount: data.totalWorkersHeadcount,
+              totalPresentUnits: data.totalPresentUnits,
+              totalOvertimeHours: data.totalOvertimeHours,
+              totalOvertimePUnits: data.totalOvertimePUnits,
+              totalFlaggedSessions: data.totalFlaggedSessions,
+              catAStaffCount: data.catAStaffCount,
+              catAStaffUnits: data.catAStaffUnits,
+              catBDirectCount: data.catBDirectCount,
+              catBDirectUnits: data.catBDirectUnits,
+              catCSubconCount: data.catCSubconCount,
+              catCSubconUnits: data.catCSubconUnits,
+              ...(data.weather ? { weather: data.weather } : {}),
+              ...(data.weatherStoppageHours !== undefined ? { weatherStoppageHours: data.weatherStoppageHours } : {}),
+              ...(data.workProgressNotes !== undefined ? { workProgressNotes: data.workProgressNotes } : {}),
+              ...(data.siteObstaclesRemarks !== undefined ? { siteObstaclesRemarks: data.siteObstaclesRemarks } : {}),
+              ...(data.safetyIncidentReported !== undefined ? { safetyIncidentReported: data.safetyIncidentReported } : {}),
+              ...(data.safetyNotes !== undefined ? { safetyNotes: data.safetyNotes } : {}),
+              ...(data.status ? { status: data.status } : {}),
+              version: { increment: 1 },
+            },
+          });
+        } else {
+          report = await tx.dailySiteReport.create({
+            data: {
+              company: { connect: { id: companyId } },
+              project: { connect: { id_companyId: { id: data.projectId, companyId } } },
+              site: { connect: { id_companyId: { id: data.siteId, companyId } } },
+              businessDate: data.businessDate,
+              status: data.status ?? 'DRAFT',
+              weather: data.weather ?? 'CLEAR',
+              weatherStoppageHours: data.weatherStoppageHours ?? 0,
+              workProgressNotes: data.workProgressNotes ?? null,
+              siteObstaclesRemarks: data.siteObstaclesRemarks ?? null,
+              safetyIncidentReported: data.safetyIncidentReported ?? false,
+              safetyNotes: data.safetyNotes ?? null,
+              totalWorkersHeadcount: data.totalWorkersHeadcount,
+              totalPresentUnits: data.totalPresentUnits,
+              totalOvertimeHours: data.totalOvertimeHours,
+              totalOvertimePUnits: data.totalOvertimePUnits,
+              totalFlaggedSessions: data.totalFlaggedSessions,
+              catAStaffCount: data.catAStaffCount,
+              catAStaffUnits: data.catAStaffUnits,
+              catBDirectCount: data.catBDirectCount,
+              catBDirectUnits: data.catBDirectUnits,
+              catCSubconCount: data.catCSubconCount,
+              catCSubconUnits: data.catCSubconUnits,
+            },
+          });
+        }
+
+        if (data.labourSummaries && data.labourSummaries.length > 0) {
+          await tx.dailySiteReportLabour.deleteMany({
+            where: { reportId: report.id, companyId },
+          });
+
+          await tx.dailySiteReportLabour.createMany({
+            data: data.labourSummaries.map((s) => ({
+              companyId,
+              reportId: report.id,
+              category: s.category,
+              subcontractorId: s.subcontractorId ?? null,
+              subcontractorName: s.subcontractorName ?? null,
+              tradeCategory: s.tradeCategory,
+              headcount: s.headcount,
+              presentUnits: s.presentUnits,
+              overtimeHours: s.overtimeHours,
+              remarks: s.remarks ?? null,
+            })),
+          });
+        }
+
+        const labourSummaries = await tx.dailySiteReportLabour.findMany({
+          where: { reportId: report.id, companyId },
+          orderBy: { category: 'asc' },
+        });
+
+        return { ...report, labourSummaries };
+      },
+
+      update: (companyId, id, data, expectedVersion) =>
+        scopedUpdate(
+          'DAILY_SITE_REPORT',
+          { id, companyId },
+          data as Record<string, unknown>,
+          expectedVersion,
+          (args) => tx.dailySiteReport.updateMany(args),
+          () => tx.dailySiteReport.findFirst({ where: { id, companyId } }),
+        ),
+
+      updateLabourSummary: async (companyId, reportId, summaryId, data) => {
+        await tx.dailySiteReportLabour.updateMany({
+          where: { id: summaryId, reportId, companyId },
+          data,
+        });
+        const updated = await tx.dailySiteReportLabour.findFirst({
+          where: { id: summaryId, reportId, companyId },
+        });
+        if (!updated) {
+          throw new AttendanceEntityNotFoundError('DailySiteReportLabour', summaryId);
+        }
+        return updated;
+      },
+
+      addAuditLog: (companyId, reportId, data) =>
+        tx.dailyReportAuditLog.create({
+          data: {
+            company: { connect: { id: companyId } },
+            report: { connect: { id_companyId: { id: reportId, companyId } } },
+            actorId: data.actorId,
+            action: data.action,
+            fieldName: data.fieldName ?? null,
+            oldValue: data.oldValue ?? null,
+            newValue: data.newValue ?? null,
+            reason: data.reason,
+          },
+        }),
+
+      getAuditLogs: (companyId, reportId) =>
+        tx.dailyReportAuditLog.findMany({
+          where: { companyId, reportId },
+          orderBy: { createdAt: 'desc' },
+        }),
+
+      getActiveSitesForSettlement: (companyId) =>
+        tx.site.findMany({
+          where: {
+            status: 'ACTIVE',
+            ...(companyId ? { companyId } : {}),
+          },
+          select: { id: true, companyId: true, projectId: true },
+        }),
     },
   };
 }

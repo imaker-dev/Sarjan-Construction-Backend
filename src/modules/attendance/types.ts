@@ -433,3 +433,78 @@ export type CreateTvtSessionInput = Static<typeof CreateTvtSessionBody>;
 export type AddTvtAttendeesInput = Static<typeof AddTvtAttendeesBody>;
 export type ListTvtSessionsFilter = Static<typeof ListTvtSessionsQuery>;
 export type MusterRollRangeFilter = Static<typeof MusterRollRangeQuery>;
+
+// ---------------------------------------------------------------------------
+// Daily Site Report (DSR) & End-of-Day Settlement Types & Schemas
+// ---------------------------------------------------------------------------
+
+export const DailyReportStatusEnum = Type.Union([
+  Type.Literal('DRAFT'),
+  Type.Literal('SUBMITTED'),
+  Type.Literal('APPROVED'),
+  Type.Literal('REJECTED'),
+  Type.Literal('LOCKED'),
+]);
+
+export const WeatherConditionEnum = Type.Union([
+  Type.Literal('CLEAR'),
+  Type.Literal('OVERCAST'),
+  Type.Literal('LIGHT_RAIN'),
+  Type.Literal('HEAVY_RAIN'),
+  Type.Literal('STORMY'),
+  Type.Literal('EXTREME_HEAT'),
+]);
+
+export const LabourCategoryEnum = Type.Union([
+  Type.Literal('CAT_A_STAFF'),
+  Type.Literal('CAT_B_DIRECT_LABOUR'),
+  Type.Literal('CAT_C_SUBCONTRACTOR'),
+]);
+
+export const ListDailyReportsQuery = Type.Object({
+  siteId: Type.Optional(Type.String({ format: 'uuid' })),
+  fromDate: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  toDate: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  status: Type.Optional(DailyReportStatusEnum),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, default: 0 })),
+});
+
+export const CalculateDailyReportBody = Type.Object({
+  siteId: Type.String({ format: 'uuid' }),
+  businessDate: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
+});
+
+export const UpdateDailyReportBody = Type.Object({
+  weather: Type.Optional(WeatherConditionEnum),
+  weatherStoppageHours: Type.Optional(Type.Number({ minimum: 0, maximum: 24 })),
+  workProgressNotes: Type.Optional(Type.String({ maxLength: 5000 })),
+  siteObstaclesRemarks: Type.Optional(Type.String({ maxLength: 5000 })),
+  safetyIncidentReported: Type.Optional(Type.Boolean()),
+  safetyNotes: Type.Optional(Type.String({ maxLength: 2000 })),
+  version: Type.Integer({ minimum: 0 }),
+});
+
+export const UpdateLabourSummaryBody = Type.Object({
+  headcount: Type.Optional(Type.Integer({ minimum: 0 })),
+  presentUnits: Type.Optional(Type.Number({ minimum: 0 })),
+  overtimeHours: Type.Optional(Type.Number({ minimum: 0 })),
+  remarks: Type.Optional(Type.String({ maxLength: 255 })),
+  reason: Type.String({ minLength: 3, maxLength: 255 }),
+});
+
+export const RejectDailyReportBody = Type.Object({
+  reason: Type.String({ minLength: 3, maxLength: 1000 }),
+});
+
+export const LockDailyReportBody = Type.Object({
+  reason: Type.Optional(Type.String({ maxLength: 500 })),
+});
+
+export type ListDailyReportsFilter = Static<typeof ListDailyReportsQuery>;
+export type CalculateDailyReportInput = Static<typeof CalculateDailyReportBody>;
+export type UpdateDailyReportInput = Static<typeof UpdateDailyReportBody>;
+export type UpdateLabourSummaryInput = Static<typeof UpdateLabourSummaryBody>;
+export type RejectDailyReportInput = Static<typeof RejectDailyReportBody>;
+export type LockDailyReportInput = Static<typeof LockDailyReportBody>;
+
