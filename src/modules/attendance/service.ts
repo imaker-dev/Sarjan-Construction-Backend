@@ -362,9 +362,9 @@ export class AttendanceService {
       if (hasSite === hasHo) {
         throw new AttendanceValidationError('Provide exactly one of siteId or headOfficeId');
       }
-      const punchTarget = input.siteId !== undefined
+      const punchTarget = input.siteId
         ? siteTarget(companyId, input.siteId)
-        : headOfficeTarget(companyId, input.headOfficeId ?? '');
+        : headOfficeTarget(companyId, input.headOfficeId as string);
 
       // Assert permission: supervisor punch or privileged source requires ATTENDANCE_MANAGE
       const isPrivilegedSource = input.source !== undefined && input.source !== 'MOBILE_SELF';
@@ -943,8 +943,9 @@ export class AttendanceService {
         }),
       );
 
-      // Auto-recalculate active DSR if one exists in DRAFT or SUBMITTED
-      if (session.siteId) {
+      // Auto-recalculate active DSR if one exists in DRAFT or SUBMITTED.
+      // Head-office-anchored sessions have no site DSR — skip them.
+      if (session.siteId !== null) {
         const existingReport = await repos.dailyReports.findBySiteAndDate(
           companyId,
           session.siteId,
@@ -2141,11 +2142,7 @@ export class AttendanceService {
     });
   }
 
-  async getDailyReports(
-    actor: ActorContext,
-    companyId: string,
-    filter: ListDailyReportsFilter,
-  ) {
+  async getDailyReports(actor: ActorContext, companyId: string, filter: ListDailyReportsFilter) {
     if (filter.siteId) {
       await this.authorizer.assertPermission(
         actor.actorId,
@@ -2211,12 +2208,7 @@ export class AttendanceService {
         ...(input.safetyNotes !== undefined ? { safetyNotes: input.safetyNotes } : {}),
       };
 
-      const updated = await repos.dailyReports.update(
-        companyId,
-        id,
-        updateData,
-        input.version,
-      );
+      const updated = await repos.dailyReports.update(companyId, id, updateData, input.version);
 
       await repos.dailyReports.addAuditLog(companyId, id, {
         actorId: actor.actorId,

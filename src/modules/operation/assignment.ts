@@ -777,11 +777,12 @@ export class OperationAssignmentService {
 
   /**
    * Finance-role coverage: an active COMPANY-scope FINANCE_MANAGER/FINANCE_STAFF
-   * assignment covers every ACTIVE non-sensitive op in a finance domain
-   * (FINANCE_OPERATION_DOMAINS, plus PROJECT_DASHBOARD_VIEW which the finance
-   * read APIs require) enabled on any ACTIVE department in the company.
-   * Resolved live, so enabling/disabling an op on a department updates the
-   * holder's effective ops immediately; revoking the role ends coverage.
+   * assignment automatically covers every non-sensitive catalogue op in a
+   * finance domain (FINANCE_OPERATION_DOMAINS, plus PROJECT_DASHBOARD_VIEW
+   * which the finance read APIs require) — no department enablement required.
+   * Admin control still applies per employee: an INACTIVE/REVOKED
+   * EmployeeOperation override subtracts a covered key everywhere
+   * (effective ops, /auth/me, op gates), and re-activating it restores it.
    * Sensitive operations are never covered — they require an explicit
    * per-employee grant (the distinct restricted policy).
    */
@@ -805,22 +806,14 @@ export class OperationAssignmentService {
       select: { id: true },
     });
     if (assignment === null) return [];
-    const deptOps = await this.prisma.departmentOperation.findMany({
+    const entries = await this.prisma.operationCatalogueEntry.findMany({
       where: {
-        companyId,
-        status: 'ACTIVE',
-        department: { companyId, status: 'ACTIVE' },
-        operation: {
-          sensitive: false,
-          OR: [
-            { domain: { in: [...FINANCE_OPERATION_DOMAINS] } },
-            { key: 'PROJECT_DASHBOARD_VIEW' },
-          ],
-        },
+        sensitive: false,
+        OR: [{ domain: { in: [...FINANCE_OPERATION_DOMAINS] } }, { key: 'PROJECT_DASHBOARD_VIEW' }],
       },
-      select: { operationKey: true },
+      select: { key: true },
     });
-    return deptOps.map((d) => d.operationKey);
+    return entries.map((e) => e.key);
   }
 
   private async assertActiveDept(companyId: string, departmentId: string) {

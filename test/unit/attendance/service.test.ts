@@ -18,15 +18,12 @@ import type {
 import { AttendanceService } from '../../../src/modules/attendance/service.js';
 
 function createMockUow(repos: Partial<AttendanceRepos>): AttendanceUnitOfWork {
-  const fullRepos: Partial<AttendanceRepos> = {
-    dailyReports: {
-      findBySiteAndDate: vi.fn().mockResolvedValue(null),
-    } as unknown as AttendanceRepos['dailyReports'],
-    ...repos,
+  const dailyReports = repos.dailyReports ?? {
+    findBySiteAndDate: vi.fn().mockResolvedValue(null),
   };
   return {
     run: async <T>(fn: (r: AttendanceRepos) => Promise<T>): Promise<T> => {
-      return fn(fullRepos as AttendanceRepos);
+      return fn({ dailyReports, ...repos } as AttendanceRepos);
     },
   };
 }

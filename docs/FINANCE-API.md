@@ -350,15 +350,16 @@ GET /api/v1/employees/emp-mgr-uuid/operations        # EMPLOYEE_READ — effecti
 ```
 
 **Finance-role coverage (automatic):** an active `FINANCE_MANAGER` /
-`FINANCE_STAFF` assignment covers every non-sensitive op in a finance domain
-(`PROJECT_FINANCE`, `BUDGET`, `WALLET`, `PAYROLL`, `BILLING`, `QUOTATION`,
-`ACCOUNTING`, `REPORT`) — plus `PROJECT_DASHBOARD_VIEW` — enabled on **any**
-active department in the company. It resolves live: enabling/disabling an op
-on a department, or revoking the role, updates the list immediately with no
-employee rows to maintain. These rows show `source: "ROLE"`. Coverage never
-includes **sensitive** ops (`FINANCE_EMPLOYMENT_DETAILS_VIEW`,
-`PAYROLL_INPUT_REVIEW`, …) — grant those explicitly per employee, and an
-employee-level `INACTIVE`/`REVOKED` override still subtracts a covered op.
+`FINANCE_STAFF` assignment automatically covers **every non-sensitive
+catalogue op** in a finance domain (`PROJECT_FINANCE`, `BUDGET`, `WALLET`,
+`PAYROLL`, `BILLING`, `QUOTATION`, `ACCOUNTING`, `REPORT`) plus
+`PROJECT_DASHBOARD_VIEW` — no department enablement needed. These rows show
+`source: "ROLE"` and resolve live: revoking the role clears them instantly.
+Admin control is per employee — `PATCH /employees/:id/operations/:key/status`
+with `INACTIVE` subtracts the op everywhere (list, `/auth/me`, op gates) and
+`ACTIVE` restores it. Coverage never includes **sensitive** ops
+(`FINANCE_EMPLOYMENT_DETAILS_VIEW`, `PAYROLL_INPUT_REVIEW`, …) — grant those
+explicitly per employee.
 
 > Membership alone never grants operations; operations alone never grant API
 > permissions. Both must hold (or the caller is `COMPANY_OWNER`).
