@@ -135,6 +135,8 @@ const UserMeResponseSchema = Type.Object({
       departmentName: Type.String(),
       category: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       isPrimary: Type.Boolean(),
+      headOfficeId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+      headOfficeName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     }),
   ),
 });
@@ -185,6 +187,8 @@ const UserAggregatedProfileResponseSchema = Type.Object({
       departmentName: Type.String(),
       category: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       isPrimary: Type.Boolean(),
+      headOfficeId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+      headOfficeName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     }),
   ),
   assignments: Type.Array(
@@ -372,7 +376,12 @@ export default function authRoutes(opts: AuthRoutesOptions) {
           return service.confirmMfaSetup(request.principal.actorId, body.mfaToken, body.code);
         }
         await service.mfaService.enableMfa(request.principal.actorId, 'EMAIL_OTP');
-        return { success: true, mfaEnabled: true, mfaType: 'EMAIL_OTP', message: 'Two-factor authentication enabled successfully' };
+        return {
+          success: true,
+          mfaEnabled: true,
+          mfaType: 'EMAIL_OTP',
+          message: 'Two-factor authentication enabled successfully',
+        };
       },
     );
 

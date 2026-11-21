@@ -68,6 +68,8 @@ export interface FullPrincipalDetails extends Principal {
         code: string;
         name: string;
         category?: string | null;
+        baseHeadOfficeId?: string | null;
+        baseHeadOffice?: { id: string; code: string; name: string } | null;
       };
     }[];
     attendanceSessions?: {
@@ -218,7 +220,11 @@ export function makeAuthRepos(tx: Tx): AuthRepos {
                 memberships: {
                   where: { endedAt: null },
                   include: {
-                    department: true,
+                    department: {
+                      include: {
+                        baseHeadOffice: { select: { id: true, code: true, name: true } },
+                      },
+                    },
                   },
                 },
                 attendanceSessions: {

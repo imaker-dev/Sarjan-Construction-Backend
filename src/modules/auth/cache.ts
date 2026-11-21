@@ -41,6 +41,8 @@ export interface UserProfileResponse {
     departmentName: string;
     category?: string | null;
     isPrimary: boolean;
+    headOfficeId?: string | null;
+    headOfficeName?: string | null;
   }[];
 }
 
@@ -99,11 +101,7 @@ export class RedisUserProfileCache implements UserProfileCache {
     }
   }
 
-  async set(
-    principalId: string,
-    data: UserProfileResponse,
-    companyId?: string,
-  ): Promise<void> {
+  async set(principalId: string, data: UserProfileResponse, companyId?: string): Promise<void> {
     try {
       const gen = (await this.redis.get(`auth:me:gen:${principalId}`)) ?? '0';
       const key = `auth:me:data:${principalId}:${gen}:${companyId ?? 'default'}`;
@@ -121,4 +119,3 @@ export class RedisUserProfileCache implements UserProfileCache {
     }
   }
 }
-
