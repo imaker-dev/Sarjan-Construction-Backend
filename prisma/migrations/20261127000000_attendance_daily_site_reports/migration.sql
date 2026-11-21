@@ -7,13 +7,6 @@ CREATE TYPE "WeatherCondition" AS ENUM ('CLEAR', 'OVERCAST', 'LIGHT_RAIN', 'HEAV
 -- CreateEnum
 CREATE TYPE "LabourCategory" AS ENUM ('CAT_A_STAFF', 'CAT_B_DIRECT_LABOUR', 'CAT_C_SUBCONTRACTOR');
 
--- DropForeignKey
-ALTER TABLE "ProjectBudget" DROP CONSTRAINT "ProjectBudget_latestApprovedRevisionId_fkey";
-
--- AlterTable
-ALTER TABLE "WorkScheduleRevision" ALTER COLUMN "rotationWorkingOffsets" DROP DEFAULT,
-ALTER COLUMN "rotationOffOffsets" DROP DEFAULT;
-
 -- CreateTable
 CREATE TABLE "DailySiteReport" (
     "id" UUID NOT NULL,

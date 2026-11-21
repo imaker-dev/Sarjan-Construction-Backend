@@ -52,9 +52,15 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
   } as unknown as Site & { project: { timezone: string } };
 
   it('calculates daily site report: auto-closes in-progress sessions and aggregates Categories A, B, and C', async () => {
-    let autoClosedSessionId: string | null = null;
-    let upsertedData: CalculatedReportData | null = null;
-    let auditAction: string | null = null;
+    const state: {
+      autoClosedSessionId: string | null;
+      upsertedData: CalculatedReportData | null;
+      auditAction: string | null;
+    } = {
+      autoClosedSessionId: null,
+      upsertedData: null,
+      auditAction: null,
+    };
 
     const mockSessions = [
       {
@@ -112,7 +118,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
         }),
         update: vi.fn().mockImplementation(async (_cid: string, sid: string, data: Record<string, unknown>) => {
           if (sid === 'sess-open') {
-            autoClosedSessionId = sid;
+            state.autoClosedSessionId = sid;
           }
           return { id: sid, ...data };
         }),
@@ -120,7 +126,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       dailyReports: {
         findBySiteAndDate: vi.fn().mockResolvedValue(null),
         upsert: vi.fn().mockImplementation(async (_cid: string, data: CalculatedReportData) => {
-          upsertedData = data;
+          state.upsertedData = data;
           return {
             id: 'dsr-101',
             companyId,
@@ -132,7 +138,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
           };
         }),
         addAuditLog: vi.fn().mockImplementation(async (_cid: string, _rid: string, data: { action: string }) => {
-          auditAction = data.action;
+          state.auditAction = data.action;
           return { id: 'audit-1', ...data };
         }),
       },
@@ -146,17 +152,17 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
     });
 
     expect(report.id).toBe('dsr-101');
-    expect(autoClosedSessionId).toBe('sess-open');
-    expect(upsertedData).not.toBeNull();
-    expect(upsertedData?.totalWorkersHeadcount).toBe(4);
-    expect(upsertedData?.totalPresentUnits).toBe(2.5);
-    expect(upsertedData?.totalOvertimeHours).toBe(3.5);
-    expect(upsertedData?.catAStaffCount).toBe(1);
-    expect(upsertedData?.catAStaffUnits).toBe(1.0);
-    expect(upsertedData?.catBDirectCount).toBe(2);
-    expect(upsertedData?.catCSubconCount).toBe(1);
-    expect(upsertedData?.catCSubconUnits).toBe(0.5);
-    expect(auditAction).toBe('AUTO_CALCULATED');
+    expect(state.autoClosedSessionId).toBe('sess-open');
+    expect(state.upsertedData).not.toBeNull();
+    expect(state.upsertedData?.totalWorkersHeadcount).toBe(4);
+    expect(state.upsertedData?.totalPresentUnits).toBe(2.5);
+    expect(state.upsertedData?.totalOvertimeHours).toBe(3.5);
+    expect(state.upsertedData?.catAStaffCount).toBe(1);
+    expect(state.upsertedData?.catAStaffUnits).toBe(1.0);
+    expect(state.upsertedData?.catBDirectCount).toBe(2);
+    expect(state.upsertedData?.catCSubconCount).toBe(1);
+    expect(state.upsertedData?.catCSubconUnits).toBe(0.5);
+    expect(state.auditAction).toBe('AUTO_CALCULATED');
   });
 
   it('prevents calculation if the daily report is already LOCKED', async () => {
@@ -177,7 +183,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
   });
 
   it('updates report header and work progress notes with audit logging', async () => {
-    let capturedAudit: { action: string } | null = null;
+    const auditState = { capturedAudit: null as { action: string } | null };
     const existingReport: Partial<DailySiteReport> = {
       id: 'dsr-1',
       companyId,
@@ -198,7 +204,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
           version: 1,
         }),
         addAuditLog: vi.fn().mockImplementation(async (_cid: string, _rid: string, data: { action: string }) => {
-          capturedAudit = data;
+          auditState.capturedAudit = data;
           return { id: 'a1', ...data };
         }),
       },
@@ -215,11 +221,11 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
 
     expect(updated.weather).toBe('HEAVY_RAIN');
     expect(Number(updated.weatherStoppageHours)).toBe(4.5);
-    expect(capturedAudit?.action).toBe('EDITED_HEADER');
+    expect(auditState.capturedAudit?.action).toBe('EDITED_HEADER');
   });
 
   it('allows PM to adjust subcontractor labour summary headcount and recalculates totals', async () => {
-    let capturedAudit: { action: string; reason: string } | null = null;
+    const auditState = { capturedAudit: null as { action: string; reason: string } | null };
     const existingReport = {
       id: 'dsr-1',
       companyId,
@@ -258,7 +264,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
         }),
         update: vi.fn().mockResolvedValue(existingReport),
         addAuditLog: vi.fn().mockImplementation(async (_cid: string, _rid: string, data: { action: string; reason: string }) => {
-          capturedAudit = data;
+          auditState.capturedAudit = data;
           return { id: 'a1', ...data };
         }),
       },
@@ -273,8 +279,8 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       reason: 'Physical head count showed 2 workers left early',
     });
 
-    expect(capturedAudit?.action).toBe('EDITED_LABOUR_SUMMARY');
-    expect(capturedAudit?.reason).toBe('Physical head count showed 2 workers left early');
+    expect(auditState.capturedAudit?.action).toBe('EDITED_LABOUR_SUMMARY');
+    expect(auditState.capturedAudit?.reason).toBe('Physical head count showed 2 workers left early');
   });
 
   it('supports the complete sign-off lifecycle: DRAFT -> SUBMITTED -> APPROVED -> LOCKED', async () => {

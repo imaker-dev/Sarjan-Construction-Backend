@@ -362,9 +362,9 @@ export class AttendanceService {
       if (hasSite === hasHo) {
         throw new AttendanceValidationError('Provide exactly one of siteId or headOfficeId');
       }
-      const punchTarget = hasSite
-        ? siteTarget(companyId, input.siteId!)
-        : headOfficeTarget(companyId, input.headOfficeId!);
+      const punchTarget = input.siteId !== undefined
+        ? siteTarget(companyId, input.siteId)
+        : headOfficeTarget(companyId, input.headOfficeId ?? '');
 
       // Assert permission: supervisor punch or privileged source requires ATTENDANCE_MANAGE
       const isPrivilegedSource = input.source !== undefined && input.source !== 'MOBILE_SELF';
@@ -944,23 +944,25 @@ export class AttendanceService {
       );
 
       // Auto-recalculate active DSR if one exists in DRAFT or SUBMITTED
-      const existingReport = await repos.dailyReports.findBySiteAndDate(
-        companyId,
-        session.siteId,
-        session.businessDate,
-      );
-      if (
-        existingReport &&
-        (existingReport.status === 'DRAFT' || existingReport.status === 'SUBMITTED')
-      ) {
-        await this.internalRecalculateReport(
-          repos,
+      if (session.siteId) {
+        const existingReport = await repos.dailyReports.findBySiteAndDate(
           companyId,
           session.siteId,
           session.businessDate,
-          actor.actorId,
-          `Session ${sessionId} regularized`,
         );
+        if (
+          existingReport &&
+          (existingReport.status === 'DRAFT' || existingReport.status === 'SUBMITTED')
+        ) {
+          await this.internalRecalculateReport(
+            repos,
+            companyId,
+            session.siteId,
+            session.businessDate,
+            actor.actorId,
+            `Session ${sessionId} regularized`,
+          );
+        }
       }
 
       return updated;
