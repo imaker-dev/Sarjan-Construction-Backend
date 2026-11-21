@@ -3,6 +3,8 @@ dist/
 var/
 coverage/
 .env
+# Ignore agent skills
+.agents/skills/
 .env.*
 !.env.example
 *.log
