@@ -67,6 +67,11 @@ export interface AttendanceRepos {
       companyId: string,
       employeeId: string,
     ): Promise<(AttendanceSession & { breaks: AttendanceBreak[] }) | null>;
+    findByEmployeeAndDate?(
+      companyId: string,
+      employeeId: string,
+      businessDate: string,
+    ): Promise<(AttendanceSession & { breaks: AttendanceBreak[] })[]>;
     findActiveMany?(
       companyId: string,
       employeeIds: string[],
@@ -498,6 +503,16 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         }
         return session;
       },
+      findByEmployeeAndDate: (companyId, employeeId, businessDate) =>
+        tx.attendanceSession.findMany({
+          where: { companyId, employeeId, businessDate },
+          include: {
+            breaks: {
+              orderBy: { startedAt: 'asc' },
+            },
+          },
+          orderBy: { punchInAt: 'asc' },
+        }),
       findActiveMany: (companyId, employeeIds) =>
         tx.attendanceSession.findMany({
           where: {

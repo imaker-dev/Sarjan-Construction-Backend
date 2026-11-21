@@ -197,11 +197,12 @@ export class DocumentService {
     }
     const sha256 = createHash('sha256').update(input.body).digest('hex');
     return this.deps.uow.run(async (repos) => {
+      const targetStatus = input.autoApprove ? 'AVAILABLE' : 'QUARANTINED';
       const finalized = await repos.documents.setStatus(
         companyId,
         doc.id,
         {
-          status: 'QUARANTINED',
+          status: targetStatus,
           contentType: sniffed,
           sizeBytes: input.body.length,
           sha256,
@@ -215,12 +216,32 @@ export class DocumentService {
           entityId: doc.id,
           companyId,
           statusBefore: 'UPLOADING',
-          statusAfter: 'QUARANTINED',
+          statusAfter: targetStatus,
           changedFields: { sizeBytes: { before: null, after: input.body.length } },
         }),
       );
       return finalized;
     });
+  }
+
+  /** Retrieve raw storage stream for domain services that independently authorize access. */
+  async getRawStream(
+    companyId: string,
+    documentId: string,
+  ): Promise<{ document: Document; contentType: string; fileName: string; stream: import('node:stream').Readable }> {
+    const doc = await this.deps.uow.run(async (repos) => {
+      const d = await repos.documents.findById(companyId, documentId);
+      if (d === null) throw new OrgEntityNotFoundError('DOCUMENT');
+      return d;
+    });
+    if (doc.status !== 'AVAILABLE') throw new DocumentNotAvailableError(doc.status);
+    const stream = await this.deps.storage.getStream(doc.storageKey);
+    return {
+      document: doc,
+      contentType: doc.contentType ?? 'application/octet-stream',
+      fileName: doc.originalFileName,
+      stream,
+    };
   }
 
   /** QUARANTINED → AVAILABLE — only through authorized review. */

@@ -130,6 +130,7 @@ model Company {
   dailySiteReports       DailySiteReport[]
   dailySiteReportLabours DailySiteReportLabour[]
   dailyReportAuditLogs   DailyReportAuditLog[]
+  employeeDocuments      EmployeeDocument[]
 }
 
 model HeadOffice {
@@ -337,6 +338,29 @@ enum EmploymentEngagementType {
   OTHER
 }
 
+enum EmployeeDocumentType {
+  AADHAAR
+  PAN
+  VOTER_ID
+  PASSPORT
+  DRIVING_LICENSE
+  OPERATOR_LICENSE
+  TRADE_CERTIFICATE
+  ACADEMIC_CERTIFICATE
+  FITNESS_CERTIFICATE
+  POLICE_VERIFICATION
+  EMPLOYMENT_CONTRACT
+  BANK_DETAILS
+  PHOTO
+  OTHER
+}
+
+enum DocumentVerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
 enum ScopeType {
   COMPANY
   HEAD_OFFICE
@@ -390,6 +414,7 @@ model Principal {
   submittedBudgetRevisions BudgetRevision[]     @relation("BudgetRevisionSubmitter")
   decidedBudgetRevisions   BudgetRevision[]     @relation("BudgetRevisionDecider")
   budgetReviewDecisions    BudgetReviewDecision[]
+  verifiedEmployeeDocuments EmployeeDocument[]   @relation("EmployeeDocVerifier")
 }
 
 // Company-scoped workforce record. Login linkage is optional — most labourers
@@ -430,6 +455,7 @@ model Employee {
   dsrSubmissions     DailySiteReport[]      @relation("DsrSubmittedBy")
   dsrApprovals       DailySiteReport[]      @relation("DsrApprovedBy")
   dsrLocks           DailySiteReport[]      @relation("DsrLockedBy")
+  documents          EmployeeDocument[]
 
   // Employee code is unique within a company.
   @@unique([companyId, employeeCode])
@@ -1265,6 +1291,7 @@ model Document {
   site              Site?              @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
   links             DocumentLink[]
   complianceRecords ComplianceRecord[]
+  employeeDocuments EmployeeDocument[]
 
   @@unique([id, companyId])
   @@unique([companyId, storageKey])
@@ -1303,6 +1330,37 @@ model DocumentLink {
   @@index([companyId, documentId, unlinkedAt])
   @@index([companyId, formSubmissionId, unlinkedAt])
   @@index([companyId, workflowInstanceId, unlinkedAt])
+}
+
+model EmployeeDocument {
+  id                    String                     @id @default(uuid()) @db.Uuid
+  companyId             String                     @db.Uuid
+  employeeId            String                     @db.Uuid
+  documentId            String                     @db.Uuid
+  documentType          EmployeeDocumentType
+  title                 String
+  documentNumber        String?
+  issuingAuthority      String?
+  issueDate             DateTime?                  @db.Date
+  expiryDate            DateTime?                  @db.Date
+  verificationStatus    DocumentVerificationStatus @default(PENDING)
+  verifiedByPrincipalId String?                    @db.Uuid
+  verifiedAt            DateTime?                  @db.Timestamptz
+  rejectionReason       String?
+  metadata              Json?
+  version               Int                        @default(0)
+  createdAt             DateTime                   @default(now()) @db.Timestamptz
+  updatedAt             DateTime                   @updatedAt @db.Timestamptz
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee   Employee   @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  document   Document   @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
+  verifiedBy Principal? @relation("EmployeeDocVerifier", fields: [verifiedByPrincipalId], references: [id], onDelete: Restrict)
+
+  @@unique([id, companyId])
+  @@index([companyId, employeeId, documentType])
+  @@index([companyId, expiryDate])
+  @@index([companyId, verificationStatus])
 }
 
 // ---------------------------------------------------------------------------

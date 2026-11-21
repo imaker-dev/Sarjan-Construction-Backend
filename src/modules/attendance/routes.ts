@@ -260,7 +260,46 @@ export function attendanceRoutes(service: AttendanceService) {
           companyIdOf(req),
           query.employeeId,
         );
-        return { session: active };
+
+        if (!active) {
+          const summary = await service.getDailySummaryForEmployee(
+            actorOf(req),
+            companyIdOf(req),
+            query.employeeId,
+          );
+          return {
+            session: null,
+            ...(summary ?? {}),
+          };
+        }
+
+        return {
+          session: active,
+          ...(active.isDelayedClockIn !== undefined
+            ? {
+                isDelayedClockIn: active.isDelayedClockIn,
+                delayedClockInMinutes: active.delayedClockInMinutes,
+                delayedClockInTime: active.delayedClockInTime,
+                delayedClockInFormatted: active.delayedClockInFormatted,
+                clockOutTimeProper8Hours: active.clockOutTimeProper8Hours,
+                expectedClockOutAt: active.expectedClockOutAt,
+                scheduledClockInAt: active.scheduledClockInAt,
+                targetWorkDurationMins: active.targetWorkDurationMins,
+                remainingMinutesFor8Hours: active.remainingMinutesFor8Hours,
+              }
+            : {}),
+          ...(active.activityLog !== undefined
+            ? {
+                businessDate: active.businessDate,
+                totalCheckInsToday: active.totalCheckInsToday,
+                totalCheckOutsToday: active.totalCheckOutsToday,
+                currentlyCheckedIn: active.currentlyCheckedIn,
+                totalWorkMinutesToday: active.totalWorkMinutesToday,
+                totalBreakMinutesToday: active.totalBreakMinutesToday,
+                activityLog: active.activityLog,
+              }
+            : {}),
+        };
       },
     );
 

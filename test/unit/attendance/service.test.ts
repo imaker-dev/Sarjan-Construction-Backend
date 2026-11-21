@@ -1321,6 +1321,75 @@ describe('AttendanceService', () => {
         expect(authSpy).toHaveBeenCalledWith('u1', 'ATTENDANCE_READ', expect.anything());
       });
 
+      it('enriches active session with delayed clock in and proper 8-hour clock out time', async () => {
+        // Scheduled: 08:00 AM Kolkata (02:30 UTC); punched in: 08:35 AM Kolkata (03:05 UTC)
+        const punchInAt = new Date('2026-11-21T03:05:00.000Z');
+        const mockRepos: Partial<AttendanceRepos> = {
+          employees: {
+            findByPrincipal: vi.fn().mockResolvedValue(sampleEmployee),
+          } as unknown as AttendanceRepos['employees'],
+          sessions: {
+            findActive: vi.fn().mockResolvedValue({
+              id: 'sess-active-timing',
+              siteId: 's1',
+              employeeId: sampleEmployee.id,
+              policyId: 'pol-1',
+              businessDate: '2026-11-21',
+              status: 'IN_PROGRESS',
+              punchInAt,
+              breaks: [],
+            }),
+            findByEmployeeAndDate: vi.fn().mockResolvedValue([
+              {
+                id: 'sess-active-timing',
+                siteId: 's1',
+                employeeId: sampleEmployee.id,
+                businessDate: '2026-11-21',
+                status: 'IN_PROGRESS',
+                punchInAt,
+                breaks: [],
+              },
+            ]),
+          } as unknown as AttendanceRepos['sessions'],
+          policies: {
+            findById: vi.fn().mockResolvedValue({
+              id: 'pol-1',
+              dayStartHour: 8,
+              dayStartMinute: 0,
+              shiftDurationMins: 480,
+            }),
+          } as unknown as AttendanceRepos['policies'],
+          sites: {
+            findById: vi.fn().mockResolvedValue(sampleSite),
+          },
+        };
+
+        const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+        const session = await service.getActiveSession(actor, companyId);
+
+        expect(session).not.toBeNull();
+        expect(session?.id).toBe('sess-active-timing');
+        const s = session as unknown as {
+          isDelayedClockIn: boolean;
+          delayedClockInMinutes: number;
+          delayedClockInTime: string;
+          clockOutTimeProper8Hours: string;
+          totalCheckInsToday: number;
+          totalCheckOutsToday: number;
+          currentlyCheckedIn: boolean;
+          activityLog: unknown[];
+        };
+        expect(s.isDelayedClockIn).toBe(true);
+        expect(s.delayedClockInMinutes).toBe(35);
+        expect(s.delayedClockInTime).toBe('00:35');
+        // Proper 8 working hours = 03:05 UTC + 8h = 11:05 UTC
+        expect(s.clockOutTimeProper8Hours).toBe('2026-11-21T11:05:00.000Z');
+        expect(s.totalCheckInsToday).toBe(1);
+        expect(s.totalCheckOutsToday).toBe(0);
+        expect(s.currentlyCheckedIn).toBe(true);
+        expect(s.activityLog).toHaveLength(1);
+      });
+
       it('Issue 10: kioskOfflineSync rejects inactive employee, duplicate active, and TVT BLOCK', async () => {
         const mockRepos: Partial<AttendanceRepos> = {
           sites: {

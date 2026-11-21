@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildDailyActivitySummary,
+  calculateActiveSessionTiming,
   calculateHaversineDistanceMeters,
   calculateWorkAndOvertime,
   getBusinessDate,
+  getScheduledShiftStart,
   type AttendancePolicyLike,
 } from '../../../src/modules/attendance/types.js';
 
@@ -214,6 +217,182 @@ describe('Attendance Types & Domain Helpers', () => {
       expect(res.breakDurationMins).toBe(45);
       expect(res.netDurationMins).toBe(495); // 540 - 45 = 495m
       expect(res.presentUnits).toBe(1.0);
+    });
+  });
+
+  describe('getScheduledShiftStart', () => {
+    it('returns exact UTC Date for 08:00 AM local time in Asia/Kolkata (+05:30)', () => {
+      // 08:00 AM in Asia/Kolkata is 02:30 UTC
+      const start = getScheduledShiftStart('2026-11-21', 8, 0, 'Asia/Kolkata');
+      expect(start.toISOString()).toBe('2026-11-21T02:30:00.000Z');
+    });
+
+    it('supports custom shift start hours and minutes', () => {
+      // 09:30 AM in Asia/Kolkata is 04:00 UTC
+      const start = getScheduledShiftStart('2026-11-21', 9, 30, 'Asia/Kolkata');
+      expect(start.toISOString()).toBe('2026-11-21T04:00:00.000Z');
+    });
+  });
+
+  describe('calculateActiveSessionTiming', () => {
+    it('detects delayed clock-in and calculates delayed minutes and formatted time', () => {
+      // Scheduled start: 08:00 AM Kolkata (02:30 UTC)
+      // Actual punch in: 08:25 AM Kolkata (02:55 UTC) -> 25 mins late
+      const punchInAt = new Date('2026-11-21T02:55:00.000Z');
+      const timing = calculateActiveSessionTiming({
+        punchInAt,
+        businessDate: '2026-11-21',
+        timezone: 'Asia/Kolkata',
+        policy: {
+          dayStartHour: 8,
+          dayStartMinute: 0,
+          shiftDurationMins: 480,
+          breakMode: 'FIXED',
+          fixedBreakMins: 60,
+        },
+      });
+
+      expect(timing.isDelayedClockIn).toBe(true);
+      expect(timing.delayedClockInMinutes).toBe(25);
+      expect(timing.delayedClockInTime).toBe('00:25');
+      expect(timing.delayedClockInFormatted).toBe('25 mins');
+
+      // Clock out time for proper 8 working hours = punchInAt + 8 hours (02:55 UTC + 8h = 10:55 UTC)
+      expect(timing.clockOutTimeProper8Hours).toBe('2026-11-21T10:55:00.000Z');
+      // Expected clock out including 60m fixed break = punchInAt + 9 hours = 11:55 UTC
+      expect(timing.expectedClockOutAt).toBe('2026-11-21T11:55:00.000Z');
+      expect(timing.targetWorkDurationMins).toBe(480);
+    });
+
+    it('flags punctual or early clock-in as not delayed', () => {
+      // Scheduled start: 08:00 AM Kolkata (02:30 UTC)
+      // Actual punch in: 07:50 AM Kolkata (02:20 UTC) -> 10 mins early
+      const punchInAt = new Date('2026-11-21T02:20:00.000Z');
+      const timing = calculateActiveSessionTiming({
+        punchInAt,
+        businessDate: '2026-11-21',
+        timezone: 'Asia/Kolkata',
+      });
+
+      expect(timing.isDelayedClockIn).toBe(false);
+      expect(timing.delayedClockInMinutes).toBe(0);
+      expect(timing.delayedClockInTime).toBeNull();
+      expect(timing.delayedClockInFormatted).toBeNull();
+      // Proper 8 working hours = 02:20 UTC + 8h = 10:20 UTC
+      expect(timing.clockOutTimeProper8Hours).toBe('2026-11-21T10:20:00.000Z');
+    });
+
+    it('calculates proper 8 working hours with dynamic breaks', () => {
+      const punchInAt = new Date('2026-11-21T03:00:00.000Z');
+      const timing = calculateActiveSessionTiming({
+        punchInAt,
+        businessDate: '2026-11-21',
+        timezone: 'Asia/Kolkata',
+        policy: {
+          dayStartHour: 8,
+          dayStartMinute: 0,
+          shiftDurationMins: 480,
+          breakMode: 'DYNAMIC',
+        },
+        breaks: [
+          { startedAt: new Date('2026-11-21T06:00:00.000Z'), durationMins: 30 },
+        ],
+      });
+
+      // Proper 8 hours = 03:00 UTC + 8h = 11:00 UTC
+      expect(timing.clockOutTimeProper8Hours).toBe('2026-11-21T11:00:00.000Z');
+      // Expected clock out including 30m dynamic break = 03:00 UTC + 8.5h = 11:30 UTC
+      expect(timing.expectedClockOutAt).toBe('2026-11-21T11:30:00.000Z');
+    });
+  });
+
+  describe('buildDailyActivitySummary', () => {
+    it('aggregates multiple check-ins and check-outs across sessions in a single day', () => {
+      const morningSession = {
+        id: 'sess-1',
+        companyId: 'comp-1',
+        employeeId: 'emp-1',
+        businessDate: '2026-11-21',
+        source: 'MOBILE',
+        status: 'COMPLETED',
+        punchInAt: new Date('2026-11-21T03:00:00.000Z'), // 08:30 IST
+        punchOutAt: new Date('2026-11-21T07:30:00.000Z'), // 13:00 IST
+        grossDurationMins: 270,
+        breakDurationMins: 30,
+        netDurationMins: 240,
+        punchInWithinGeofence: true,
+        punchInRemarks: 'Morning start',
+        breaks: [
+          {
+            id: 'brk-1',
+            sessionId: 'sess-1',
+            companyId: 'comp-1',
+            startedAt: new Date('2026-11-21T05:00:00.000Z'),
+            endedAt: new Date('2026-11-21T05:30:00.000Z'),
+            durationMins: 30,
+            remarks: 'Tea break',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            breakType: 'TEA',
+            isApproved: true,
+          },
+        ],
+      };
+
+      const afternoonSession = {
+        id: 'sess-2',
+        companyId: 'comp-1',
+        employeeId: 'emp-1',
+        businessDate: '2026-11-21',
+        source: 'KIOSK',
+        status: 'IN_PROGRESS',
+        punchInAt: new Date('2026-11-21T08:30:00.000Z'), // 14:00 IST
+        punchOutAt: null,
+        grossDurationMins: 0,
+        breakDurationMins: 0,
+        netDurationMins: 0,
+        punchInWithinGeofence: true,
+        punchInRemarks: 'Post lunch return',
+        breaks: [],
+      };
+
+      const summary = buildDailyActivitySummary('2026-11-21', [
+        morningSession as never,
+        afternoonSession as never,
+      ]);
+
+      expect(summary.businessDate).toBe('2026-11-21');
+      expect(summary.totalCheckInsToday).toBe(2);
+      expect(summary.totalCheckOutsToday).toBe(1);
+      expect(summary.currentlyCheckedIn).toBe(true);
+      expect(summary.totalWorkMinutesToday).toBe(240);
+      expect(summary.totalBreakMinutesToday).toBe(30);
+
+      // Verify chronological events:
+      // 1. Check in 03:00
+      // 2. Break start 05:00
+      // 3. Break end 05:30
+      // 4. Check out 07:30
+      // 5. Check in 08:30
+      expect(summary.activityLog).toHaveLength(5);
+      expect(summary.activityLog[0]?.type).toBe('CHECK_IN');
+      expect(summary.activityLog[0]?.sessionId).toBe('sess-1');
+      expect(summary.activityLog[1]?.type).toBe('BREAK_START');
+      expect(summary.activityLog[1]?.remarks).toBe('Tea break');
+      expect(summary.activityLog[2]?.type).toBe('BREAK_END');
+      expect(summary.activityLog[2]?.durationMins).toBe(30);
+      expect(summary.activityLog[3]?.type).toBe('CHECK_OUT');
+      expect(summary.activityLog[3]?.sessionId).toBe('sess-1');
+      expect(summary.activityLog[4]?.type).toBe('CHECK_IN');
+      expect(summary.activityLog[4]?.sessionId).toBe('sess-2');
+    });
+
+    it('handles empty sessions gracefully', () => {
+      const summary = buildDailyActivitySummary('2026-11-21', []);
+      expect(summary.totalCheckInsToday).toBe(0);
+      expect(summary.totalCheckOutsToday).toBe(0);
+      expect(summary.currentlyCheckedIn).toBe(false);
+      expect(summary.activityLog).toHaveLength(0);
     });
   });
 });

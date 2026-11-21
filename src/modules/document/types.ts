@@ -11,9 +11,10 @@ export type DocumentScope =
 export interface UploadInput {
   fileName: string;
   /** Client claim — recorded for audit only, never trusted. */
-  declaredContentType?: string;
+  declaredContentType?: string | undefined;
   body: Buffer;
-  scope?: DocumentScope;
+  scope?: DocumentScope | undefined;
+  autoApprove?: boolean | undefined;
 }
 
 export type LinkTarget =

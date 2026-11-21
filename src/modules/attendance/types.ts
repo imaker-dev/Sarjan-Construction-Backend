@@ -1,5 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox';
-import type { BreakMode, OvertimeMode } from '@prisma/client';
+import type { AttendanceBreak, AttendanceSession, BreakMode, OvertimeMode } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
 // Pure Domain Helper Functions & Default Configuration
@@ -76,6 +76,261 @@ export function getBusinessDate(
   const mm = String(month).padStart(2, '0');
   const dd = String(day).padStart(2, '0');
   return `${year}-${mm}-${dd}`;
+}
+
+/**
+ * Calculates scheduled shift start time (as UTC Date) for a business date
+ * based on the policy's dayStartHour and dayStartMinute in local timezone.
+ */
+export function getScheduledShiftStart(
+  businessDate: string,
+  dayStartHour = 8,
+  dayStartMinute = 0,
+  timezone = 'Asia/Kolkata',
+): Date {
+  const parts = businessDate.split('-');
+  const year = parseInt(parts[0] ?? '0', 10);
+  const month = parseInt(parts[1] ?? '0', 10);
+  const day = parseInt(parts[2] ?? '0', 10);
+  if (isNaN(year) || isNaN(month) || isNaN(day) || year === 0) {
+    return new Date();
+  }
+
+  const utcGuess = new Date(Date.UTC(year, month - 1, day, dayStartHour, dayStartMinute, 0));
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
+  const formattedParts = formatter.formatToParts(utcGuess);
+  const get = (type: string) =>
+    parseInt(formattedParts.find((p) => p.type === type)?.value ?? '0', 10);
+  let locHour = get('hour');
+  if (locHour === 24) locHour = 0;
+  const locDate = new Date(
+    Date.UTC(get('year'), get('month') - 1, get('day'), locHour, get('minute'), get('second')),
+  );
+  const targetLocal = new Date(Date.UTC(year, month - 1, day, dayStartHour, dayStartMinute, 0));
+  const offsetMs = locDate.getTime() - targetLocal.getTime();
+  return new Date(utcGuess.getTime() - offsetMs);
+}
+
+export interface ActiveSessionTiming {
+  isDelayedClockIn: boolean;
+  delayedClockInMinutes: number;
+  delayedClockInTime: string | null;
+  delayedClockInFormatted: string | null;
+  scheduledClockInAt: string;
+  clockOutTimeProper8Hours: string;
+  expectedClockOutAt: string;
+  targetWorkDurationMins: number;
+  remainingMinutesFor8Hours: number;
+}
+
+export interface SessionActivityEvent {
+  type: 'CHECK_IN' | 'CHECK_OUT' | 'BREAK_START' | 'BREAK_END';
+  timestamp: string;
+  sessionId: string;
+  breakId?: string;
+  status?: string;
+  source?: string;
+  siteId?: string | null;
+  headOfficeId?: string | null;
+  withinGeofence?: boolean | null;
+  durationMins?: number | null;
+  remarks?: string | null;
+}
+
+export interface DailyActivitySummary {
+  businessDate: string;
+  totalCheckInsToday: number;
+  totalCheckOutsToday: number;
+  currentlyCheckedIn: boolean;
+  totalWorkMinutesToday: number;
+  totalBreakMinutesToday: number;
+  activityLog: SessionActivityEvent[];
+}
+
+export type ActiveSessionWithTiming = AttendanceSession & {
+  breaks?: AttendanceBreak[];
+} & Partial<ActiveSessionTiming> &
+  Partial<DailyActivitySummary>;
+
+export function buildDailyActivitySummary(
+  businessDate: string,
+  sessions: (AttendanceSession & { breaks?: AttendanceBreak[] })[],
+): DailyActivitySummary {
+  const events: SessionActivityEvent[] = [];
+  let totalCheckIns = 0;
+  let totalCheckOuts = 0;
+  let totalWorkMins = 0;
+  let totalBreakMins = 0;
+  let currentlyCheckedIn = false;
+
+  for (const s of sessions) {
+    if (s.status === 'IN_PROGRESS') {
+      currentlyCheckedIn = true;
+    }
+    // 1. Check in
+    totalCheckIns++;
+    events.push({
+      type: 'CHECK_IN',
+      timestamp: s.punchInAt.toISOString(),
+      sessionId: s.id,
+      status: s.status,
+      source: s.source,
+      siteId: s.siteId,
+      headOfficeId: s.headOfficeId,
+      withinGeofence: s.punchInWithinGeofence,
+      remarks: s.punchInRemarks,
+    });
+
+    // 2. Breaks
+    if (s.breaks && s.breaks.length > 0) {
+      for (const b of s.breaks) {
+        events.push({
+          type: 'BREAK_START',
+          timestamp: b.startedAt.toISOString(),
+          sessionId: s.id,
+          breakId: b.id,
+          remarks: b.remarks,
+        });
+
+        if (b.endedAt) {
+          const duration =
+            b.durationMins > 0
+              ? b.durationMins
+              : Math.max(0, Math.round((b.endedAt.getTime() - b.startedAt.getTime()) / 60000));
+          totalBreakMins += duration;
+          events.push({
+            type: 'BREAK_END',
+            timestamp: b.endedAt.toISOString(),
+            sessionId: s.id,
+            breakId: b.id,
+            durationMins: duration,
+          });
+        }
+      }
+    }
+
+    // 3. Check out (if completed)
+    if (s.punchOutAt) {
+      totalCheckOuts++;
+      totalWorkMins += s.netDurationMins;
+      events.push({
+        type: 'CHECK_OUT',
+        timestamp: s.punchOutAt.toISOString(),
+        sessionId: s.id,
+        status: s.status,
+        source: s.source,
+        siteId: s.siteId,
+        headOfficeId: s.headOfficeId,
+        withinGeofence: s.punchOutWithinGeofence,
+        durationMins: s.netDurationMins,
+        remarks: s.punchOutRemarks,
+      });
+    }
+  }
+
+  events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  return {
+    businessDate,
+    totalCheckInsToday: totalCheckIns,
+    totalCheckOutsToday: totalCheckOuts,
+    currentlyCheckedIn,
+    totalWorkMinutesToday: totalWorkMins,
+    totalBreakMinutesToday: totalBreakMins,
+    activityLog: events,
+  };
+}
+
+export function calculateActiveSessionTiming(params: {
+  punchInAt: Date;
+  businessDate: string;
+  policy?: {
+    dayStartHour?: number;
+    dayStartMinute?: number;
+    shiftDurationMins?: number;
+    breakMode?: string;
+    fixedBreakMins?: number;
+  } | null;
+  timezone?: string;
+  breaks?: { startedAt: Date; endedAt?: Date | null; durationMins?: number | null }[];
+  now?: Date;
+}): ActiveSessionTiming {
+  const { punchInAt, businessDate, policy, timezone = 'Asia/Kolkata' } = params;
+  const now = params.now ?? new Date();
+
+  const dayStartHour = policy?.dayStartHour ?? 8;
+  const dayStartMinute = policy?.dayStartMinute ?? 0;
+  const shiftDurationMins = policy?.shiftDurationMins ?? 480;
+
+  const scheduledShiftStart = getScheduledShiftStart(
+    businessDate,
+    dayStartHour,
+    dayStartMinute,
+    timezone,
+  );
+
+  const diffMs = punchInAt.getTime() - scheduledShiftStart.getTime();
+  const diffMins = Math.round(diffMs / 60000);
+
+  const isDelayed = diffMins > 0;
+  const delayedMinutes = isDelayed ? diffMins : 0;
+  const delayHours = Math.floor(delayedMinutes / 60);
+  const delayRemMins = delayedMinutes % 60;
+  const delayedClockInTime = isDelayed
+    ? `${String(delayHours).padStart(2, '0')}:${String(delayRemMins).padStart(2, '0')}`
+    : null;
+  const delayedClockInFormatted = isDelayed ? `${delayedMinutes} mins` : null;
+
+  // Proper 8 working hours clock out time: punchInAt + 8 hours (480 mins)
+  const proper8HoursMs = 8 * 60 * 60 * 1000;
+  const clockOutTimeProper8Hours = new Date(punchInAt.getTime() + proper8HoursMs).toISOString();
+
+  // Factor in breaks for net working time
+  let totalBreakMins = 0;
+  if (policy?.breakMode === 'FIXED') {
+    totalBreakMins = policy.fixedBreakMins ?? 60;
+  } else if (params.breaks && params.breaks.length > 0) {
+    for (const b of params.breaks) {
+      if (b.durationMins !== null && b.durationMins !== undefined) {
+        totalBreakMins += b.durationMins;
+      } else if (b.endedAt) {
+        totalBreakMins += Math.round((b.endedAt.getTime() - b.startedAt.getTime()) / 60000);
+      } else {
+        totalBreakMins += Math.max(0, Math.round((now.getTime() - b.startedAt.getTime()) / 60000));
+      }
+    }
+  }
+
+  const expectedClockOutMs = (shiftDurationMins + totalBreakMins) * 60 * 1000;
+  const expectedClockOutDate = new Date(punchInAt.getTime() + expectedClockOutMs);
+  const expectedClockOutAt = expectedClockOutDate.toISOString();
+
+  const remainingMinutes = Math.max(
+    0,
+    Math.round((expectedClockOutDate.getTime() - now.getTime()) / 60000),
+  );
+
+  return {
+    isDelayedClockIn: isDelayed,
+    delayedClockInMinutes: delayedMinutes,
+    delayedClockInTime,
+    delayedClockInFormatted,
+    scheduledClockInAt: scheduledShiftStart.toISOString(),
+    clockOutTimeProper8Hours,
+    expectedClockOutAt,
+    targetWorkDurationMins: shiftDurationMins,
+    remainingMinutesFor8Hours: remainingMinutes,
+  };
 }
 
 /**

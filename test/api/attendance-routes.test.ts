@@ -85,6 +85,34 @@ async function makeApp(opts: { allow?: boolean } = {}) {
     getActiveSession: async () => ({
       id: SESS_ID,
       status: 'IN_PROGRESS',
+      businessDate: '2026-11-21',
+      isDelayedClockIn: true,
+      delayedClockInMinutes: 20,
+      delayedClockInTime: '00:20',
+      clockOutTimeProper8Hours: '2026-11-21T16:20:00.000Z',
+      expectedClockOutAt: '2026-11-21T17:20:00.000Z',
+      totalCheckInsToday: 2,
+      totalCheckOutsToday: 1,
+      currentlyCheckedIn: true,
+      totalWorkMinutesToday: 240,
+      totalBreakMinutesToday: 30,
+      activityLog: [
+        {
+          type: 'CHECK_IN' as const,
+          timestamp: '2026-11-21T03:00:00.000Z',
+          sessionId: 'sess-prev',
+        },
+        {
+          type: 'CHECK_OUT' as const,
+          timestamp: '2026-11-21T07:00:00.000Z',
+          sessionId: 'sess-prev',
+        },
+        {
+          type: 'CHECK_IN' as const,
+          timestamp: '2026-11-21T08:00:00.000Z',
+          sessionId: SESS_ID,
+        },
+      ],
     }),
     listSessions: async () => [
       {
@@ -488,5 +516,52 @@ describe('attendance routes', () => {
     const body = res.json<{ totalSessions: number; totalMandays: number }>();
     expect(body.totalSessions).toBe(10);
     expect(body.totalMandays).toBe(10);
+  });
+
+  it('retrieves active session with delayed clock in and proper 8-hour clock out timing with 200', async () => {
+    const { app: testApp } = await makeApp();
+    const res = await testApp.inject({
+      method: 'GET',
+      url: '/api/v1/attendance/sessions/active',
+      headers: authed(testApp),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{
+      session: {
+        id: string;
+        isDelayedClockIn: boolean;
+        delayedClockInMinutes: number;
+        delayedClockInTime: string;
+        clockOutTimeProper8Hours: string;
+      };
+      isDelayedClockIn: boolean;
+      delayedClockInMinutes: number;
+      delayedClockInTime: string;
+      clockOutTimeProper8Hours: string;
+    }>();
+    expect(body.session.id).toBe(SESS_ID);
+    expect(body.session.isDelayedClockIn).toBe(true);
+    expect(body.session.delayedClockInMinutes).toBe(20);
+    expect(body.session.delayedClockInTime).toBe('00:20');
+    expect(body.session.clockOutTimeProper8Hours).toBe('2026-11-21T16:20:00.000Z');
+    // Also available at top-level
+    expect(body.isDelayedClockIn).toBe(true);
+    expect(body.delayedClockInMinutes).toBe(20);
+    expect(body.delayedClockInTime).toBe('00:20');
+    expect(body.clockOutTimeProper8Hours).toBe('2026-11-21T16:20:00.000Z');
+
+    // Activity log & daily check-in / check-out counters
+    const fullBody = res.json<{
+      totalCheckInsToday: number;
+      totalCheckOutsToday: number;
+      currentlyCheckedIn: boolean;
+      totalWorkMinutesToday: number;
+      activityLog: { type: string; sessionId: string }[];
+    }>();
+    expect(fullBody.totalCheckInsToday).toBe(2);
+    expect(fullBody.totalCheckOutsToday).toBe(1);
+    expect(fullBody.currentlyCheckedIn).toBe(true);
+    expect(fullBody.totalWorkMinutesToday).toBe(240);
+    expect(fullBody.activityLog).toHaveLength(3);
   });
 });

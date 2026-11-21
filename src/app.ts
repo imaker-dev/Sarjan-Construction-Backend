@@ -34,6 +34,14 @@ import { PrismaEmployeeUnitOfWork } from './modules/employee/repository.js';
 import { EmployeeService } from './modules/employee/service.js';
 import { employeeRoutes } from './modules/employee/routes.js';
 import { EmployeeAccessService } from './modules/employee/access.js';
+import { PrismaEmployeeDocumentRepository } from './modules/employee/document-repository.js';
+import { EmployeeDocumentService } from './modules/employee/document-service.js';
+import { DocumentService } from './modules/document/service.js';
+import { PrismaDocumentUnitOfWork } from './modules/document/repository.js';
+import { LocalDiskStorage } from './modules/document/storage.js';
+import multipartPlugin from './plugins/multipart.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PlatformService } from './modules/platform/service.js';
 import { platformRoutes } from './modules/platform/routes.js';
 import { PrismaPlatformUnitOfWork } from './modules/platform/repository.js';
@@ -318,6 +326,58 @@ const OPERATION_DOCS: Record<
     summary: 'Revoke a role assignment',
     permission: 'ACCESS_ROLE_REVOKE',
   },
+  'GET /employees/documents/expiring': {
+    summary: 'List expiring employee documents',
+    description: 'Lists employee certificates and licenses expiring within threshold days.',
+    permission: 'EMPLOYEE_READ',
+  },
+  'POST /employees/:id/documents/upload': {
+    summary: 'Upload and attach employee document (multipart)',
+    description: 'Direct multipart file upload with metadata attachment.',
+  },
+  'POST /employees/:id/documents': {
+    summary: 'Attach document to employee',
+    description: 'Attach an existing documentId or base64 file to employee profile.',
+  },
+  'GET /employees/:id/documents': {
+    summary: 'List employee documents',
+    description: 'Lists all documents for an employee with optional type/status filters.',
+  },
+  'GET /employees/:id/documents/:docId': {
+    summary: 'Get employee document details',
+    description: 'Retrieves metadata for a specific employee document.',
+  },
+  'GET /employees/:id/documents/:docId/download': {
+    summary: 'Download employee document',
+    description: 'Streams the original document file with proper content-type.',
+  },
+  'PATCH /employees/:id/documents/:docId': {
+    summary: 'Update employee document metadata',
+    description: 'Updates document title, number, authority, or expiry date.',
+    permission: 'EMPLOYEE_MANAGE',
+  },
+  'POST /employees/:id/documents/:docId/verify': {
+    summary: 'Verify or reject employee document',
+    description: 'Admin/supervisor verification or rejection of an employee document.',
+    permission: 'EMPLOYEE_MANAGE',
+  },
+  'DELETE /employees/:id/documents/:docId': {
+    summary: 'Delete employee document',
+    description: 'Removes the document attachment from the employee profile.',
+    permission: 'EMPLOYEE_MANAGE',
+  },
+  'GET /me/documents': {
+    summary: 'List current user documents',
+    description: 'Self-service endpoint listing documents for the authenticated user.',
+  },
+  'POST /me/documents/upload': {
+    summary: 'Upload document for current user',
+    description: 'Self-service multipart upload for the authenticated user.',
+  },
+  'GET /me/documents/:docId/download': {
+    summary: 'Download current user document',
+    description: 'Self-service download of a document belonging to the authenticated user.',
+  },
   'GET /roles': {
     summary: 'List assignable tenant role templates and their required scope shapes',
     permission: 'ROLE_ASSIGNMENT_READ',
@@ -450,6 +510,8 @@ const OPERATION_DOCS: Record<
   },
   'GET /attendance/sessions/active': {
     summary: 'Get active in-progress attendance session',
+    description:
+      'Returns active session enriched with delay clock-in timing (if delayed) and clock-out time for proper 8 working hours.',
     permission: 'ATTENDANCE_READ',
   },
   'GET /attendance/sessions': {
@@ -812,6 +874,8 @@ export interface BuildAppOptions {
     scheduleService?: ScheduleService;
     approvalService?: ApprovalService;
     financeService?: FinanceService;
+    employeeDocumentService?: EmployeeDocumentService;
+    documentService?: DocumentService;
     // Test hook: inject the sentinel platform-company id (null = none).
     platformCompanyId?: string | null;
   };
@@ -845,6 +909,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   // Infrastructure plugins in explicit dependency order.
   await app.register(configPlugin, { ...(opts.env !== undefined ? { env: opts.env } : {}) });
   await app.register(requestContextPlugin);
+  await app.register(multipartPlugin);
   await app.register(errorHandlerPlugin);
   await app.register(prismaPlugin);
   await app.register(redisPlugin);
@@ -1196,6 +1261,29 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     ),
     { prefix: '/api/v1' },
   );
+  const storageDir = app.config.DOCUMENT_STORAGE_DIR ?? join(tmpdir(), 'sarjan-docs');
+  const documentStorage = new LocalDiskStorage(storageDir);
+  const documentService =
+    services.documentService ??
+    new DocumentService({
+      uow: new PrismaDocumentUnitOfWork(app.prisma),
+      authorizer: accessControl,
+      storage: documentStorage,
+      maxBytes: 10 * 1024 * 1024,
+      staleUploadingMinutes: 60,
+    });
+  const employeeDocumentService =
+    services.employeeDocumentService ??
+    new EmployeeDocumentService({
+      repo: new PrismaEmployeeDocumentRepository(app.prisma),
+      documentService,
+      prisma: app.prisma,
+      authorizer: {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+      },
+    });
+
   await app.register(
     employeeRoutes(
       services.employeeService ??
@@ -1214,6 +1302,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           mailService,
           app.config.APP_BASE_URL,
         ),
+      employeeDocumentService,
     ),
     { prefix: '/api/v1' },
   );

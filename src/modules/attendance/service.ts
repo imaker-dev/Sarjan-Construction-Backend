@@ -32,11 +32,15 @@ import type {
   AttendanceUnitOfWork,
 } from './repository.js';
 import {
+  buildDailyActivitySummary,
+  calculateActiveSessionTiming,
   calculateHaversineDistanceMeters,
   calculateWorkAndOvertime,
   DEFAULT_ATTENDANCE_POLICY,
   getBusinessDate,
   MAX_MUSTER_ROLL_DAYS,
+  type ActiveSessionWithTiming,
+  type DailyActivitySummary,
   type AddTvtAttendeesInput,
   type CalculateDailyReportInput,
   type CreatePolicyInput,
@@ -985,7 +989,7 @@ export class AttendanceService {
     actor: ActorContext,
     companyId: string,
     sessionId: string,
-  ): Promise<AttendanceSessionWithDetails> {
+  ): Promise<AttendanceSessionWithDetails & Partial<DailyActivitySummary>> {
     return this.uow.run(async (repos) => {
       const s = await repos.sessions.findById(companyId, sessionId);
       if (!s) throw new AttendanceEntityNotFoundError('AttendanceSession', sessionId);
@@ -994,11 +998,30 @@ export class AttendanceService {
         ATTENDANCE_READ,
         sessionLocationTarget(companyId, s),
       );
-      return s;
+
+      const reposAny = repos as Partial<AttendanceRepos>;
+      let dailySummary: DailyActivitySummary | undefined;
+      if (s.businessDate && reposAny.sessions?.findByEmployeeAndDate) {
+        const todaySessions = await reposAny.sessions.findByEmployeeAndDate(
+          companyId,
+          s.employeeId,
+          s.businessDate,
+        );
+        dailySummary = buildDailyActivitySummary(s.businessDate, todaySessions);
+      }
+
+      return {
+        ...s,
+        ...(dailySummary ?? {}),
+      };
     });
   }
 
-  async getActiveSession(actor: ActorContext, companyId: string, employeeId?: string) {
+  async getActiveSession(
+    actor: ActorContext,
+    companyId: string,
+    employeeId?: string,
+  ): Promise<ActiveSessionWithTiming | null> {
     return this.uow.run(async (repos) => {
       const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
       const isTargetingOther = employeeId !== undefined && callerEmp?.id !== employeeId;
@@ -1017,7 +1040,90 @@ export class AttendanceService {
         );
       }
 
-      return session;
+      const maybeIncomplete = session as { punchInAt?: Date; businessDate?: string };
+      if (!maybeIncomplete.punchInAt || !maybeIncomplete.businessDate) {
+        return session;
+      }
+
+      const reposAny = repos as Partial<AttendanceRepos>;
+      let policy = null;
+      if (session.policyId && reposAny.policies?.findById) {
+        policy = await repos.policies.findById(companyId, session.policyId);
+      }
+
+      let timezone = 'Asia/Kolkata';
+      if (session.siteId && reposAny.sites?.findById) {
+        const site = await repos.sites.findById(companyId, session.siteId);
+        if (site) {
+          timezone = site.timezone ?? site.project.timezone;
+        }
+      } else if (session.headOfficeId && reposAny.headOffices?.findById) {
+        const ho = await repos.headOffices.findById(companyId, session.headOfficeId);
+        if (ho?.timezone) {
+          timezone = ho.timezone;
+        }
+      }
+
+      const timing = calculateActiveSessionTiming({
+        punchInAt: session.punchInAt,
+        businessDate: session.businessDate,
+        policy,
+        timezone,
+        breaks: session.breaks,
+      });
+
+      let dailySummary: DailyActivitySummary | undefined;
+      if (reposAny.sessions?.findByEmployeeAndDate) {
+        const todaySessions = await reposAny.sessions.findByEmployeeAndDate(
+          companyId,
+          targetEmpId,
+          session.businessDate,
+        );
+        dailySummary = buildDailyActivitySummary(session.businessDate, todaySessions);
+      } else {
+        dailySummary = buildDailyActivitySummary(session.businessDate, [session]);
+      }
+
+      return {
+        ...session,
+        ...timing,
+        ...dailySummary,
+      };
+    });
+  }
+
+  async getDailySummaryForEmployee(
+    actor: ActorContext,
+    companyId: string,
+    employeeId?: string,
+    businessDate?: string,
+  ): Promise<DailyActivitySummary | null> {
+    return this.uow.run(async (repos) => {
+      const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+      const isTargetingOther = employeeId !== undefined && callerEmp?.id !== employeeId;
+      const targetEmpId = employeeId ?? callerEmp?.id;
+      if (!targetEmpId) return null;
+
+      if (isTargetingOther) {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_READ,
+          companyTarget(companyId),
+        );
+      }
+
+      const reposAny = repos as Partial<AttendanceRepos>;
+      if (!reposAny.sessions?.findByEmployeeAndDate) {
+        return null;
+      }
+
+      const dateStr = businessDate ?? new Date().toISOString().slice(0, 10);
+      const sessions = await reposAny.sessions.findByEmployeeAndDate(
+        companyId,
+        targetEmpId,
+        dateStr,
+      );
+      return buildDailyActivitySummary(dateStr, sessions);
     });
   }
 
