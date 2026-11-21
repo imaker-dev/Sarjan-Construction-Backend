@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import { OrgEntityNotFoundError, OrgValidationError } from '../organization/errors.js';
-import { PROJECT_LEADERSHIP_KEYS } from '../setup/role-templates.js';
+import {
+  FINANCE_OPERATION_DOMAINS,
+  FINANCE_ROLE_KEYS,
+  PROJECT_LEADERSHIP_KEYS,
+} from '../setup/role-templates.js';
 import type { Authorizer } from '../department/service.js';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
@@ -299,9 +303,7 @@ export class OperationAssignmentService {
       await r.audit.record(
         auditEntry(actor, {
           action:
-            nextStatus === 'ACTIVE'
-              ? 'OPERATION_ENABLED_ON_DEPT'
-              : 'OPERATION_DISABLED_ON_DEPT',
+            nextStatus === 'ACTIVE' ? 'OPERATION_ENABLED_ON_DEPT' : 'OPERATION_DISABLED_ON_DEPT',
           entityType: 'DEPARTMENT_OPERATION',
           entityId: row.id,
           companyId,
@@ -388,7 +390,10 @@ export class OperationAssignmentService {
         // Otherwise -> ACTIVE
         let status = dOp.status;
         if (override) {
-          status = override.status === 'REVOKED' || override.status === 'INACTIVE' ? 'INACTIVE' : override.status;
+          status =
+            override.status === 'REVOKED' || override.status === 'INACTIVE'
+              ? 'INACTIVE'
+              : override.status;
         }
 
         results.push({
@@ -430,9 +435,10 @@ export class OperationAssignmentService {
         });
       }
 
-      // 3. PD/PI project-leadership coverage — derived live from active
-      // role assignments; no EmployeeOperation row exists for these.
-      const roleKeys = await this.getLeadershipScopedOperationKeys(companyId, employeeId);
+      // 3. Role coverage (PD/PI project leadership + FINANCE company roles) —
+      // derived live from active role assignments; no EmployeeOperation row
+      // exists for these.
+      const roleKeys = await this.getRoleScopedOperationKeys(companyId, employeeId);
       if (roleKeys.length > 0) {
         const catalogue = await r.catalogue.list();
         const byKey = new Map(catalogue.map((c) => [c.key, c]));
@@ -693,16 +699,14 @@ export class OperationAssignmentService {
             where: { companyId, departmentId: { in: deptIds }, status: 'ACTIVE' },
             select: { operationKey: true },
           }),
-      this.getLeadershipScopedOperationKeys(companyId, employeeId),
+      this.getRoleScopedOperationKeys(companyId, employeeId),
     ]);
     const inactiveKeys = new Set(
       empOps
         .filter((e) => e.status === 'INACTIVE' || e.status === 'REVOKED')
         .map((e) => e.operationKey),
     );
-    const directActiveKeys = empOps
-      .filter((e) => e.status === 'ACTIVE')
-      .map((e) => e.operationKey);
+    const directActiveKeys = empOps.filter((e) => e.status === 'ACTIVE').map((e) => e.operationKey);
 
     const enabledSet = new Set(enabled.map((e) => e.operationKey));
     const inheritedActive = Array.from(enabledSet).filter((k) => !inactiveKeys.has(k));
@@ -718,10 +722,7 @@ export class OperationAssignmentService {
    * only projectId/siteId-scoped departments match. Sensitive operations are
    * never covered by role access.
    */
-  async getLeadershipScopedOperationKeys(
-    companyId: string,
-    employeeId: string,
-  ): Promise<string[]> {
+  async getLeadershipScopedOperationKeys(companyId: string, employeeId: string): Promise<string[]> {
     const emp = await this.prisma.employee.findFirst({
       where: { id: employeeId, companyId },
       select: { principalId: true },
@@ -759,6 +760,63 @@ export class OperationAssignmentService {
           OR: [{ projectId: { in: projectIds } }, { siteId: { in: siteIds } }],
         },
         operation: { sensitive: false },
+      },
+      select: { operationKey: true },
+    });
+    return deptOps.map((d) => d.operationKey);
+  }
+
+  /** Union of every role-derived coverage source (PD/PI projects + Finance roles). */
+  async getRoleScopedOperationKeys(companyId: string, employeeId: string): Promise<string[]> {
+    const [leadership, finance] = await Promise.all([
+      this.getLeadershipScopedOperationKeys(companyId, employeeId),
+      this.getFinanceScopedOperationKeys(companyId, employeeId),
+    ]);
+    return Array.from(new Set([...leadership, ...finance]));
+  }
+
+  /**
+   * Finance-role coverage: an active COMPANY-scope FINANCE_MANAGER/FINANCE_STAFF
+   * assignment covers every ACTIVE non-sensitive op in a finance domain
+   * (FINANCE_OPERATION_DOMAINS, plus PROJECT_DASHBOARD_VIEW which the finance
+   * read APIs require) enabled on any ACTIVE department in the company.
+   * Resolved live, so enabling/disabling an op on a department updates the
+   * holder's effective ops immediately; revoking the role ends coverage.
+   * Sensitive operations are never covered — they require an explicit
+   * per-employee grant (the distinct restricted policy).
+   */
+  async getFinanceScopedOperationKeys(companyId: string, employeeId: string): Promise<string[]> {
+    const emp = await this.prisma.employee.findFirst({
+      where: { id: employeeId, companyId },
+      select: { principalId: true },
+    });
+    if (emp?.principalId === null || emp?.principalId === undefined) return [];
+    const now = new Date();
+    const assignment = await this.prisma.roleAssignment.findFirst({
+      where: {
+        companyId,
+        principalId: emp.principalId,
+        revokedAt: null,
+        scopeType: 'COMPANY',
+        role: { key: { in: [...FINANCE_ROLE_KEYS] } },
+        OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }],
+        AND: [{ OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }] }],
+      },
+      select: { id: true },
+    });
+    if (assignment === null) return [];
+    const deptOps = await this.prisma.departmentOperation.findMany({
+      where: {
+        companyId,
+        status: 'ACTIVE',
+        department: { companyId, status: 'ACTIVE' },
+        operation: {
+          sensitive: false,
+          OR: [
+            { domain: { in: [...FINANCE_OPERATION_DOMAINS] } },
+            { key: 'PROJECT_DASHBOARD_VIEW' },
+          ],
+        },
       },
       select: { operationKey: true },
     });

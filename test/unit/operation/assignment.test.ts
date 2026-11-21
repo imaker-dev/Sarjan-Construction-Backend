@@ -4,6 +4,35 @@ import { OrgValidationError } from '../../../src/modules/organization/errors.js'
 
 const OWNER = { actorId: 'a1', actorType: 'USER' as const };
 
+function matchActiveAssignment(
+  a: {
+    companyId: string;
+    principalId: string;
+    revokedAt: Date | null;
+    scopeType: string;
+    effectiveFrom: Date | null;
+    effectiveTo: Date | null;
+    roleKey?: string;
+  },
+  where: {
+    companyId: string;
+    principalId: string;
+    revokedAt: Date | null;
+    scopeType: string;
+    role: { key: { in: string[] } };
+  },
+) {
+  return (
+    a.companyId === where.companyId &&
+    a.principalId === where.principalId &&
+    a.revokedAt === where.revokedAt &&
+    a.scopeType === where.scopeType &&
+    where.role.key.in.includes(a.roleKey ?? '') &&
+    (a.effectiveFrom === null || a.effectiveFrom <= new Date()) &&
+    (a.effectiveTo === null || a.effectiveTo >= new Date())
+  );
+}
+
 function makeFakePrisma() {
   const state = {
     depts: [
@@ -102,11 +131,7 @@ function makeFakePrisma() {
         state.employees.find((e) => e.id === where.id && e.companyId === where.companyId) ?? null,
     },
     site: {
-      findMany: async ({
-        where,
-      }: {
-        where: { companyId: string; projectId?: { in: string[] } };
-      }) =>
+      findMany: async ({ where }: { where: { companyId: string; projectId?: { in: string[] } } }) =>
         state.sites.filter(
           (s) =>
             s.companyId === where.companyId &&
@@ -124,17 +149,18 @@ function makeFakePrisma() {
           scopeType: string;
           role: { key: { in: string[] } };
         };
-      }) =>
-        state.roleAssignments.filter(
-          (a) =>
-            a.companyId === where.companyId &&
-            a.principalId === where.principalId &&
-            a.revokedAt === where.revokedAt &&
-            a.scopeType === where.scopeType &&
-            where.role.key.in.includes(a.roleKey ?? '') &&
-            (a.effectiveFrom === null || a.effectiveFrom <= new Date()) &&
-            (a.effectiveTo === null || a.effectiveTo >= new Date()),
-        ),
+      }) => state.roleAssignments.filter((a) => matchActiveAssignment(a, where)),
+      findFirst: async ({
+        where,
+      }: {
+        where: {
+          companyId: string;
+          principalId: string;
+          revokedAt: Date | null;
+          scopeType: string;
+          role: { key: { in: string[] } };
+        };
+      }) => state.roleAssignments.find((a) => matchActiveAssignment(a, where)) ?? null,
     },
     departmentMembership: {
       findMany: async ({
@@ -167,7 +193,10 @@ function makeFakePrisma() {
             status?: string;
             OR?: { projectId?: { in: string[] }; siteId?: { in: string[] } }[];
           };
-          operation?: { sensitive?: boolean };
+          operation?: {
+            sensitive?: boolean;
+            OR?: { domain?: { in: string[] }; key?: string }[];
+          };
         };
       }) =>
         state.deptOps
@@ -205,6 +234,14 @@ function makeFakePrisma() {
                 (cat?.sensitive ?? false) !== where.operation.sensitive
               )
                 return false;
+              if (where.operation.OR !== undefined) {
+                const anyMatch = where.operation.OR.some((c) => {
+                  if (c.domain !== undefined) return c.domain.in.includes(cat?.domain ?? '');
+                  if (c.key !== undefined) return cat?.key === c.key;
+                  return false;
+                });
+                if (!anyMatch) return false;
+              }
             }
             return true;
           })
@@ -811,9 +848,7 @@ describe('OperationAssignmentService', () => {
       });
       const keys = await svc(prisma).getLeadershipScopedOperationKeys('c1', 'e1');
       // Non-sensitive proj-a + site-1 ops; SALARY_PAYMENT_APPROVE is sensitive.
-      expect(keys).toEqual(
-        expect.arrayContaining(['WORK_PROGRESS_SUBMIT']),
-      );
+      expect(keys).toEqual(expect.arrayContaining(['WORK_PROGRESS_SUBMIT']));
       expect(keys).toContain('PETTY_CASH_REQUEST_APPROVE');
     });
 
@@ -908,6 +943,209 @@ describe('OperationAssignmentService', () => {
       expect(keys).toEqual([]);
       const ops = await svc(prisma).listEmployeeOperations(OWNER, 'c1', 'e1');
       expect(ops.find((o) => o.source === 'ROLE')).toBeUndefined();
+    });
+  });
+
+  describe('FINANCE company-role operation coverage', () => {
+    function withFinanceRole(state: ReturnType<typeof makeFakePrisma>['state']) {
+      const [e1] = state.employees;
+      if (e1 !== undefined) e1.principalId = 'p1';
+      state.roleAssignments.push({
+        companyId: 'c1',
+        principalId: 'p1',
+        roleId: 'r-fm',
+        scopeType: 'COMPANY',
+        projectId: null,
+        revokedAt: null,
+        effectiveFrom: null,
+        effectiveTo: null,
+        roleKey: 'FINANCE_MANAGER',
+      });
+    }
+
+    it('covers finance-domain ops enabled on any active dept in the company', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withFinanceRole(state);
+      // Finance-domain op enabled on a dept e1 is NOT a member of.
+      state.catalogue.push({
+        key: 'CLIENT_INVOICE_ISSUE',
+        domain: 'BILLING',
+        name: 'Client Invoice Issue',
+        description: '',
+        sensitive: false,
+      });
+      state.deptOps.push({
+        id: 'do-inv',
+        companyId: 'c1',
+        departmentId: 'd-site',
+        operationKey: 'CLIENT_INVOICE_ISSUE',
+        status: 'ACTIVE',
+      });
+      const keys = await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1');
+      expect(keys).toContain('CLIENT_INVOICE_ISSUE');
+      expect(keys).toContain('PETTY_CASH_REQUEST_APPROVE');
+    });
+
+    it('excludes sensitive, non-finance-domain, and disabled ops', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withFinanceRole(state);
+      state.catalogue.push(
+        {
+          key: 'WORK_PROGRESS_SUBMIT',
+          domain: 'OPERATIONS',
+          name: 'Work Progress Submit',
+          description: '',
+          sensitive: false,
+        },
+        {
+          key: 'CLIENT_INVOICE_ISSUE',
+          domain: 'BILLING',
+          name: 'Client Invoice Issue',
+          description: '',
+          sensitive: false,
+        },
+      );
+      state.deptOps.push(
+        {
+          id: 'do-wps',
+          companyId: 'c1',
+          departmentId: 'd-site',
+          operationKey: 'WORK_PROGRESS_SUBMIT',
+          status: 'ACTIVE',
+        },
+        {
+          id: 'do-inv',
+          companyId: 'c1',
+          departmentId: 'd-site',
+          operationKey: 'CLIENT_INVOICE_ISSUE',
+          status: 'INACTIVE',
+        },
+      );
+      const keys = await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1');
+      expect(keys).not.toContain('WORK_PROGRESS_SUBMIT');
+      expect(keys).not.toContain('CLIENT_INVOICE_ISSUE');
+      expect(keys).not.toContain('SALARY_PAYMENT_APPROVE');
+    });
+
+    it('covers PROJECT_DASHBOARD_VIEW despite its PROJECT_REPORTS domain', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withFinanceRole(state);
+      state.catalogue.push({
+        key: 'PROJECT_DASHBOARD_VIEW',
+        domain: 'PROJECT_REPORTS',
+        name: 'Project Dashboard View',
+        description: '',
+        sensitive: false,
+      });
+      state.deptOps.push({
+        id: 'do-dash',
+        companyId: 'c1',
+        departmentId: 'd-site',
+        operationKey: 'PROJECT_DASHBOARD_VIEW',
+        status: 'ACTIVE',
+      });
+      const keys = await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1');
+      expect(keys).toContain('PROJECT_DASHBOARD_VIEW');
+    });
+
+    it('coverage appears in getEffectiveOperations and listEmployeeOperations', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withFinanceRole(state);
+      state.catalogue.push({
+        key: 'CLIENT_INVOICE_ISSUE',
+        domain: 'BILLING',
+        name: 'Client Invoice Issue',
+        description: '',
+        sensitive: false,
+      });
+      state.deptOps.push({
+        id: 'do-inv',
+        companyId: 'c1',
+        departmentId: 'd-site',
+        operationKey: 'CLIENT_INVOICE_ISSUE',
+        status: 'ACTIVE',
+      });
+      const effective = await svc(prisma).getEffectiveOperations('c1', 'e1');
+      expect(effective).toContain('CLIENT_INVOICE_ISSUE');
+      const ops = await svc(prisma).listEmployeeOperations(OWNER, 'c1', 'e1');
+      const roleOp = ops.find(
+        (o) => o.source === 'ROLE' && o.operationKey === 'CLIENT_INVOICE_ISSUE',
+      );
+      expect(roleOp).toBeTruthy();
+      expect(roleOp?.status).toBe('ACTIVE');
+    });
+
+    it('admin enable/disable on the dept updates coverage live', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withFinanceRole(state);
+      state.catalogue.push({
+        key: 'CLIENT_INVOICE_ISSUE',
+        domain: 'BILLING',
+        name: 'Client Invoice Issue',
+        description: '',
+        sensitive: false,
+      });
+      const row = {
+        id: 'do-inv',
+        companyId: 'c1',
+        departmentId: 'd-site',
+        operationKey: 'CLIENT_INVOICE_ISSUE',
+        status: 'ACTIVE',
+      };
+      state.deptOps.push(row);
+      expect(await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1')).toContain(
+        'CLIENT_INVOICE_ISSUE',
+      );
+      row.status = 'INACTIVE';
+      const effective = await svc(prisma).getEffectiveOperations('c1', 'e1');
+      expect(effective).not.toContain('CLIENT_INVOICE_ISSUE');
+    });
+
+    it('employee override subtracts a covered op', async () => {
+      const { state, prisma } = makeFakePrisma();
+      withFinanceRole(state);
+      state.empOps.push({
+        id: 'eo1',
+        companyId: 'c1',
+        employeeId: 'e1',
+        operationKey: 'PETTY_CASH_REQUEST_APPROVE',
+        status: 'INACTIVE',
+      });
+      const effective = await svc(prisma).getEffectiveOperations('c1', 'e1');
+      expect(effective).not.toContain('PETTY_CASH_REQUEST_APPROVE');
+    });
+
+    it('no coverage without the role, when revoked, or not yet effective', async () => {
+      const { state, prisma } = makeFakePrisma();
+      const [e1] = state.employees;
+      if (e1 !== undefined) e1.principalId = 'p1';
+      // No assignment at all.
+      expect(await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1')).toEqual([]);
+      state.roleAssignments.push(
+        {
+          companyId: 'c1',
+          principalId: 'p1',
+          roleId: 'r-fm1',
+          scopeType: 'COMPANY',
+          projectId: null,
+          revokedAt: new Date(),
+          effectiveFrom: null,
+          effectiveTo: null,
+          roleKey: 'FINANCE_MANAGER',
+        },
+        {
+          companyId: 'c1',
+          principalId: 'p1',
+          roleId: 'r-fm2',
+          scopeType: 'COMPANY',
+          projectId: null,
+          revokedAt: null,
+          effectiveFrom: new Date(Date.now() + 86400000),
+          effectiveTo: null,
+          roleKey: 'FINANCE_STAFF',
+        },
+      );
+      expect(await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1')).toEqual([]);
     });
   });
 });
