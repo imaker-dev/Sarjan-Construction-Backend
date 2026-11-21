@@ -176,7 +176,28 @@ function makeFakePrisma() {
         ),
     },
     operationCatalogueEntry: {
-      findMany: async () => state.catalogue,
+      findMany: async (
+        args: {
+          where?: {
+            sensitive?: boolean;
+            OR?: { domain?: { in: string[] }; key?: string }[];
+          };
+        } = {},
+      ) => {
+        const where = args.where;
+        return state.catalogue.filter((c) => {
+          if (where?.sensitive !== undefined && c.sensitive !== where.sensitive) return false;
+          if (where?.OR !== undefined) {
+            const anyMatch = where.OR.some((cond) => {
+              if (cond.domain !== undefined) return cond.domain.in.includes(c.domain);
+              if (cond.key !== undefined) return c.key === cond.key;
+              return false;
+            });
+            if (!anyMatch) return false;
+          }
+          return true;
+        });
+      },
       findUnique: async ({ where }: { where: { key: string } }) =>
         state.catalogue.find((c) => c.key === where.key) ?? null,
     },
@@ -963,10 +984,9 @@ describe('OperationAssignmentService', () => {
       });
     }
 
-    it('covers finance-domain ops enabled on any active dept in the company', async () => {
+    it('covers all non-sensitive finance-domain ops with no dept enablement', async () => {
       const { state, prisma } = makeFakePrisma();
       withFinanceRole(state);
-      // Finance-domain op enabled on a dept e1 is NOT a member of.
       state.catalogue.push({
         key: 'CLIENT_INVOICE_ISSUE',
         domain: 'BILLING',
@@ -974,57 +994,26 @@ describe('OperationAssignmentService', () => {
         description: '',
         sensitive: false,
       });
-      state.deptOps.push({
-        id: 'do-inv',
-        companyId: 'c1',
-        departmentId: 'd-site',
-        operationKey: 'CLIENT_INVOICE_ISSUE',
-        status: 'ACTIVE',
-      });
+      // No DepartmentOperation rows at all — coverage is catalogue-driven.
+      state.deptOps.length = 0;
       const keys = await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1');
       expect(keys).toContain('CLIENT_INVOICE_ISSUE');
       expect(keys).toContain('PETTY_CASH_REQUEST_APPROVE');
     });
 
-    it('excludes sensitive, non-finance-domain, and disabled ops', async () => {
+    it('excludes sensitive and non-finance-domain ops', async () => {
       const { state, prisma } = makeFakePrisma();
       withFinanceRole(state);
-      state.catalogue.push(
-        {
-          key: 'WORK_PROGRESS_SUBMIT',
-          domain: 'OPERATIONS',
-          name: 'Work Progress Submit',
-          description: '',
-          sensitive: false,
-        },
-        {
-          key: 'CLIENT_INVOICE_ISSUE',
-          domain: 'BILLING',
-          name: 'Client Invoice Issue',
-          description: '',
-          sensitive: false,
-        },
-      );
-      state.deptOps.push(
-        {
-          id: 'do-wps',
-          companyId: 'c1',
-          departmentId: 'd-site',
-          operationKey: 'WORK_PROGRESS_SUBMIT',
-          status: 'ACTIVE',
-        },
-        {
-          id: 'do-inv',
-          companyId: 'c1',
-          departmentId: 'd-site',
-          operationKey: 'CLIENT_INVOICE_ISSUE',
-          status: 'INACTIVE',
-        },
-      );
+      state.catalogue.push({
+        key: 'WORK_PROGRESS_SUBMIT',
+        domain: 'OPERATIONS',
+        name: 'Work Progress Submit',
+        description: '',
+        sensitive: false,
+      });
       const keys = await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1');
       expect(keys).not.toContain('WORK_PROGRESS_SUBMIT');
-      expect(keys).not.toContain('CLIENT_INVOICE_ISSUE');
-      expect(keys).not.toContain('SALARY_PAYMENT_APPROVE');
+      expect(keys).not.toContain('SALARY_PAYMENT_APPROVE'); // sensitive PAYROLL
     });
 
     it('covers PROJECT_DASHBOARD_VIEW despite its PROJECT_REPORTS domain', async () => {
@@ -1036,13 +1025,6 @@ describe('OperationAssignmentService', () => {
         name: 'Project Dashboard View',
         description: '',
         sensitive: false,
-      });
-      state.deptOps.push({
-        id: 'do-dash',
-        companyId: 'c1',
-        departmentId: 'd-site',
-        operationKey: 'PROJECT_DASHBOARD_VIEW',
-        status: 'ACTIVE',
       });
       const keys = await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1');
       expect(keys).toContain('PROJECT_DASHBOARD_VIEW');
@@ -1058,13 +1040,6 @@ describe('OperationAssignmentService', () => {
         description: '',
         sensitive: false,
       });
-      state.deptOps.push({
-        id: 'do-inv',
-        companyId: 'c1',
-        departmentId: 'd-site',
-        operationKey: 'CLIENT_INVOICE_ISSUE',
-        status: 'ACTIVE',
-      });
       const effective = await svc(prisma).getEffectiveOperations('c1', 'e1');
       expect(effective).toContain('CLIENT_INVOICE_ISSUE');
       const ops = await svc(prisma).listEmployeeOperations(OWNER, 'c1', 'e1');
@@ -1075,30 +1050,29 @@ describe('OperationAssignmentService', () => {
       expect(roleOp?.status).toBe('ACTIVE');
     });
 
-    it('admin enable/disable on the dept updates coverage live', async () => {
+    it('admin disable/enable per employee reflects live in coverage', async () => {
       const { state, prisma } = makeFakePrisma();
       withFinanceRole(state);
-      state.catalogue.push({
-        key: 'CLIENT_INVOICE_ISSUE',
-        domain: 'BILLING',
-        name: 'Client Invoice Issue',
-        description: '',
-        sensitive: false,
-      });
-      const row = {
-        id: 'do-inv',
+      // Admin disables a covered op for this employee.
+      const override = {
+        id: 'eo-toggle',
         companyId: 'c1',
-        departmentId: 'd-site',
-        operationKey: 'CLIENT_INVOICE_ISSUE',
-        status: 'ACTIVE',
+        employeeId: 'e1',
+        operationKey: 'PETTY_CASH_REQUEST_APPROVE',
+        status: 'INACTIVE',
       };
-      state.deptOps.push(row);
-      expect(await svc(prisma).getFinanceScopedOperationKeys('c1', 'e1')).toContain(
-        'CLIENT_INVOICE_ISSUE',
+      state.empOps.push(override);
+      expect(await svc(prisma).getEffectiveOperations('c1', 'e1')).not.toContain(
+        'PETTY_CASH_REQUEST_APPROVE',
       );
-      row.status = 'INACTIVE';
-      const effective = await svc(prisma).getEffectiveOperations('c1', 'e1');
-      expect(effective).not.toContain('CLIENT_INVOICE_ISSUE');
+      const ops = await svc(prisma).listEmployeeOperations(OWNER, 'c1', 'e1');
+      const row = ops.find((o) => o.operationKey === 'PETTY_CASH_REQUEST_APPROVE');
+      expect(row?.status).toBe('INACTIVE');
+      // Admin re-enables → restored as ACTIVE.
+      override.status = 'ACTIVE';
+      expect(await svc(prisma).getEffectiveOperations('c1', 'e1')).toContain(
+        'PETTY_CASH_REQUEST_APPROVE',
+      );
     });
 
     it('employee override subtracts a covered op', async () => {
