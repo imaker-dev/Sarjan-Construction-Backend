@@ -35,6 +35,10 @@ export interface CreateHeadOfficeInput {
   contactName?: string;
   contactPhone?: string;
   contactEmail?: string;
+  geoLatitude?: number;
+  geoLongitude?: number;
+  geoFenceRadiusM?: number;
+  timezone?: string;
 }
 
 export interface UpdateHeadOfficeInput {
@@ -51,6 +55,10 @@ export interface UpdateHeadOfficeInput {
   contactName?: string | null;
   contactPhone?: string | null;
   contactEmail?: string | null;
+  geoLatitude?: number | null;
+  geoLongitude?: number | null;
+  geoFenceRadiusM?: number | null;
+  timezone?: string | null;
   isPrimary?: boolean;
 }
 

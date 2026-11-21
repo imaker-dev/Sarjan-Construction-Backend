@@ -72,9 +72,11 @@ export interface UserAggregatedProfileResponse {
     hasActiveSession: boolean;
     activeSession: {
       id: string;
-      siteId: string;
-      siteCode: string;
-      siteName: string;
+      siteId: string | null;
+      siteCode: string | null;
+      siteName: string | null;
+      headOfficeId?: string | null;
+      headOfficeName?: string | null;
       businessDate: string;
       punchInAt: string;
       source: string;
@@ -710,8 +712,10 @@ export class AuthService {
         activeSessionData = {
           id: s.id,
           siteId: s.siteId,
-          siteCode: s.site.code,
-          siteName: s.site.name,
+          siteCode: s.site?.code ?? null,
+          siteName: s.site?.name ?? null,
+          headOfficeId: s.headOfficeId ?? null,
+          headOfficeName: s.headOffice?.name ?? null,
           businessDate: s.businessDate,
           punchInAt: s.punchInAt instanceof Date ? s.punchInAt.toISOString() : String(s.punchInAt),
           source: s.source,

@@ -212,9 +212,11 @@ const UserAggregatedProfileResponseSchema = Type.Object({
     activeSession: Type.Union([
       Type.Object({
         id: Type.String({ format: 'uuid' }),
-        siteId: Type.String({ format: 'uuid' }),
-        siteCode: Type.String(),
-        siteName: Type.String(),
+        siteId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+        siteCode: Type.Union([Type.String(), Type.Null()]),
+        siteName: Type.Union([Type.String(), Type.Null()]),
+        headOfficeId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+        headOfficeName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
         businessDate: Type.String(),
         punchInAt: Type.String(),
         source: Type.String(),

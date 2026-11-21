@@ -18,6 +18,10 @@ export const AddressOpt = {
   contactName: Type.Optional(Type.String({ maxLength: 120 })),
   contactPhone: Type.Optional(Type.String({ maxLength: 20 })),
   contactEmail: Type.Optional(Type.String({ format: 'email' })),
+  geoLatitude: Type.Optional(Type.Number({ minimum: -90, maximum: 90 })),
+  geoLongitude: Type.Optional(Type.Number({ minimum: -180, maximum: 180 })),
+  geoFenceRadiusM: Type.Optional(Type.Integer({ minimum: 1 })),
+  timezone: Type.Optional(Type.String()),
 };
 const CreateHeadOffice = Type.Object({
   code: Type.String({ minLength: 1, maxLength: 40 }),

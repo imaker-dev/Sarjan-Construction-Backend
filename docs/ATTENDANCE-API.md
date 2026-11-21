@@ -265,17 +265,19 @@ Employee punches themselves — `employeeId` omitted (resolved from their login)
 }
 ```
 
-| Field                  | Rule                                                                                                                                            |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `siteId`               | **required** — site must exist in the company                                                                                                   |
-| `employeeId`           | optional — defaults to caller's employee; any other value → `ATTENDANCE_MANAGE`                                                                 |
-| `latitude`/`longitude` | **required**                                                                                                                                    |
-| `source`               | `MOBILE_SELF` for self-punch. Any other value → `ATTENDANCE_MANAGE`. Omitted → auto-derived (`SUPERVISOR_KIOSK` when punching for someone else) |
+| Field                  | Rule                                                                                                                                                                                                                                          |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `siteId`               | site anchor — **exactly one** of `siteId`/`headOfficeId` required                                                                                                                                                                             |
+| `headOfficeId`         | head-office anchor — for Head-Office-department staff who have no site. Employee must hold an active membership in a department whose `baseHeadOfficeId` matches; geofence uses the head office's geo fields (`POST/PATCH /org/head-offices`) |
+| `employeeId`           | optional — defaults to caller's employee; any other value → `ATTENDANCE_MANAGE`                                                                                                                                                               |
+| `latitude`/`longitude` | **required**                                                                                                                                                                                                                                  |
+| `source`               | `MOBILE_SELF` for self-punch. Any other value → `ATTENDANCE_MANAGE`. Omitted → auto-derived (`SUPERVISOR_KIOSK` when punching for someone else)                                                                                               |
 
 Validation chain (inside one transaction):
 
 1. Caller→employee resolution; supervisor/privileged-source → `ATTENDANCE_MANAGE`
-2. Employee exists + `ACTIVE`; site exists in company
+2. Employee exists + `ACTIVE`; location anchor exists (`Site`, or `Head Office` +
+   active department membership based there)
 3. No existing `IN_PROGRESS` session (app check + DB unique index)
 4. Effective policy resolved; `allowMobilePunch`/`allowKioskPunch`/`allowBiometric`
    enforced per source

@@ -111,7 +111,9 @@ site.
 ```http
 POST /api/v1/org/head-offices        # ORG_HEAD_OFFICE_CREATE
 { "code": "HQ", "name": "Head Office — Patna", "isPrimary": true,
-  "city": "Patna", "state": "Bihar", "country": "India" }
+  "city": "Patna", "state": "Bihar", "country": "India",
+  "geoLatitude": 25.5942, "geoLongitude": 85.1377,
+  "geoFenceRadiusM": 200, "timezone": "Asia/Kolkata" }
 ```
 
 ```json
@@ -376,6 +378,18 @@ GET /api/v1/auth/me                                   # shows attendance.hasActi
 ```http
 POST /api/v1/attendance/punch-in                      # ATTENDANCE_RECORD at site
 { "siteId": "site-uuid", "latitude": 25.5942, "longitude": 85.1377 }
+```
+
+**Head-office staff (e.g. Finance) punch against their head office instead** —
+exactly one of `siteId`/`headOfficeId` is accepted. `departments[].headOfficeId`
+in `/auth/me` supplies the id; the employee must hold an active membership in a
+department based at that office. Set the office's `geoLatitude`/`geoLongitude`/
+`geoFenceRadiusM` via `POST/PATCH /org/head-offices` for geofencing (missing
+geo ⇒ no fence check); `timezone` defaults to `Asia/Kolkata` for business dates.
+
+```http
+POST /api/v1/attendance/punch-in                      # head-office anchor
+{ "headOfficeId": "ho-uuid", "latitude": 25.5942, "longitude": 85.1377 }
 ```
 
 ```json
