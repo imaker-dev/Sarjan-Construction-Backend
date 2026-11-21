@@ -46,6 +46,18 @@ describe('Finance permission provisioning', () => {
     }
   });
 
+  it('every template holding ATTENDANCE_MANAGE also holds ATTENDANCE_RECORD for self-punch', () => {
+    for (const tpl of TENANT_ROLE_TEMPLATES) {
+      const perms = new Set(tpl.permissions);
+      if (perms.has('ATTENDANCE_MANAGE')) {
+        expect(
+          perms.has('ATTENDANCE_RECORD'),
+          `${tpl.key} holds ATTENDANCE_MANAGE without ATTENDANCE_RECORD — self-punch denied`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it('FINANCE_STAFF is least-privilege: no payroll, sensitive, budget-manage, export', () => {
     const perms = new Set(template('FINANCE_STAFF').permissions);
     // Day-to-day finance work is present.

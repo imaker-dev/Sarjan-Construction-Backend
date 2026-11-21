@@ -253,6 +253,7 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
       'NOTIFICATION_READ',
       'COMPLIANCE_READ',
       'COMPLIANCE_MANAGE',
+      'ATTENDANCE_RECORD',
       'ATTENDANCE_READ',
       'ATTENDANCE_MANAGE',
       'WORK_SCHEDULE_READ',
