@@ -144,7 +144,9 @@ Other session routes:
 ```bash
 POST /api/v1/auth/refresh   { "refreshToken": "…" }          # rotate tokens
 POST /api/v1/auth/logout    # invalidates the session
-GET  /api/v1/auth/me        # cached profile: roles, permissions, dept memberships
+GET  /api/v1/auth/me        # cached profile + live operations[]: roles, permissions,
+                            # dept memberships, employeeId. operations[] is resolved
+                            # fresh each call — admin op toggles reflect immediately.
 ```
 
 ---

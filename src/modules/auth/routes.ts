@@ -94,6 +94,7 @@ const UserMeResponseSchema = Type.Object({
   loginIdType: Type.String(),
   status: Type.String(),
   displayName: Type.String(),
+  employeeId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
   employeeCode: Type.Union([Type.String(), Type.Null()]),
   designation: Type.Union([Type.String(), Type.Null()]),
   tradeCategory: Type.Union([Type.String(), Type.Null()]),
@@ -112,6 +113,7 @@ const UserMeResponseSchema = Type.Object({
   role: Type.Union([Type.String(), Type.Null()]),
   roles: Type.Array(Type.String()),
   permissions: Type.Array(Type.String()),
+  operations: Type.Optional(Type.Array(Type.String())),
   assignments: Type.Array(
     Type.Object({
       id: Type.String({ format: 'uuid' }),

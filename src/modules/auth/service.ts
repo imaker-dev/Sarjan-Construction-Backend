@@ -550,7 +550,7 @@ export class AuthService {
   async getMe(principalId: string, companyId?: string): Promise<UserProfileResponse> {
     const cached = await this.cache.get(principalId, companyId);
     if (cached !== null) {
-      return cached;
+      return this.withLiveOperations(cached);
     }
 
     const full = await this.uow.run(async ({ principals }) => {
@@ -617,6 +617,7 @@ export class AuthService {
       loginIdType: full.loginIdType ?? 'EMAIL',
       status: full.status,
       displayName: emp?.displayName ?? full.loginId ?? 'User',
+      employeeId: emp?.id ?? null,
       employeeCode: emp?.employeeCode ?? null,
       designation: emp?.designation ?? null,
       tradeCategory: emp?.tradeCategory ?? null,
@@ -639,7 +640,26 @@ export class AuthService {
     };
 
     await this.cache.set(principalId, response, companyId);
-    return response;
+    return this.withLiveOperations(response);
+  }
+
+  /**
+   * Operations are resolved live on every /auth/me call — outside the cached
+   * profile — so admin enable/disable on employee or role-derived operations
+   * is reflected immediately rather than after the profile TTL expires.
+   */
+  private async withLiveOperations(profile: UserProfileResponse): Promise<UserProfileResponse> {
+    if (
+      profile.employeeId === null ||
+      profile.company === null ||
+      this.resolveOperations === undefined
+    ) {
+      return profile;
+    }
+    return {
+      ...profile,
+      operations: await this.resolveOperations(profile.company.id, profile.employeeId),
+    };
   }
 
   async getProfile(

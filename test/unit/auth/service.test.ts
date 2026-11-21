@@ -208,9 +208,53 @@ describe('getMe', () => {
     expect(res3.loginId).toBe('changed@example.com');
   });
 
+  it('resolves operations live on every call so admin toggles reflect on cached profiles', async () => {
+    const passwordHash = await passwordService.hash('secret-pw');
+    const p = fakePrincipal({
+      passwordHash,
+      loginId: 'ops@example.com',
+      status: 'ACTIVE',
+      type: 'USER',
+    });
+    store.principals.push(p);
+    store.employees.push({
+      id: 'emp-ops',
+      principalId: p.id,
+      companyId: 'comp-1',
+      displayName: 'Ops User',
+      employeeCode: 'EMP-OPS',
+      company: { id: 'comp-1', code: 'C1', name: 'Co 1', isPlatform: false },
+    });
+
+    let ops = ['PROJECT_BUDGET_VIEW', 'PROJECT_DASHBOARD_VIEW'];
+    const svc = new AuthService(
+      new FakeAuthUoW(store),
+      tokens,
+      { accessTokenTtlS: 900, refreshTokenTtlS: 1209600 },
+      () => new Date(),
+      async () => ops,
+    );
+
+    const res1 = await svc.getMe(p.id);
+    expect(res1.employeeId).toBe('emp-ops');
+    expect(res1.operations).toEqual(['PROJECT_BUDGET_VIEW', 'PROJECT_DASHBOARD_VIEW']);
+
+    // Admin disables an op — the profile itself stays cached, but the
+    // operations overlay is resolved fresh so the toggle shows immediately.
+    ops = ['PROJECT_DASHBOARD_VIEW'];
+    const res2 = await svc.getMe(p.id);
+    expect(res2.loginId).toBe('ops@example.com');
+    expect(res2.operations).toEqual(['PROJECT_DASHBOARD_VIEW']);
+  });
+
   it('getProfile returns aggregated profile for active user', async () => {
     const passwordHash = await passwordService.hash('secret-pw');
-    const p = fakePrincipal({ passwordHash, loginId: 'profile@example.com', status: 'ACTIVE', type: 'USER' });
+    const p = fakePrincipal({
+      passwordHash,
+      loginId: 'profile@example.com',
+      status: 'ACTIVE',
+      type: 'USER',
+    });
     store.principals.push(p);
     store.employees.push({
       id: 'emp-profile',
@@ -243,7 +287,12 @@ describe('login operations resolver', () => {
       async () => ['PETTY_CASH_REQUEST_APPROVE', 'EMPLOYEE_PAYROLL_PREPARE'],
     );
     const passwordHash = await passwordService.hash('secret-pw');
-    const p = fakePrincipal({ passwordHash, loginId: 'ops@t.test', status: 'ACTIVE', type: 'USER' });
+    const p = fakePrincipal({
+      passwordHash,
+      loginId: 'ops@t.test',
+      status: 'ACTIVE',
+      type: 'USER',
+    });
     store.principals.push(p);
     store.employees.push({
       id: 'emp-ops',
@@ -271,10 +320,14 @@ describe('changePassword', () => {
     expect(res.success).toBe(true);
 
     // Verify login with new password succeeds and old password fails
-    const loginOk = asAuth(await service.login({ loginId: 'pwd@example.com', password: 'updated-secret-123' }, {}));
+    const loginOk = asAuth(
+      await service.login({ loginId: 'pwd@example.com', password: 'updated-secret-123' }, {}),
+    );
     expect(loginOk.accessToken).toBeDefined();
 
-    await expect(service.login({ loginId: 'pwd@example.com', password: 'secret-pw' }, {})).rejects.toThrow();
+    await expect(
+      service.login({ loginId: 'pwd@example.com', password: 'secret-pw' }, {}),
+    ).rejects.toThrow();
   });
 
   it('rejects incorrect current password', async () => {

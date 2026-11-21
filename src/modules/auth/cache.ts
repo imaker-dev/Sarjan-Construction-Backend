@@ -6,6 +6,7 @@ export interface UserProfileResponse {
   loginIdType: string;
   status: string;
   displayName: string;
+  employeeId: string | null;
   employeeCode: string | null;
   designation: string | null;
   tradeCategory: string | null;
@@ -21,6 +22,7 @@ export interface UserProfileResponse {
   role: string | null;
   roles: string[];
   permissions: string[];
+  operations?: string[];
   assignments: {
     id: string;
     roleKey: string;
