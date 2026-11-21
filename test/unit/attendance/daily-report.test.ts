@@ -142,7 +142,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       dailyReports: {
         findBySiteAndDate: vi.fn().mockResolvedValue(null),
         upsert: vi.fn().mockImplementation(async (_cid: string, data: CalculatedReportData) => {
-          state.upsertedData = data;
+          upsertedData = data;
           return {
             id: 'dsr-101',
             companyId,
@@ -170,17 +170,17 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
     });
 
     expect(report.id).toBe('dsr-101');
-    expect(state.autoClosedSessionId).toBe('sess-open');
-    expect(state.upsertedData).not.toBeNull();
-    expect(state.upsertedData?.totalWorkersHeadcount).toBe(4);
-    expect(state.upsertedData?.totalPresentUnits).toBe(2.5);
-    expect(state.upsertedData?.totalOvertimeHours).toBe(3.5);
-    expect(state.upsertedData?.catAStaffCount).toBe(1);
-    expect(state.upsertedData?.catAStaffUnits).toBe(1.0);
-    expect(state.upsertedData?.catBDirectCount).toBe(2);
-    expect(state.upsertedData?.catCSubconCount).toBe(1);
-    expect(state.upsertedData?.catCSubconUnits).toBe(0.5);
-    expect(state.auditAction).toBe('AUTO_CALCULATED');
+    expect(autoClosedSessionId).toBe('sess-open');
+    expect(upsertedData).not.toBeNull();
+    expect(upsertedData?.totalWorkersHeadcount).toBe(4);
+    expect(upsertedData?.totalPresentUnits).toBe(2.5);
+    expect(upsertedData?.totalOvertimeHours).toBe(3.5);
+    expect(upsertedData?.catAStaffCount).toBe(1);
+    expect(upsertedData?.catAStaffUnits).toBe(1.0);
+    expect(upsertedData?.catBDirectCount).toBe(2);
+    expect(upsertedData?.catCSubconCount).toBe(1);
+    expect(upsertedData?.catCSubconUnits).toBe(0.5);
+    expect(auditAction).toBe('AUTO_CALCULATED');
   });
 
   it('prevents calculation if the daily report is already LOCKED', async () => {
@@ -241,7 +241,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
 
     expect(updated.weather).toBe('HEAVY_RAIN');
     expect(Number(updated.weatherStoppageHours)).toBe(4.5);
-    expect(auditState.capturedAudit?.action).toBe('EDITED_HEADER');
+    expect(capturedAudit?.action).toBe('EDITED_HEADER');
   });
 
   it('allows PM to adjust subcontractor labour summary headcount and recalculates totals', async () => {
@@ -303,8 +303,8 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       reason: 'Physical head count showed 2 workers left early',
     });
 
-    expect(auditState.capturedAudit?.action).toBe('EDITED_LABOUR_SUMMARY');
-    expect(auditState.capturedAudit?.reason).toBe('Physical head count showed 2 workers left early');
+    expect(capturedAudit?.action).toBe('EDITED_LABOUR_SUMMARY');
+    expect(capturedAudit?.reason).toBe('Physical head count showed 2 workers left early');
   });
 
   it('supports the complete sign-off lifecycle: DRAFT -> SUBMITTED -> APPROVED -> LOCKED', async () => {

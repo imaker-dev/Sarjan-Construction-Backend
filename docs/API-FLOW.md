@@ -6,12 +6,12 @@ All routes are prefixed with `/api/v1`. Swagger UI is available at `/docs` when 
 
 ## Quick Reference — Access Patterns
 
-| Pattern | `Authorization` header | `x-company-id` header | Permission check |
-|---|---|---|---|
-| **auth** (login, claim) | No | No | No |
-| **platform** (super admin) | Bearer | Ignored | `PLATFORM_*` keys, platform company |
-| **tenant** (org/dept/employee/…) | Bearer | **Required** | Role→permission in company scope |
-| **health** | No | No | No |
+| Pattern                          | `Authorization` header | `x-company-id` header | Permission check                    |
+| -------------------------------- | ---------------------- | --------------------- | ----------------------------------- |
+| **auth** (login, claim)          | No                     | No                    | No                                  |
+| **platform** (super admin)       | Bearer                 | Ignored               | `PLATFORM_*` keys, platform company |
+| **tenant** (org/dept/employee/…) | Bearer                 | **Required**          | Role→permission in company scope    |
+| **health**                       | No                     | No                    | No                                  |
 
 Every mutating tenant route also enforces optimistic concurrency (`expectedVersion`) and writes an audit record.
 
@@ -134,6 +134,7 @@ POST /api/v1/auth/login
 ```
 
 **From here on, every request carries:**
+
 ```
 Authorization: Bearer <accessToken>
 x-company-id: <companyId>
@@ -201,6 +202,7 @@ POST /api/v1/departments               # DEPARTMENT_CONFIGURE
 ```
 
 Rules:
+
 - `CUSTOM` category requires `categoryLabel`.
 - `PROJECT`/`SITE` scope requires `scopeId` (`<project-id>` / `<site-id>`); `COMPANY` scope omits it.
 - Codes are unique **per scope** — two projects can each have a `SITE_ENG` dept.
@@ -365,6 +367,7 @@ POST /api/v1/employees/:id/assignments
 ```
 
 Rules enforced by the service:
+
 - Each project has at most **one active PD and one active PI**; granting a second holder replaces (revokes) the incumbent, audited as `ROLE_ASSIGNMENT_REPLACED`.
 - One employee may hold PD/PI on **multiple projects**.
 - Self-grant is denied; cross-company project/employee and inactive project/employee are rejected.
@@ -502,11 +505,11 @@ POST /platform/companies ──► claimCode  POST /auth/claim/onboard  (unauthe
 
 ## Common Errors
 
-| Code | Meaning |
-|---|---|
-| 400 | Invalid payload (TypeBox schema) |
-| 401 | Missing/expired token, or missing `x-company-id` |
-| 403 | Permission key not held in the resolved scope |
-| 404 | Entity not found (or cross-tenant leak → hidden as 404) |
-| 409 | Duplicate unique key, or `expectedVersion` mismatch |
-| 422 | Business-rule violation (inactive dept, op not enabled, orphan coords, …) |
+| Code | Meaning                                                                   |
+| ---- | ------------------------------------------------------------------------- |
+| 400  | Invalid payload (TypeBox schema)                                          |
+| 401  | Missing/expired token, or missing `x-company-id`                          |
+| 403  | Permission key not held in the resolved scope                             |
+| 404  | Entity not found (or cross-tenant leak → hidden as 404)                   |
+| 409  | Duplicate unique key, or `expectedVersion` mismatch                       |
+| 422  | Business-rule violation (inactive dept, op not enabled, orphan coords, …) |
