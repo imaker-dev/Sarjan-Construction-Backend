@@ -188,13 +188,81 @@ const OPERATION_DOCS: Record<
     description:
       'headOfficeId is derived server-side from the active primary Head Office — ' +
       'never accepted from the body. Requires an active primary HO and company-wide ' +
-      'FINANCE and ADMINISTRATION departments to already exist (422 otherwise).',
+      'FINANCE and ADMINISTRATION departments to already exist (422 otherwise). ' +
+      'Supports the extended construction profile (client/contract, location, land, ' +
+      'programme) plus optional nested landParcels, document links, external ' +
+      'approvals, and an initialBudget — the latter requires FINANCE_BUDGET_MANAGE ' +
+      'plus budget create/revise operations and produces a DRAFT revision in the ' +
+      'same transaction (total computed server-side).',
     permission: 'ORG_PROJECT_CREATE',
   },
-  'PATCH /org/projects/:id': { summary: 'Update project', permission: 'ORG_PROJECT_UPDATE' },
+  'GET /org/projects/:id': {
+    summary: 'Get project profile + registers',
+    description:
+      'Project row plus its landParcels, document register entries, and external ' +
+      'approval records.',
+    permission: 'ORG_PROJECT_READ',
+  },
+  'PATCH /org/projects/:id': {
+    summary: 'Update project',
+    description:
+      'Patch semantics: absent keys untouched, explicit null clears the field. ' +
+      'expectedVersion guards optimistic concurrency (409 on stale).',
+    permission: 'ORG_PROJECT_UPDATE',
+  },
   'POST /org/projects/:id/status': {
     summary: 'Transition project status',
     permission: 'ORG_PROJECT_STATUS',
+  },
+  'POST /org/projects/:id/parcels': {
+    summary: 'Add land parcel to project',
+    permission: 'ORG_PROJECT_UPDATE',
+  },
+  'GET /org/projects/:id/parcels': {
+    summary: 'List project land parcels',
+    permission: 'ORG_PROJECT_READ',
+  },
+  'POST /org/projects/:id/documents': {
+    summary: 'Link an existing document to the project register',
+    description:
+      'documentId must reference an AVAILABLE Document in this company whose ' +
+      'upload scope contains the project (COMPANY or the project itself). ' +
+      'Carries drawing-register metadata: type, title, number, discipline, ' +
+      'revision, issue date, link status.',
+    permission: 'DOCUMENT_LINK',
+  },
+  'POST /org/projects/:id/documents/upload': {
+    summary: 'Upload a file to the project register (multipart)',
+    description:
+      'multipart/form-data file field plus optional metadata fields ' +
+      '(documentType, title, documentNumber, discipline, revision, issueDate, ' +
+      'linkStatus). The Document is stored at PROJECT scope and linked in the ' +
+      'project document register.',
+    permission: 'DOCUMENT_UPLOAD',
+  },
+  'GET /org/projects/:id/documents': {
+    summary: 'List project document register',
+    permission: 'DOCUMENT_READ',
+  },
+  'PATCH /org/projects/:id/documents/:linkId': {
+    summary: 'Update project document register metadata',
+    permission: 'DOCUMENT_LINK',
+  },
+  'POST /org/projects/:id/approvals': {
+    summary: 'Record external authority approval/registration',
+    description:
+      'Statutory/authority record (RERA, fire NOC, environmental clearance …) — ' +
+      'distinct from internal workflow approvals. approvalType OTHER requires ' +
+      'customType. No approval type is universally required.',
+    permission: 'ORG_PROJECT_UPDATE',
+  },
+  'GET /org/projects/:id/approvals': {
+    summary: 'List project external approvals',
+    permission: 'ORG_PROJECT_READ',
+  },
+  'PATCH /org/projects/:id/approvals/:approvalId': {
+    summary: 'Update external approval record',
+    permission: 'ORG_PROJECT_UPDATE',
   },
   'GET /org/sites': { summary: 'List sites (cursor-paginated)', permission: 'ORG_SITE_READ' },
   'POST /org/sites': {
@@ -202,10 +270,49 @@ const OPERATION_DOCS: Record<
     description:
       'Structured address fields (addressLine1/2, locality, city, district, state, pinCode, country). ' +
       'geoLatitude/geoLongitude form a required pair with range validation; geoFenceRadiusM (10-5000m) ' +
-      'requires coordinates. Omitted timezone inherits the parent project timezone.',
+      'requires coordinates. Omitted timezone inherits the parent project timezone. ' +
+      'Optional siteType, land/parcel, facilities, contact, and sensitive ' +
+      'access/emergency fields (the latter two are written here but only ' +
+      'readable with ORG_SITE_SENSITIVE_READ). landParcelId must reference a ' +
+      'parcel of the same project.',
     permission: 'ORG_SITE_CREATE',
   },
-  'PATCH /org/sites/:id': { summary: 'Update site', permission: 'ORG_SITE_UPDATE' },
+  'GET /org/sites/:id': {
+    summary: 'Get site profile + document register',
+    description:
+      'accessInstructions and emergencyDetails are included only for holders ' +
+      'of ORG_SITE_SENSITIVE_READ; omitted otherwise.',
+    permission: 'ORG_SITE_READ',
+  },
+  'PATCH /org/sites/:id': {
+    summary: 'Update site',
+    description:
+      'Patch semantics: absent keys untouched, explicit null clears the field. ' +
+      'expectedVersion guards optimistic concurrency (409 on stale).',
+    permission: 'ORG_SITE_UPDATE',
+  },
+  'POST /org/sites/:id/documents': {
+    summary: 'Link an existing document to the site register',
+    description:
+      'documentId must reference an AVAILABLE Document whose scope contains ' +
+      'the site (COMPANY, the parent project, or the site itself).',
+    permission: 'DOCUMENT_LINK',
+  },
+  'POST /org/sites/:id/documents/upload': {
+    summary: 'Upload a file to the site register (multipart)',
+    description:
+      'multipart/form-data file field plus optional register metadata fields. ' +
+      'The Document is stored at SITE scope.',
+    permission: 'DOCUMENT_UPLOAD',
+  },
+  'GET /org/sites/:id/documents': {
+    summary: 'List site document register',
+    permission: 'DOCUMENT_READ',
+  },
+  'PATCH /org/sites/:id/documents/:linkId': {
+    summary: 'Update site document register metadata',
+    permission: 'DOCUMENT_LINK',
+  },
   'POST /org/sites/:id/status': {
     summary: 'Transition site status',
     permission: 'ORG_SITE_STATUS',
@@ -876,6 +983,7 @@ export interface BuildAppOptions {
     financeService?: FinanceService;
     employeeDocumentService?: EmployeeDocumentService;
     documentService?: DocumentService;
+    organizationService?: OrganizationService;
     // Test hook: inject the sentinel platform-company id (null = none).
     platformCompanyId?: string | null;
   };
@@ -1246,8 +1354,40 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   });
 
   // Domain route plugins, versioned.
+  const storageDir = app.config.DOCUMENT_STORAGE_DIR ?? join(tmpdir(), 'sarjan-docs');
+  const documentStorage = new LocalDiskStorage(storageDir);
+  const documentService =
+    services.documentService ??
+    new DocumentService({
+      uow: new PrismaDocumentUnitOfWork(app.prisma),
+      authorizer: accessControl,
+      storage: documentStorage,
+      maxBytes: 10 * 1024 * 1024,
+      staleUploadingMinutes: 60,
+    });
+  const financeService =
+    services.financeService ??
+    new FinanceService(
+      new PrismaFinanceUnitOfWork(app.prisma),
+      {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+        hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.hasPermission(pid, key, target),
+      },
+      (companyId, employeeId) => opAssignment.getEffectiveOperations(companyId, employeeId),
+    );
   await app.register(
-    organizationRoutes(new OrganizationService(new PrismaOrgUnitOfWork(app.prisma))),
+    organizationRoutes(
+      services.organizationService ??
+        new OrganizationService(new PrismaOrgUnitOfWork(app.prisma), {
+          hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.hasPermission(pid, key, target),
+          assertInitialBudgetAuthority: (actor, companyId) =>
+            financeService.assertInitialBudgetAuthority(actor, companyId),
+        }),
+      { documentService },
+    ),
     {
       prefix: '/api/v1',
     },
@@ -1261,17 +1401,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     ),
     { prefix: '/api/v1' },
   );
-  const storageDir = app.config.DOCUMENT_STORAGE_DIR ?? join(tmpdir(), 'sarjan-docs');
-  const documentStorage = new LocalDiskStorage(storageDir);
-  const documentService =
-    services.documentService ??
-    new DocumentService({
-      uow: new PrismaDocumentUnitOfWork(app.prisma),
-      authorizer: accessControl,
-      storage: documentStorage,
-      maxBytes: 10 * 1024 * 1024,
-      staleUploadingMinutes: 60,
-    });
   const employeeDocumentService =
     services.employeeDocumentService ??
     new EmployeeDocumentService({
@@ -1379,22 +1508,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     ),
     { prefix: '/api/v1' },
   );
-  await app.register(
-    financeRoutes(
-      services.financeService ??
-        new FinanceService(
-          new PrismaFinanceUnitOfWork(app.prisma),
-          {
-            assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-              accessControl.assertPermission(pid, key, target),
-            hasPermission: (pid: string, key: string, target: ScopeTarget) =>
-              accessControl.hasPermission(pid, key, target),
-          },
-          (companyId, employeeId) => opAssignment.getEffectiveOperations(companyId, employeeId),
-        ),
-    ),
-    { prefix: '/api/v1' },
-  );
+  await app.register(financeRoutes(financeService), { prefix: '/api/v1' });
   await app.register(
     auditRoutes(
       new AuditService(app.prisma, {

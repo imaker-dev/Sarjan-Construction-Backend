@@ -64,3 +64,33 @@ export function assertValidGeoFenceRadius(value: number, field = 'geoFenceRadius
   }
   return value;
 }
+
+// Non-negative decimal string at API boundaries (money, areas, lengths).
+// Precision is column-enforced (DECIMAL(18,2) etc.); this gate rejects
+// malformed input before Prisma.
+const DECIMAL_PATTERN = /^\d+(\.\d{1,6})?$/;
+
+export function assertDecimalString(value: string, field: string): string {
+  const trimmed = value.trim();
+  if (!DECIMAL_PATTERN.test(trimmed)) {
+    throw new OrgValidationError(field, 'must be a non-negative decimal string, e.g. "12500.00"');
+  }
+  return trimmed;
+}
+
+const CURRENCY_PATTERN = /^[A-Z]{3}$/;
+
+export function assertCurrencyCode(value: string, field = 'currency'): string {
+  const normalized = value.trim().toUpperCase();
+  if (!CURRENCY_PATTERN.test(normalized)) {
+    throw new OrgValidationError(field, 'must be a 3-letter ISO 4217 code');
+  }
+  return normalized;
+}
+
+export function assertNonNegativeInt(value: number, field: string): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new OrgValidationError(field, 'must be a non-negative integer');
+  }
+  return value;
+}

@@ -131,6 +131,10 @@ model Company {
   dailySiteReportLabours DailySiteReportLabour[]
   dailyReportAuditLogs   DailyReportAuditLog[]
   employeeDocuments      EmployeeDocument[]
+  projectLandParcels     ProjectLandParcel[]
+  projectDocuments       ProjectDocument[]
+  siteDocuments          SiteDocument[]
+  projectApprovals       ProjectApproval[]
 }
 
 model HeadOffice {
@@ -191,10 +195,41 @@ model Project {
   locationDistrict String?
   locationState    String?
   locationPin      String?
+  // ---- Extended profile (Project/Site setup milestone) --------------------
+  projectSubtype     String?
+  contractType       ContractType?
+  clientContactName  String?
+  clientContactPhone String?
+  clientContactEmail String?
+  workOrderRef       String?
+  tenderRef          String?
+  contractValue      Decimal?       @db.Decimal(18, 2)
+  contractCurrency   String?        @db.VarChar(3)
+  contractDate       DateTime?      @db.Date
+  workOrderDate      DateTime?      @db.Date
+  locationAddressLine String?
+  locationLocality    String?
+  locationCountry     String?
+  geoLatitude         Decimal?      @db.Decimal(9, 6)
+  geoLongitude        Decimal?      @db.Decimal(9, 6)
+  scopeSummary        String?
+  // Headline land figure (user-entered summary; parcels hold the detail).
+  landArea            Decimal?      @db.Decimal(14, 2)
+  landAreaUnit        AreaUnit?
+  builtUpArea         Decimal?      @db.Decimal(14, 2)
+  numBuildings        Int?
+  numFloorsMax        Int?
+  numUnits            Int?
+  linearLengthKm      Decimal?      @db.Decimal(10, 3)
+  carriagewayWidthM   Decimal?      @db.Decimal(8, 2)
   timezone         String // IANA name, validated in the service layer
   status           ProjectStatus @default(PLANNED)
   startDate        DateTime?     @db.Date
   endDate          DateTime?     @db.Date
+  ntpDate          DateTime?     @db.Date
+  revisedEndDate   DateTime?     @db.Date
+  actualStartDate  DateTime?     @db.Date
+  actualEndDate    DateTime?     @db.Date
   version          Int           @default(0)
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
@@ -211,6 +246,9 @@ model Project {
   projectBudgets     ProjectBudget[]
   cashFlowForecasts  CashFlowForecast[]
   dailySiteReports   DailySiteReport[]
+  landParcels        ProjectLandParcel[]
+  projectDocuments   ProjectDocument[]
+  approvals          ProjectApproval[]
 
   @@unique([companyId, code])
   // Referenced by Site's composite FK (projectId, companyId).
@@ -241,6 +279,27 @@ model Site {
   geoLatitude     Decimal?      @db.Decimal(9, 6)
   geoLongitude    Decimal?      @db.Decimal(9, 6)
   geoFenceRadiusM Int?
+  // ---- Extended profile (Project/Site setup milestone) --------------------
+  description        String?
+  siteType           SiteType?
+  // Links this site to a parcel of the parent project (source of truth for
+  // parcel-level land detail); standalone sites use plotArea/surveyNo below.
+  landParcelId       String?      @db.Uuid
+  plotArea           Decimal?     @db.Decimal(14, 2)
+  areaUnit           AreaUnit?
+  surveyNo           String?
+  possessionDate     DateTime?    @db.Date
+  handoverDate       DateTime?    @db.Date
+  scopeSummary       String?
+  mobilizationDate   DateTime?    @db.Date
+  accessArrangements String?
+  facilities         Json?
+  siteContactName    String?
+  siteContactPhone   String?
+  siteContactEmail   String?
+  // Sensitive fields — serialized only for holders of ORG_SITE_SENSITIVE_READ.
+  accessInstructions String?
+  emergencyDetails   String?
   timezone        String? // NULL = inherit project timezone
   status          OrgNodeStatus @default(ACTIVE)
   version         Int           @default(0)
@@ -249,6 +308,7 @@ model Site {
 
   company            Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
   project            Project             @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  landParcel         ProjectLandParcel?  @relation(fields: [landParcelId, companyId], references: [id, companyId], onDelete: Restrict)
   roleAssignments    RoleAssignment[]
   departments        Department[]
   documents          Document[]
@@ -258,6 +318,7 @@ model Site {
   safetyTvtSessions  SafetyTvtSession[]
   workSchedules      WorkSchedule[]
   dailySiteReports   DailySiteReport[]
+  siteDocuments      SiteDocument[]
 
   // Site codes are unique within a project (approved decision).
   @@unique([projectId, code])
@@ -265,6 +326,124 @@ model Site {
   @@unique([id, companyId])
   @@index([projectId, companyId, status, id])
   @@index([companyId, status, id])
+}
+
+// Land parcel / survey record belonging to a project. Detail rows behind the
+// project's headline landArea; a Site may point back at one parcel.
+model ProjectLandParcel {
+  id                  String    @id @default(uuid()) @db.Uuid
+  companyId           String    @db.Uuid
+  projectId           String    @db.Uuid
+  surveyNo            String?
+  plotNo              String?
+  area                Decimal   @db.Decimal(14, 2)
+  areaUnit            AreaUnit
+  boundaryDescription String?
+  possessionDate      DateTime? @db.Date
+  documentId          String?   @db.Uuid // title deed / survey document
+  version             Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project  Project   @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  document Document? @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
+  sites    Site[]
+
+  @@unique([id, companyId])
+  @@index([companyId, projectId, id])
+}
+
+// Drawing/register metadata linking an uploaded Document to a Project. The
+// link row carries the register fields; bytes live in Document storage only.
+model ProjectDocument {
+  id                    String                 @id @default(uuid()) @db.Uuid
+  companyId             String                 @db.Uuid
+  projectId             String                 @db.Uuid
+  documentId            String                 @db.Uuid
+  documentType          OrgDocumentType
+  title                 String
+  documentNumber        String?
+  discipline            DrawingDiscipline?
+  revision              String?
+  issueDate             DateTime?              @db.Date
+  linkStatus            OrgDocumentLinkStatus  @default(ISSUED)
+  attachedByPrincipalId String?                @db.Uuid
+  metadata              Json?
+  version               Int                    @default(0)
+  createdAt             DateTime               @default(now()) @db.Timestamptz
+  updatedAt             DateTime               @updatedAt @db.Timestamptz
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project    Project    @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  document   Document   @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
+  attachedBy Principal? @relation("ProjectDocAttacher", fields: [attachedByPrincipalId], references: [id], onDelete: Restrict)
+
+  // Same Document cannot be attached twice to the same project.
+  @@unique([companyId, projectId, documentId])
+  @@unique([id, companyId])
+  @@index([companyId, projectId, documentType])
+}
+
+// Drawing/register metadata linking an uploaded Document to a Site. Kept
+// separate from ProjectDocument — project-level and site-level registers do
+// not mix.
+model SiteDocument {
+  id                    String                 @id @default(uuid()) @db.Uuid
+  companyId             String                 @db.Uuid
+  siteId                String                 @db.Uuid
+  documentId            String                 @db.Uuid
+  documentType          OrgDocumentType
+  title                 String
+  documentNumber        String?
+  discipline            DrawingDiscipline?
+  revision              String?
+  issueDate             DateTime?              @db.Date
+  linkStatus            OrgDocumentLinkStatus  @default(ISSUED)
+  attachedByPrincipalId String?                @db.Uuid
+  metadata              Json?
+  version               Int                    @default(0)
+  createdAt             DateTime               @default(now()) @db.Timestamptz
+  updatedAt             DateTime               @updatedAt @db.Timestamptz
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  site       Site       @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  document   Document   @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
+  attachedBy Principal? @relation("SiteDocAttacher", fields: [attachedByPrincipalId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, siteId, documentId])
+  @@unique([id, companyId])
+  @@index([companyId, siteId, documentType])
+}
+
+// External authority approval / registration for a project (RERA, fire NOC,
+// environmental clearance, …). Deliberately separate from internal workflow
+// ApprovalTask rows — these are statutory/authority records, not engine state.
+model ProjectApproval {
+  id               String                @id @default(uuid()) @db.Uuid
+  companyId        String                @db.Uuid
+  projectId        String                @db.Uuid
+  approvalType     ProjectApprovalType
+  customType       String? // required when approvalType = OTHER
+  issuingAuthority String?
+  jurisdiction     String?
+  referenceNo      String?
+  status           ProjectApprovalStatus @default(APPLIED)
+  appliedDate      DateTime?             @db.Date
+  grantedDate      DateTime?             @db.Date
+  validUntil       DateTime?             @db.Date
+  documentId       String?               @db.Uuid // certificate / approval letter
+  notes            String?
+  version          Int                   @default(0)
+  createdAt        DateTime              @default(now()) @db.Timestamptz
+  updatedAt        DateTime              @updatedAt @db.Timestamptz
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project  Project   @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  document Document? @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([id, companyId])
+  @@index([companyId, projectId, status])
 }
 
 // Minimal append-only audit for organizational mutations.
@@ -415,6 +594,8 @@ model Principal {
   decidedBudgetRevisions   BudgetRevision[]     @relation("BudgetRevisionDecider")
   budgetReviewDecisions    BudgetReviewDecision[]
   verifiedEmployeeDocuments EmployeeDocument[]   @relation("EmployeeDocVerifier")
+  attachedProjectDocuments  ProjectDocument[]    @relation("ProjectDocAttacher")
+  attachedSiteDocuments     SiteDocument[]       @relation("SiteDocAttacher")
 }
 
 // Company-scoped workforce record. Login linkage is optional — most labourers
@@ -640,6 +821,108 @@ enum ProjectType {
   INDUSTRIAL
   INFRASTRUCTURE
   OTHER
+}
+
+// Project delivery / contract model. Optional — not every project knows its
+// contract type at setup time.
+enum ContractType {
+  LUMPSUM
+  ITEM_RATE
+  EPC
+  DESIGN_BUILD
+  COST_PLUS
+  LABOUR_ONLY
+  OTHER
+}
+
+// Physical function of a Site (a project may hold non-construction sites such
+// as batching plants or laydown yards).
+enum SiteType {
+  MAIN_CONSTRUCTION
+  BATCHING_PLANT
+  LAYDOWN_YARD
+  LABOUR_CAMP
+  OFFICE
+  STORE
+  WORKSHOP
+  OTHER
+}
+
+// Area units accepted at API boundaries. Stored as enum, never free text.
+enum AreaUnit {
+  SQM
+  SQFT
+  ACRE
+  HECTARE
+  BIGHA
+  KATHA
+}
+
+// Business classification for documents linked to a Project or Site. Distinct
+// from EmployeeDocumentType; "OTHER" + title covers long-tail records.
+enum OrgDocumentType {
+  MASTER_PLAN
+  LAYOUT_PLAN
+  DRAWING
+  BOQ
+  CONTRACT
+  WORK_ORDER
+  LAND_RECORD
+  SURVEY
+  GEOTECH_REPORT
+  APPROVAL_LETTER
+  HANDOVER_RECORD
+  SITE_PHOTO
+  SAFETY_PLAN
+  OTHER
+}
+
+enum DrawingDiscipline {
+  ARCHITECTURAL
+  STRUCTURAL
+  CIVIL
+  MEP
+  ELECTRICAL
+  PLUMBING
+  HVAC
+  FIRE_SAFETY
+  SURVEY
+  GEOTECHNICAL
+  OTHER
+}
+
+// Issuance state of a project/site document link (drawing register semantics).
+enum OrgDocumentLinkStatus {
+  DRAFT
+  ISSUED
+  FOR_CONSTRUCTION
+  SUPERSEDED
+  VOID
+}
+
+// External authority approval / registration categories. RERA and friends are
+// conditional on jurisdiction — none is universally required.
+enum ProjectApprovalType {
+  RERA
+  ENVIRONMENT_CLEARANCE
+  FIRE_NOC
+  LAND_CONVERSION
+  HEIGHT_CLEARANCE
+  HERITAGE
+  LOCAL_BODY
+  RAILWAY_NOC
+  HIGHWAY_NOC
+  FOREST_CLEARANCE
+  OTHER
+}
+
+enum ProjectApprovalStatus {
+  APPLIED
+  UNDER_REVIEW
+  GRANTED
+  REJECTED
+  EXPIRED
+  REVOKED
 }
 
 // Company-owned configurable department, scoped to COMPANY / PROJECT / SITE
@@ -1292,6 +1575,10 @@ model Document {
   links             DocumentLink[]
   complianceRecords ComplianceRecord[]
   employeeDocuments EmployeeDocument[]
+  landParcels       ProjectLandParcel[]
+  projectDocuments  ProjectDocument[]
+  siteDocuments     SiteDocument[]
+  projectApprovals  ProjectApproval[]
 
   @@unique([id, companyId])
   @@unique([companyId, storageKey])

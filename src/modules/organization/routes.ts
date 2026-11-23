@@ -1,9 +1,105 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { OrganizationService } from './service.js';
+import type { DocumentService } from '../document/service.js';
 import type { ScopeTarget } from '../access-control/service.js';
-import { UnauthorizedError } from '../../common/errors/app-error.js';
+import { AppError, UnauthorizedError } from '../../common/errors/app-error.js';
+import { OrgValidationError } from './errors.js';
 import type { ActorContext } from './types.js';
+
+/** Literal union shorthand shared by the enum-bearing schemas below. */
+const Lit = (values: string[]) => Type.Union(values.map((v) => Type.Literal(v)));
+
+const ContractTypeEnum = Lit([
+  'LUMPSUM',
+  'ITEM_RATE',
+  'EPC',
+  'DESIGN_BUILD',
+  'COST_PLUS',
+  'LABOUR_ONLY',
+  'OTHER',
+]);
+const SiteTypeEnum = Lit([
+  'MAIN_CONSTRUCTION',
+  'BATCHING_PLANT',
+  'LAYDOWN_YARD',
+  'LABOUR_CAMP',
+  'OFFICE',
+  'STORE',
+  'WORKSHOP',
+  'OTHER',
+]);
+const AreaUnitEnum = Lit(['SQM', 'SQFT', 'ACRE', 'HECTARE', 'BIGHA', 'KATHA']);
+const OrgDocumentTypeEnum = Lit([
+  'MASTER_PLAN',
+  'LAYOUT_PLAN',
+  'DRAWING',
+  'BOQ',
+  'CONTRACT',
+  'WORK_ORDER',
+  'LAND_RECORD',
+  'SURVEY',
+  'GEOTECH_REPORT',
+  'APPROVAL_LETTER',
+  'HANDOVER_RECORD',
+  'SITE_PHOTO',
+  'SAFETY_PLAN',
+  'OTHER',
+]);
+const DisciplineEnum = Lit([
+  'ARCHITECTURAL',
+  'STRUCTURAL',
+  'CIVIL',
+  'MEP',
+  'ELECTRICAL',
+  'PLUMBING',
+  'HVAC',
+  'FIRE_SAFETY',
+  'SURVEY',
+  'GEOTECHNICAL',
+  'OTHER',
+]);
+const LinkStatusEnum = Lit(['DRAFT', 'ISSUED', 'FOR_CONSTRUCTION', 'SUPERSEDED', 'VOID']);
+const ApprovalTypeEnum = Lit([
+  'RERA',
+  'ENVIRONMENT_CLEARANCE',
+  'FIRE_NOC',
+  'LAND_CONVERSION',
+  'HEIGHT_CLEARANCE',
+  'HERITAGE',
+  'LOCAL_BODY',
+  'RAILWAY_NOC',
+  'HIGHWAY_NOC',
+  'FOREST_CLEARANCE',
+  'OTHER',
+]);
+const ApprovalStatusEnum = Lit([
+  'APPLIED',
+  'UNDER_REVIEW',
+  'GRANTED',
+  'REJECTED',
+  'EXPIRED',
+  'REVOKED',
+]);
+const BudgetCategoryEnum = Lit([
+  'MATERIAL',
+  'LABOUR',
+  'EQUIPMENT',
+  'SUBCONTRACT',
+  'OVERHEAD',
+  'CONTINGENCY',
+  'OTHER',
+]);
+const DecimalStr = Type.String({
+  pattern: '^\\d+(\\.\\d{1,6})?$',
+  description: 'Non-negative decimal string, e.g. "12500.00"',
+});
+const IsoCurrency = Type.String({
+  pattern: '^[A-Za-z]{3}$',
+  description: 'ISO 4217 currency code, e.g. "INR"',
+});
+const DateStr = Type.String({ format: 'date' });
+const Uuid = Type.String({ format: 'uuid' });
 
 export const AddressOpt = {
   legalName: Type.Optional(Type.String({ maxLength: 200 })),
@@ -81,11 +177,132 @@ const UpdateCompany = Type.Object({
   contactPhone: Type.Optional(Type.String({ maxLength: 20 })),
   expectedVersion: Type.Optional(Type.Integer()),
 });
+// Register metadata for linking an existing (AVAILABLE) Document to a project
+// or site. File bytes never travel through this payload.
+const DocumentLinkBody = Type.Object({
+  documentId: Uuid,
+  documentType: OrgDocumentTypeEnum,
+  title: Type.String({ minLength: 1, maxLength: 200 }),
+  documentNumber: Type.Optional(Type.String({ maxLength: 80 })),
+  discipline: Type.Optional(DisciplineEnum),
+  revision: Type.Optional(Type.String({ maxLength: 20 })),
+  issueDate: Type.Optional(DateStr),
+  linkStatus: Type.Optional(LinkStatusEnum),
+});
+const UpdateDocumentLinkBody = Type.Object({
+  title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  documentNumber: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  discipline: Type.Optional(Type.Union([DisciplineEnum, Type.Null()])),
+  revision: Type.Optional(Type.Union([Type.String({ maxLength: 20 }), Type.Null()])),
+  issueDate: Type.Optional(Type.Union([DateStr, Type.Null()])),
+  linkStatus: Type.Optional(LinkStatusEnum),
+  metadata: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Any()), Type.Null()])),
+  expectedVersion: Type.Optional(Type.Integer()),
+});
+const LandParcelBody = Type.Object({
+  surveyNo: Type.Optional(Type.String({ maxLength: 80 })),
+  plotNo: Type.Optional(Type.String({ maxLength: 80 })),
+  area: DecimalStr,
+  areaUnit: AreaUnitEnum,
+  boundaryDescription: Type.Optional(Type.String({ maxLength: 500 })),
+  possessionDate: Type.Optional(DateStr),
+  documentId: Type.Optional(Uuid),
+});
+const ApprovalBody = Type.Object({
+  approvalType: ApprovalTypeEnum,
+  customType: Type.Optional(Type.String({ maxLength: 80 })),
+  issuingAuthority: Type.Optional(Type.String({ maxLength: 200 })),
+  jurisdiction: Type.Optional(Type.String({ maxLength: 120 })),
+  referenceNo: Type.Optional(Type.String({ maxLength: 80 })),
+  status: Type.Optional(ApprovalStatusEnum),
+  appliedDate: Type.Optional(DateStr),
+  grantedDate: Type.Optional(DateStr),
+  validUntil: Type.Optional(DateStr),
+  documentId: Type.Optional(Uuid),
+  notes: Type.Optional(Type.String({ maxLength: 1000 })),
+});
+const UpdateApprovalBody = Type.Object({
+  customType: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  issuingAuthority: Type.Optional(Type.Union([Type.String({ maxLength: 200 }), Type.Null()])),
+  jurisdiction: Type.Optional(Type.Union([Type.String({ maxLength: 120 }), Type.Null()])),
+  referenceNo: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
+  status: Type.Optional(ApprovalStatusEnum),
+  appliedDate: Type.Optional(Type.Union([DateStr, Type.Null()])),
+  grantedDate: Type.Optional(Type.Union([DateStr, Type.Null()])),
+  validUntil: Type.Optional(Type.Union([DateStr, Type.Null()])),
+  documentId: Type.Optional(Type.Union([Uuid, Type.Null()])),
+  notes: Type.Optional(Type.Union([Type.String({ maxLength: 1000 }), Type.Null()])),
+  expectedVersion: Type.Optional(Type.Integer()),
+});
+const InitialBudgetBody = Type.Object(
+  {
+    code: Type.String({ minLength: 1, maxLength: 40 }),
+    name: Type.String({ minLength: 1, maxLength: 200 }),
+    description: Type.Optional(Type.String({ maxLength: 500 })),
+    currency: IsoCurrency,
+    notes: Type.Optional(Type.String({ maxLength: 500 })),
+    lines: Type.Array(
+      Type.Object({
+        category: BudgetCategoryEnum,
+        description: Type.String({ minLength: 1, maxLength: 200 }),
+        amount: DecimalStr,
+      }),
+      { minItems: 1 },
+    ),
+  },
+  {
+    description:
+      'Optional initial estimate — creates a DRAFT ProjectBudget + revision in the same ' +
+      'transaction as the project. Requires FINANCE_BUDGET_MANAGE plus the budget ' +
+      'create/revise operations; ORG_PROJECT_CREATE alone is not sufficient.',
+  },
+);
+// Extended project profile — every field optional; applicability varies by
+// project type and jurisdiction.
+const ProjectProfileOpt = {
+  projectSubtype: Type.Optional(Type.String({ maxLength: 80 })),
+  contractType: Type.Optional(ContractTypeEnum),
+  clientName: Type.Optional(Type.String({ maxLength: 200 })),
+  clientContactName: Type.Optional(Type.String({ maxLength: 120 })),
+  clientContactPhone: Type.Optional(Type.String({ maxLength: 20 })),
+  clientContactEmail: Type.Optional(Type.String({ format: 'email', maxLength: 320 })),
+  contractRef: Type.Optional(Type.String({ maxLength: 80 })),
+  workOrderRef: Type.Optional(Type.String({ maxLength: 80 })),
+  tenderRef: Type.Optional(Type.String({ maxLength: 80 })),
+  contractValue: Type.Optional(DecimalStr),
+  contractCurrency: Type.Optional(IsoCurrency),
+  contractDate: Type.Optional(DateStr),
+  workOrderDate: Type.Optional(DateStr),
+  locationAddressLine: Type.Optional(Type.String({ maxLength: 200 })),
+  locationLocality: Type.Optional(Type.String({ maxLength: 80 })),
+  locationCity: Type.Optional(Type.String({ maxLength: 80 })),
+  locationDistrict: Type.Optional(Type.String({ maxLength: 80 })),
+  locationState: Type.Optional(Type.String({ maxLength: 80 })),
+  locationPin: Type.Optional(Type.String({ maxLength: 10 })),
+  locationCountry: Type.Optional(Type.String({ maxLength: 80 })),
+  geoLatitude: Type.Optional(Type.Number({ minimum: -90, maximum: 90 })),
+  geoLongitude: Type.Optional(Type.Number({ minimum: -180, maximum: 180 })),
+  scopeSummary: Type.Optional(Type.String({ maxLength: 2000 })),
+  landArea: Type.Optional(DecimalStr),
+  landAreaUnit: Type.Optional(AreaUnitEnum),
+  builtUpArea: Type.Optional(DecimalStr),
+  numBuildings: Type.Optional(Type.Integer({ minimum: 0 })),
+  numFloorsMax: Type.Optional(Type.Integer({ minimum: 0 })),
+  numUnits: Type.Optional(Type.Integer({ minimum: 0 })),
+  linearLengthKm: Type.Optional(DecimalStr),
+  carriagewayWidthM: Type.Optional(DecimalStr),
+  ntpDate: Type.Optional(DateStr),
+  revisedEndDate: Type.Optional(DateStr),
+  actualStartDate: Type.Optional(DateStr),
+  actualEndDate: Type.Optional(DateStr),
+};
 const CreateProject = Type.Object({
   // headOfficeId is DERIVED server-side from the company's active primary HO —
   // never trusted from the client body.
   code: Type.String({ minLength: 1, maxLength: 40 }),
   name: Type.String({ minLength: 1, maxLength: 200 }),
+  timezone: Type.String({ minLength: 1 }),
+  description: Type.Optional(Type.String()),
   projectType: Type.Optional(
     Type.Union([
       Type.Literal('RESIDENTIAL'),
@@ -95,16 +312,13 @@ const CreateProject = Type.Object({
       Type.Literal('OTHER'),
     ]),
   ),
-  clientName: Type.Optional(Type.String({ maxLength: 200 })),
-  contractRef: Type.Optional(Type.String({ maxLength: 80 })),
-  locationCity: Type.Optional(Type.String({ maxLength: 80 })),
-  locationDistrict: Type.Optional(Type.String({ maxLength: 80 })),
-  locationState: Type.Optional(Type.String({ maxLength: 80 })),
-  locationPin: Type.Optional(Type.String({ maxLength: 10 })),
-  timezone: Type.String({ minLength: 1 }),
-  description: Type.Optional(Type.String()),
-  startDate: Type.Optional(Type.String({ format: 'date' })),
-  endDate: Type.Optional(Type.String({ format: 'date' })),
+  startDate: Type.Optional(DateStr),
+  endDate: Type.Optional(DateStr),
+  ...ProjectProfileOpt,
+  landParcels: Type.Optional(Type.Array(LandParcelBody, { maxItems: 50 })),
+  documents: Type.Optional(Type.Array(DocumentLinkBody, { maxItems: 50 })),
+  approvals: Type.Optional(Type.Array(ApprovalBody, { maxItems: 50 })),
+  initialBudget: Type.Optional(InitialBudgetBody),
 });
 const UpdateProject = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
@@ -116,17 +330,16 @@ const UpdateProject = Type.Object({
       Type.Literal('INDUSTRIAL'),
       Type.Literal('INFRASTRUCTURE'),
       Type.Literal('OTHER'),
+      Type.Null(),
     ]),
   ),
-  clientName: Type.Optional(Type.Union([Type.String({ maxLength: 200 }), Type.Null()])),
-  contractRef: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
-  locationCity: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
-  locationDistrict: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
-  locationState: Type.Optional(Type.Union([Type.String({ maxLength: 80 }), Type.Null()])),
-  locationPin: Type.Optional(Type.Union([Type.String({ maxLength: 10 }), Type.Null()])),
   timezone: Type.Optional(Type.String({ minLength: 1 })),
-  startDate: Type.Optional(Type.Union([Type.String({ format: 'date' }), Type.Null()])),
-  endDate: Type.Optional(Type.Union([Type.String({ format: 'date' }), Type.Null()])),
+  ...Object.fromEntries(
+    Object.entries(ProjectProfileOpt).map(([k, v]) => [
+      k,
+      Type.Optional(Type.Union([v, Type.Null()])),
+    ]),
+  ),
   expectedVersion: Type.Optional(Type.Integer()),
 });
 const ProjectStatusBody = Type.Object({
@@ -140,8 +353,30 @@ const ProjectStatusBody = Type.Object({
   ]),
   expectedVersion: Type.Optional(Type.Integer()),
 });
+// Extended site profile — all optional beyond identity. `accessInstructions`
+// and `emergencyDetails` are accepted here but serialized only to holders of
+// ORG_SITE_SENSITIVE_READ.
+const SiteProfileOpt = {
+  description: Type.Optional(Type.String({ maxLength: 2000 })),
+  siteType: Type.Optional(SiteTypeEnum),
+  landParcelId: Type.Optional(Uuid),
+  plotArea: Type.Optional(DecimalStr),
+  areaUnit: Type.Optional(AreaUnitEnum),
+  surveyNo: Type.Optional(Type.String({ maxLength: 80 })),
+  possessionDate: Type.Optional(DateStr),
+  handoverDate: Type.Optional(DateStr),
+  scopeSummary: Type.Optional(Type.String({ maxLength: 2000 })),
+  mobilizationDate: Type.Optional(DateStr),
+  accessArrangements: Type.Optional(Type.String({ maxLength: 500 })),
+  facilities: Type.Optional(Type.Record(Type.String(), Type.Any())),
+  siteContactName: Type.Optional(Type.String({ maxLength: 120 })),
+  siteContactPhone: Type.Optional(Type.String({ maxLength: 20 })),
+  siteContactEmail: Type.Optional(Type.String({ format: 'email', maxLength: 320 })),
+  accessInstructions: Type.Optional(Type.String({ maxLength: 2000 })),
+  emergencyDetails: Type.Optional(Type.String({ maxLength: 2000 })),
+};
 const CreateSite = Type.Object({
-  projectId: Type.String({ format: 'uuid' }),
+  projectId: Uuid,
   code: Type.String({ minLength: 1, maxLength: 40 }),
   name: Type.String({ minLength: 1, maxLength: 200 }),
   address: Type.Optional(Type.String()),
@@ -157,6 +392,8 @@ const CreateSite = Type.Object({
   geoLongitude: Type.Optional(Type.Number({ minimum: -180, maximum: 180 })),
   geoFenceRadiusM: Type.Optional(Type.Integer({ minimum: 1 })),
   timezone: Type.Optional(Type.String()),
+  ...SiteProfileOpt,
+  documents: Type.Optional(Type.Array(DocumentLinkBody, { maxItems: 50 })),
 });
 const UpdateSite = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
@@ -173,6 +410,12 @@ const UpdateSite = Type.Object({
   geoLongitude: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
   geoFenceRadiusM: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   timezone: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  ...Object.fromEntries(
+    Object.entries(SiteProfileOpt).map(([k, v]) => [
+      k,
+      Type.Optional(Type.Union([v, Type.Null()])),
+    ]),
+  ),
   expectedVersion: Type.Optional(Type.Integer()),
 });
 const ListQuery = Type.Object({
@@ -194,6 +437,18 @@ const atCompany = (request: FastifyRequest): ScopeTarget => {
   const companyId = companyIdOf(request);
   return { companyId, scopeType: 'COMPANY', scopeId: companyId };
 };
+// Project/site-scoped targets: project- and site-level grants (PD/PI) cover
+// their own scope; company-wide grants (owner, finance) cover via ancestors.
+const atProject = (request: FastifyRequest): ScopeTarget => ({
+  companyId: companyIdOf(request),
+  scopeType: 'PROJECT',
+  scopeId: (request.params as { id?: string }).id ?? '',
+});
+const atSite = (request: FastifyRequest): ScopeTarget => ({
+  companyId: companyIdOf(request),
+  scopeType: 'SITE',
+  scopeId: (request.params as { id?: string }).id ?? '',
+});
 const actorOf = (request: FastifyRequest): ActorContext => ({
   actorId: (request.principal as { actorId: string }).actorId,
   actorType: 'USER',
@@ -202,11 +457,105 @@ const actorOf = (request: FastifyRequest): ActorContext => ({
     : {}),
 });
 
-export function organizationRoutes(service: OrganizationService) {
+const PROJECT_DATE_KEYS = [
+  'startDate',
+  'endDate',
+  'contractDate',
+  'workOrderDate',
+  'ntpDate',
+  'revisedEndDate',
+  'actualStartDate',
+  'actualEndDate',
+] as const;
+const SITE_DATE_KEYS = ['possessionDate', 'handoverDate', 'mobilizationDate'] as const;
+const APPROVAL_DATE_KEYS = ['appliedDate', 'grantedDate', 'validUntil'] as const;
+
+/** Converts date-format string fields into Date instances (null passes through). */
+function mapDates<T extends Record<string, unknown>>(obj: T, keys: readonly string[]): T {
+  const out: Record<string, unknown> = { ...obj };
+  for (const key of keys) {
+    const v = out[key];
+    if (v !== undefined && v !== null) out[key] = new Date(v as string);
+  }
+  return out as T;
+}
+
+/** Maps the nested arrays of a project-create body (parcels/docs/approvals). */
+function mapProjectCreateDates(body: Record<string, unknown>) {
+  const input = mapDates(body, PROJECT_DATE_KEYS);
+  if (Array.isArray(input.landParcels)) {
+    input.landParcels = input.landParcels.map((p) =>
+      mapDates(p as Record<string, unknown>, ['possessionDate']),
+    );
+  }
+  if (Array.isArray(input.documents)) {
+    input.documents = input.documents.map((d) =>
+      mapDates(d as Record<string, unknown>, ['issueDate']),
+    );
+  }
+  if (Array.isArray(input.approvals)) {
+    input.approvals = input.approvals.map((a) =>
+      mapDates(a as Record<string, unknown>, APPROVAL_DATE_KEYS),
+    );
+  }
+  return input;
+}
+
+export function organizationRoutes(
+  service: OrganizationService,
+  deps?: { documentService?: DocumentService },
+) {
   return async function routes(app: FastifyInstance) {
     const perm = (key: string, scope: (r: FastifyRequest) => ScopeTarget) => ({
       preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, scope)],
     });
+    const param = (req: FastifyRequest, key: string): string =>
+      (req.params as Record<string, string>)[key] ?? '';
+    /** Multipart upload → Document row at the given scope + register link. */
+    const uploadRoute =
+      (owner: 'PROJECT' | 'SITE') =>
+      async (req: FastifyRequest, reply: { status: (n: number) => unknown }) => {
+        if (deps?.documentService === undefined) {
+          throw new AppError(503, 'UPLOAD_UNAVAILABLE', 'document upload is not configured');
+        }
+        const ownerId = param(req, 'id');
+        if (!req.isMultipart()) {
+          throw new OrgValidationError(
+            'content-type',
+            'multipart/form-data required for file upload',
+          );
+        }
+        const part = await req.file();
+        if (!part) throw new OrgValidationError('file', 'file is required');
+        const buffer = await part.toBuffer();
+        const fields = part.fields as Record<string, { value?: string } | undefined>;
+        const doc = await deps.documentService.upload(actorOf(req), companyIdOf(req), {
+          body: buffer,
+          fileName: part.filename,
+          declaredContentType: part.mimetype,
+          scope:
+            owner === 'PROJECT'
+              ? { scopeType: 'PROJECT', projectId: ownerId }
+              : { scopeType: 'SITE', siteId: ownerId },
+          autoApprove: true,
+        });
+        const link = {
+          documentId: doc.id,
+          documentType: fields.documentType?.value ?? 'OTHER',
+          title: fields.title?.value ?? part.filename,
+          ...(fields.documentNumber?.value ? { documentNumber: fields.documentNumber.value } : {}),
+          ...(fields.discipline?.value ? { discipline: fields.discipline.value } : {}),
+          ...(fields.revision?.value ? { revision: fields.revision.value } : {}),
+          ...(fields.issueDate?.value ? { issueDate: new Date(fields.issueDate.value) } : {}),
+          ...(fields.linkStatus?.value ? { linkStatus: fields.linkStatus.value } : {}),
+        };
+        const created =
+          owner === 'PROJECT'
+            ? await service.attachProjectDocument(actorOf(req), companyIdOf(req), ownerId, link)
+            : await service.attachSiteDocument(actorOf(req), companyIdOf(req), ownerId, link);
+        reply.status(201);
+        return created;
+      };
 
     // -------------------------------------------------------------- company
     app.get('/org/company', perm('ORG_COMPANY_READ', atCompany), async (req) =>
@@ -274,39 +623,14 @@ export function organizationRoutes(service: OrganizationService) {
     app.post(
       '/org/projects',
       { schema: { body: CreateProject }, ...perm('ORG_PROJECT_CREATE', atCompany) },
-      async (req) => {
-        const input = req.body as {
-          code: string;
-          name: string;
-          projectType?: string;
-          clientName?: string;
-          contractRef?: string;
-          locationCity?: string;
-          locationDistrict?: string;
-          locationState?: string;
-          locationPin?: string;
-          timezone: string;
-          description?: string;
-          startDate?: string;
-          endDate?: string;
-        };
-        return service.createProject(actorOf(req), companyIdOf(req), {
-          code: input.code,
-          name: input.name,
-          timezone: input.timezone,
-          ...(input.projectType !== undefined ? { projectType: input.projectType } : {}),
-          ...(input.clientName !== undefined ? { clientName: input.clientName } : {}),
-          ...(input.contractRef !== undefined ? { contractRef: input.contractRef } : {}),
-          ...(input.locationCity !== undefined ? { locationCity: input.locationCity } : {}),
-          ...(input.locationDistrict !== undefined
-            ? { locationDistrict: input.locationDistrict }
-            : {}),
-          ...(input.locationState !== undefined ? { locationState: input.locationState } : {}),
-          ...(input.locationPin !== undefined ? { locationPin: input.locationPin } : {}),
-          ...(input.description !== undefined ? { description: input.description } : {}),
-          ...(input.startDate !== undefined ? { startDate: new Date(input.startDate) } : {}),
-          ...(input.endDate !== undefined ? { endDate: new Date(input.endDate) } : {}),
-        });
+      async (req, reply) => {
+        const created = await service.createProject(
+          actorOf(req),
+          companyIdOf(req),
+          mapProjectCreateDates(req.body as Record<string, unknown>) as never,
+        );
+        reply.status(201);
+        return created;
       },
     );
     app.get(
@@ -317,31 +641,21 @@ export function organizationRoutes(service: OrganizationService) {
         return service.listProjects(companyIdOf(req), q);
       },
     );
+    app.get('/org/projects/:id', perm('ORG_PROJECT_READ', atProject), async (req) =>
+      service.getProject(companyIdOf(req), param(req, 'id')),
+    );
     app.patch(
       '/org/projects/:id',
       { schema: { body: UpdateProject }, ...perm('ORG_PROJECT_UPDATE', atCompany) },
       async (req) => {
-        const { expectedVersion, startDate, endDate, ...patch } = req.body as {
+        const { expectedVersion, ...patch } = req.body as Record<string, unknown> & {
           expectedVersion?: number;
-          startDate?: string | null;
-          endDate?: string | null;
-          name?: string;
-          description?: string | null;
-          timezone?: string;
         };
         return service.updateProject(
           actorOf(req),
           companyIdOf(req),
-          (req.params as { id: string }).id,
-          {
-            ...patch,
-            ...(startDate !== undefined
-              ? { startDate: startDate === null ? null : new Date(startDate) }
-              : {}),
-            ...(endDate !== undefined
-              ? { endDate: endDate === null ? null : new Date(endDate) }
-              : {}),
-          },
+          param(req, 'id'),
+          mapDates(patch, PROJECT_DATE_KEYS),
           expectedVersion,
         );
       },
@@ -355,9 +669,103 @@ export function organizationRoutes(service: OrganizationService) {
         return service.transitionProjectStatus(
           actorOf(req),
           companyIdOf(req),
-          (req.params as { id: string }).id,
+          param(req, 'id'),
           to,
           (req.body as { expectedVersion?: number }).expectedVersion,
+        );
+      },
+    );
+
+    // ----------------------------------------------------- project parcels
+    app.post(
+      '/org/projects/:id/parcels',
+      { schema: { body: LandParcelBody }, ...perm('ORG_PROJECT_UPDATE', atCompany) },
+      async (req, reply) => {
+        const created = await service.createParcel(
+          actorOf(req),
+          companyIdOf(req),
+          param(req, 'id'),
+          mapDates(req.body as Record<string, unknown>, ['possessionDate']) as never,
+        );
+        reply.status(201);
+        return created;
+      },
+    );
+    app.get('/org/projects/:id/parcels', perm('ORG_PROJECT_READ', atProject), async (req) =>
+      service.listParcels(companyIdOf(req), param(req, 'id')),
+    );
+
+    // ----------------------------------------------------- project documents
+    app.post(
+      '/org/projects/:id/documents',
+      { schema: { body: DocumentLinkBody }, ...perm('DOCUMENT_LINK', atProject) },
+      async (req, reply) => {
+        const created = await service.attachProjectDocument(
+          actorOf(req),
+          companyIdOf(req),
+          param(req, 'id'),
+          mapDates(req.body as Record<string, unknown>, ['issueDate']) as never,
+        );
+        reply.status(201);
+        return created;
+      },
+    );
+    app.post(
+      '/org/projects/:id/documents/upload',
+      { ...perm('DOCUMENT_UPLOAD', atProject) },
+      uploadRoute('PROJECT'),
+    );
+    app.get('/org/projects/:id/documents', perm('DOCUMENT_READ', atProject), async (req) =>
+      service.listProjectDocuments(companyIdOf(req), param(req, 'id')),
+    );
+    app.patch(
+      '/org/projects/:id/documents/:linkId',
+      { schema: { body: UpdateDocumentLinkBody }, ...perm('DOCUMENT_LINK', atProject) },
+      async (req) => {
+        const { expectedVersion, ...patch } = req.body as Record<string, unknown> & {
+          expectedVersion?: number;
+        };
+        return service.updateProjectDocument(
+          actorOf(req),
+          companyIdOf(req),
+          param(req, 'linkId'),
+          mapDates(patch, ['issueDate']),
+          expectedVersion,
+        );
+      },
+    );
+
+    // ----------------------------------------------------- project approvals
+    app.post(
+      '/org/projects/:id/approvals',
+      { schema: { body: ApprovalBody }, ...perm('ORG_PROJECT_UPDATE', atCompany) },
+      async (req, reply) => {
+        const created = await service.createApproval(
+          actorOf(req),
+          companyIdOf(req),
+          param(req, 'id'),
+          mapDates(req.body as Record<string, unknown>, APPROVAL_DATE_KEYS) as never,
+        );
+        reply.status(201);
+        return created;
+      },
+    );
+    app.get('/org/projects/:id/approvals', perm('ORG_PROJECT_READ', atProject), async (req) =>
+      service.listApprovals(companyIdOf(req), param(req, 'id')),
+    );
+    app.patch(
+      '/org/projects/:id/approvals/:approvalId',
+      { schema: { body: UpdateApprovalBody }, ...perm('ORG_PROJECT_UPDATE', atCompany) },
+      async (req) => {
+        const { expectedVersion, ...patch } = req.body as Record<string, unknown> & {
+          expectedVersion?: number;
+        };
+        return service.updateApproval(
+          actorOf(req),
+          companyIdOf(req),
+          param(req, 'approvalId'),
+          mapDates(patch, APPROVAL_DATE_KEYS),
+          expectedVersion,
         );
       },
     );
@@ -366,9 +774,22 @@ export function organizationRoutes(service: OrganizationService) {
     app.post(
       '/org/sites',
       { schema: { body: CreateSite }, ...perm('ORG_SITE_CREATE', atCompany) },
-      async (req) => {
-        const { projectId, ...input } = req.body as { projectId: string } & Record<string, unknown>;
-        return service.createSite(actorOf(req), companyIdOf(req), projectId, input as never);
+      async (req, reply) => {
+        const { projectId, ...rest } = req.body as { projectId: string } & Record<string, unknown>;
+        const input = mapDates(rest, SITE_DATE_KEYS);
+        if (Array.isArray(input.documents)) {
+          input.documents = input.documents.map((d) =>
+            mapDates(d as Record<string, unknown>, ['issueDate']),
+          );
+        }
+        const created = await service.createSite(
+          actorOf(req),
+          companyIdOf(req),
+          projectId,
+          input as never,
+        );
+        reply.status(201);
+        return created;
       },
     );
     app.get(
@@ -378,6 +799,9 @@ export function organizationRoutes(service: OrganizationService) {
         const q = req.query as { status?: never; projectId?: string };
         return service.listSites(companyIdOf(req), q);
       },
+    );
+    app.get('/org/sites/:id', perm('ORG_SITE_READ', atSite), async (req) =>
+      service.getSite(actorOf(req), companyIdOf(req), param(req, 'id')),
     );
     app.patch(
       '/org/sites/:id',
@@ -389,8 +813,8 @@ export function organizationRoutes(service: OrganizationService) {
         return service.updateSite(
           actorOf(req),
           companyIdOf(req),
-          (req.params as { id: string }).id,
-          patch,
+          param(req, 'id'),
+          mapDates(patch, SITE_DATE_KEYS),
           expectedVersion,
         );
       },
@@ -402,10 +826,50 @@ export function organizationRoutes(service: OrganizationService) {
         service.transitionSiteStatus(
           actorOf(req),
           companyIdOf(req),
-          (req.params as { id: string }).id,
+          param(req, 'id'),
           (req.body as { to: string }).to,
           (req.body as { expectedVersion?: number }).expectedVersion,
         ),
+    );
+
+    // --------------------------------------------------------- site documents
+    app.post(
+      '/org/sites/:id/documents',
+      { schema: { body: DocumentLinkBody }, ...perm('DOCUMENT_LINK', atSite) },
+      async (req, reply) => {
+        const created = await service.attachSiteDocument(
+          actorOf(req),
+          companyIdOf(req),
+          param(req, 'id'),
+          mapDates(req.body as Record<string, unknown>, ['issueDate']) as never,
+        );
+        reply.status(201);
+        return created;
+      },
+    );
+    app.post(
+      '/org/sites/:id/documents/upload',
+      { ...perm('DOCUMENT_UPLOAD', atSite) },
+      uploadRoute('SITE'),
+    );
+    app.get('/org/sites/:id/documents', perm('DOCUMENT_READ', atSite), async (req) =>
+      service.listSiteDocuments(companyIdOf(req), param(req, 'id')),
+    );
+    app.patch(
+      '/org/sites/:id/documents/:linkId',
+      { schema: { body: UpdateDocumentLinkBody }, ...perm('DOCUMENT_LINK', atSite) },
+      async (req) => {
+        const { expectedVersion, ...patch } = req.body as Record<string, unknown> & {
+          expectedVersion?: number;
+        };
+        return service.updateSiteDocument(
+          actorOf(req),
+          companyIdOf(req),
+          param(req, 'linkId'),
+          mapDates(patch, ['issueDate']),
+          expectedVersion,
+        );
+      },
     );
   };
 }

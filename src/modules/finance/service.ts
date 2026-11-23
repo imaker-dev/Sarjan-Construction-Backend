@@ -290,6 +290,24 @@ export class FinanceService {
     });
   }
 
+  /**
+   * Authority gate for a nested `initialBudget` on project creation — the
+   * same dual check the budget API enforces (FINANCE_BUDGET_MANAGE permission
+   * at company scope plus the create/revise operations, owner bypass kept).
+   * Called by OrganizationService before opening its transaction.
+   */
+  async assertInitialBudgetAuthority(actor: ActorContext, companyId: string): Promise<void> {
+    await this.authorizer.assertPermission(
+      actor.actorId,
+      FINANCE_BUDGET_MANAGE,
+      companyTarget(companyId),
+    );
+    return this.uow.run(async (repos) => {
+      await this.assertOperation(repos, actor, companyId, OP_BUDGET_CREATE);
+      await this.assertOperation(repos, actor, companyId, OP_BUDGET_REVISE);
+    });
+  }
+
   async listBudgets(
     actor: ActorContext,
     companyId: string,
