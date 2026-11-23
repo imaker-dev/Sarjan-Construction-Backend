@@ -22,9 +22,14 @@ import type { AuditRecord } from '../organization/types.js';
 import { ActiveSessionExistsError, AttendanceEntityNotFoundError } from './errors.js';
 import {
   DEFAULT_ATTENDANCE_POLICY,
+  calculateWeeklyWorkHoursProgress,
+  resolveDateRangeForPeriod,
+  type DailySummaryFilter,
+  type DepartmentMusterSummary,
   type ListDailyReportsFilter,
   type ListSessionsFilter,
   type MusterRollRangeFilter,
+  type WeeklyWorkHoursProgress,
 } from './types.js';
 
 type Tx = Prisma.TransactionClient;
@@ -100,12 +105,21 @@ export interface AttendanceRepos {
       companyId: string,
       clientSessionId: string,
     ): Promise<AttendanceSession | null>;
+    findSessionsForDateRange?(
+      companyId: string,
+      employeeId: string,
+      from: string,
+      to: string,
+    ): Promise<AttendanceSession[]>;
     autoCloseStaleSessions?(cutoffDate: Date, companyId?: string): Promise<number>;
     getMusterRollRange(
       companyId: string,
       filter: MusterRollRangeFilter,
     ): Promise<{
-      siteId: string;
+      siteId?: string;
+      headOfficeId?: string;
+      departmentId?: string;
+      period?: string;
       from: string;
       to: string;
       totalSessions: number;
@@ -114,11 +128,14 @@ export interface AttendanceRepos {
       totalOvertimePUnits: number;
       totalTotalPUnits: number;
       totalOvertimeHours: number;
+      departmentSummaries?: DepartmentMusterSummary[];
       workerSummaries: {
         employeeId: string;
         employeeCode: string;
         displayName: string;
         tradeCategory: string | null;
+        designation?: string | null;
+        department?: { id: string; code: string; name: string } | null;
         presentUnits: number;
         overtimePUnits: number;
         totalPUnits: number;
@@ -126,16 +143,19 @@ export interface AttendanceRepos {
         sessionsCount: number;
         daysPresent: number;
         leaveDays: number;
+        weeklyProgress?: WeeklyWorkHoursProgress;
       }[];
       sessions: AttendanceSessionWithDetails[];
       leaves: unknown[];
     }>;
     getDailySummary(
       companyId: string,
-      siteId: string,
-      businessDate: string,
+      siteIdOrFilter: string | DailySummaryFilter,
+      businessDate?: string,
     ): Promise<{
-      siteId: string;
+      siteId?: string;
+      headOfficeId?: string;
+      departmentId?: string;
       businessDate: string;
       totalWorkers: number;
       totalSessions: number;
@@ -146,6 +166,7 @@ export interface AttendanceRepos {
       totalOvertimePUnits: number;
       totalTotalPUnits: number;
       totalOvertimeHours: number;
+      departmentSummaries?: DepartmentMusterSummary[];
       sessions: AttendanceSessionWithDetails[];
       totalApprovedLeaves?: number;
       leaves?: unknown[];
@@ -601,6 +622,18 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         tx.attendanceSession.findFirst({
           where: { companyId, clientSessionId },
         }),
+      findSessionsForDateRange: (companyId, employeeId, from, to) =>
+        tx.attendanceSession.findMany({
+          where: {
+            companyId,
+            employeeId,
+            businessDate: { gte: from, lte: to },
+          },
+          include: {
+            breaks: true,
+          },
+          orderBy: { punchInAt: 'asc' },
+        }),
       autoCloseStaleSessions: async (cutoffDate: Date, companyId?: string) => {
         const res = await tx.attendanceSession.updateMany({
           where: {
@@ -616,23 +649,58 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         return res.count;
       },
       getMusterRollRange: async (companyId, filter) => {
+        const { from: resolvedFrom, to: resolvedTo } = resolveDateRangeForPeriod(
+          filter.period,
+          filter.date,
+          filter.from,
+          filter.to,
+        );
+
         const where: Prisma.AttendanceSessionWhereInput = {
           companyId,
-          siteId: filter.siteId,
-          businessDate: { gte: filter.from, lte: filter.to },
+          businessDate: { gte: resolvedFrom, lte: resolvedTo },
+          ...(filter.siteId ? { siteId: filter.siteId } : {}),
+          ...(filter.headOfficeId ? { headOfficeId: filter.headOfficeId } : {}),
           ...(filter.employeeId ? { employeeId: filter.employeeId } : {}),
           ...(filter.status ? { status: filter.status } : {}),
+          ...(filter.departmentId
+            ? {
+                employee: {
+                  memberships: {
+                    some: {
+                      departmentId: filter.departmentId,
+                      endedAt: null,
+                    },
+                  },
+                },
+              }
+            : {}),
         };
 
-        const fromDate = new Date(`${filter.from}T00:00:00.000Z`);
-        const toDate = new Date(`${filter.to}T23:59:59.999Z`);
+        const fromDate = new Date(`${resolvedFrom}T00:00:00.000Z`);
+        const toDate = new Date(`${resolvedTo}T23:59:59.999Z`);
 
         const [sessions, totalsAgg, leaves] = await Promise.all([
           tx.attendanceSession.findMany({
             where,
             include: {
               employee: {
-                select: { id: true, employeeCode: true, displayName: true, tradeCategory: true },
+                select: {
+                  id: true,
+                  employeeCode: true,
+                  displayName: true,
+                  tradeCategory: true,
+                  designation: true,
+                  memberships: {
+                    where: { endedAt: null },
+                    select: {
+                      isPrimary: true,
+                      department: {
+                        select: { id: true, code: true, name: true, category: true },
+                      },
+                    },
+                  },
+                },
               },
               site: { select: { id: true, code: true, name: true } },
               headOffice: { select: { id: true, code: true, name: true } },
@@ -660,6 +728,18 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
               startDate: { lte: toDate },
               endDate: { gte: fromDate },
               ...(filter.employeeId ? { employeeId: filter.employeeId } : {}),
+              ...(filter.departmentId
+                ? {
+                    employee: {
+                      memberships: {
+                        some: {
+                          departmentId: filter.departmentId,
+                          endedAt: null,
+                        },
+                      },
+                    },
+                  }
+                : {}),
             },
             include: {
               employee: {
@@ -676,6 +756,8 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             employeeCode: string;
             displayName: string;
             tradeCategory: string | null;
+            designation: string | null;
+            department: { id: string; code: string; name: string } | null;
             presentUnits: number;
             overtimePUnits: number;
             totalPUnits: number;
@@ -683,6 +765,21 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             sessionsCount: number;
             daysSet: Set<string>;
             leaveDays: number;
+            sessionsList: { netDurationMins: number; businessDate: string; status?: string }[];
+          }
+        >();
+
+        const deptMap = new Map<
+          string,
+          {
+            departmentId: string;
+            departmentCode: string;
+            departmentName: string;
+            category?: string | null;
+            employeeIds: Set<string>;
+            presentEmployeeIds: Set<string>;
+            totalPresentUnits: number;
+            totalOvertimeHours: number;
           }
         >();
 
@@ -692,13 +789,55 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           const totP = Number(s.totalPUnits);
           const otH = Number(s.overtimeHours);
 
+          const emp = s.employee as typeof s.employee & {
+            designation?: string | null;
+            memberships: {
+              isPrimary: boolean;
+              department: { id: string; code: string; name: string; category: string };
+            }[];
+          };
+
+          const primaryMembership =
+            emp.memberships.find((m) => m.isPrimary) ?? emp.memberships[0];
+          const dept = primaryMembership?.department
+            ? {
+                id: primaryMembership.department.id,
+                code: primaryMembership.department.code,
+                name: primaryMembership.department.name,
+              }
+            : null;
+
+          if (primaryMembership?.department) {
+            const d = primaryMembership.department;
+            let dm = deptMap.get(d.id);
+            if (!dm) {
+              dm = {
+                departmentId: d.id,
+                departmentCode: d.code,
+                departmentName: d.name,
+                category: d.category,
+                employeeIds: new Set<string>(),
+                presentEmployeeIds: new Set<string>(),
+                totalPresentUnits: 0,
+                totalOvertimeHours: 0,
+              };
+              deptMap.set(d.id, dm);
+            }
+            dm.employeeIds.add(s.employeeId);
+            dm.presentEmployeeIds.add(s.employeeId);
+            dm.totalPresentUnits += pu;
+            dm.totalOvertimeHours += otH;
+          }
+
           let w = workerMap.get(s.employeeId);
           if (!w) {
             w = {
               employeeId: s.employeeId,
-              employeeCode: s.employee.employeeCode,
-              displayName: s.employee.displayName,
-              tradeCategory: s.employee.tradeCategory,
+              employeeCode: emp.employeeCode,
+              displayName: emp.displayName,
+              tradeCategory: emp.tradeCategory,
+              designation: emp.designation ?? null,
+              department: dept,
               presentUnits: 0,
               overtimePUnits: 0,
               totalPUnits: 0,
@@ -706,6 +845,7 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
               sessionsCount: 0,
               daysSet: new Set<string>(),
               leaveDays: 0,
+              sessionsList: [],
             };
             workerMap.set(s.employeeId, w);
           }
@@ -715,6 +855,11 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           w.overtimeHours += otH;
           w.sessionsCount += 1;
           w.daysSet.add(s.businessDate);
+          w.sessionsList.push({
+            netDurationMins: s.netDurationMins,
+            businessDate: s.businessDate,
+            status: s.status,
+          });
         }
 
         for (const l of leaves) {
@@ -729,6 +874,8 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           employeeCode: w.employeeCode,
           displayName: w.displayName,
           tradeCategory: w.tradeCategory,
+          designation: w.designation,
+          department: w.department,
           presentUnits: Number(w.presentUnits.toFixed(1)),
           overtimePUnits: Number(w.overtimePUnits.toFixed(1)),
           totalPUnits: Number(w.totalPUnits.toFixed(1)),
@@ -736,108 +883,129 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           sessionsCount: w.sessionsCount,
           daysPresent: w.daysSet.size,
           leaveDays: w.leaveDays,
+          weeklyProgress: calculateWeeklyWorkHoursProgress({
+            businessDate: resolvedTo,
+            weeklySessions: w.sessionsList,
+            targetWeeklyHours: 48.0,
+          }),
         }));
 
+        const departmentSummaries: DepartmentMusterSummary[] = Array.from(deptMap.values()).map(
+          (d) => ({
+            departmentId: d.departmentId,
+            departmentCode: d.departmentCode,
+            departmentName: d.departmentName,
+            category: d.category ?? null,
+            totalEmployees: d.employeeIds.size,
+            presentCount: d.presentEmployeeIds.size,
+            absentCount: Math.max(0, d.employeeIds.size - d.presentEmployeeIds.size),
+            totalPresentUnits: Number(d.totalPresentUnits.toFixed(1)),
+            totalOvertimeHours: Number(d.totalOvertimeHours.toFixed(2)),
+          }),
+        );
+
         return {
-          siteId: filter.siteId,
-          from: filter.from,
-          to: filter.to,
+          ...(filter.siteId ? { siteId: filter.siteId } : {}),
+          ...(filter.headOfficeId ? { headOfficeId: filter.headOfficeId } : {}),
+          ...(filter.departmentId ? { departmentId: filter.departmentId } : {}),
+          ...(filter.period ? { period: filter.period } : {}),
+          from: resolvedFrom,
+          to: resolvedTo,
           totalSessions: totalsAgg._count._all,
           totalMandays: workerSummaries.reduce((sum, w) => sum + w.daysPresent, 0),
           totalPresentUnits: Number(Number(totalsAgg._sum.presentUnits ?? 0).toFixed(1)),
           totalOvertimePUnits: Number(Number(totalsAgg._sum.overtimePUnits ?? 0).toFixed(1)),
           totalTotalPUnits: Number(Number(totalsAgg._sum.totalPUnits ?? 0).toFixed(1)),
           totalOvertimeHours: Number(Number(totalsAgg._sum.overtimeHours ?? 0).toFixed(2)),
+          ...(departmentSummaries.length > 0 ? { departmentSummaries } : {}),
           workerSummaries,
           sessions,
           leaves,
         };
       },
-      getDailySummary: async (companyId, siteId, businessDate) => {
-        const businessDateObj = new Date(`${businessDate}T00:00:00.000Z`);
+      getDailySummary: async (companyId, siteIdOrFilter, bDate) => {
+        let siteId: string | undefined;
+        let headOfficeId: string | undefined;
+        let departmentId: string | undefined;
+        let businessDate: string;
 
-        const [sessions, statusGroups, totalsAgg, siteRoleAssignments, siteSessions] =
-          await Promise.all([
-            tx.attendanceSession.findMany({
-              where: {
-                companyId,
-                siteId,
-                businessDate,
-              },
-              include: {
+        if (typeof siteIdOrFilter === 'string') {
+          siteId = siteIdOrFilter;
+          businessDate = bDate ?? new Date().toISOString().slice(0, 10);
+        } else {
+          siteId = siteIdOrFilter.siteId;
+          headOfficeId = siteIdOrFilter.headOfficeId;
+          departmentId = siteIdOrFilter.departmentId;
+          businessDate = siteIdOrFilter.businessDate;
+        }
+
+        const where: Prisma.AttendanceSessionWhereInput = {
+          companyId,
+          businessDate,
+          ...(siteId ? { siteId } : {}),
+          ...(headOfficeId ? { headOfficeId } : {}),
+          ...(departmentId
+            ? {
                 employee: {
-                  select: { id: true, employeeCode: true, displayName: true, tradeCategory: true },
+                  memberships: {
+                    some: {
+                      departmentId,
+                      endedAt: null,
+                    },
+                  },
                 },
-                site: {
-                  select: { id: true, code: true, name: true },
+              }
+            : {}),
+        };
+
+        const [sessions, statusGroups, totalsAgg] = await Promise.all([
+          tx.attendanceSession.findMany({
+            where,
+            include: {
+              employee: {
+                select: {
+                  id: true,
+                  employeeCode: true,
+                  displayName: true,
+                  tradeCategory: true,
+                  designation: true,
+                  memberships: {
+                    where: { endedAt: null },
+                    select: {
+                      isPrimary: true,
+                      department: {
+                        select: { id: true, code: true, name: true, category: true },
+                      },
+                    },
+                  },
                 },
-                headOffice: {
-                  select: { id: true, code: true, name: true },
-                },
-                breaks: true,
               },
-              orderBy: { punchInAt: 'asc' },
-            }),
-            tx.attendanceSession.groupBy({
-              by: ['status'],
-              where: { companyId, siteId, businessDate },
-              _count: { _all: true },
-            }),
-            tx.attendanceSession.aggregate({
-              where: { companyId, siteId, businessDate },
-              _sum: {
-                presentUnits: true,
-                overtimePUnits: true,
-                totalPUnits: true,
-                overtimeHours: true,
+              site: {
+                select: { id: true, code: true, name: true },
               },
-              _count: { _all: true },
-            }),
-            tx.roleAssignment.findMany({
-              where: { companyId, siteId, revokedAt: null },
-              select: { principalId: true },
-            }),
-            tx.attendanceSession.findMany({
-              where: { companyId, siteId },
-              select: { employeeId: true },
-              distinct: ['employeeId'],
-            }),
-          ]);
-
-        const sitePrincipalIds = siteRoleAssignments
-          .map((r) => r.principalId)
-          .filter((pid): pid is string => Boolean(pid));
-
-        const siteRoleEmployees =
-          sitePrincipalIds.length > 0
-            ? await tx.employee.findMany({
-              where: { companyId, principalId: { in: sitePrincipalIds } },
-              select: { id: true },
-            })
-            : [];
-
-        const siteWorkerIds = new Set<string>([
-          ...siteSessions.map((s) => s.employeeId),
-          ...siteRoleEmployees.map((e) => e.id),
+              headOffice: {
+                select: { id: true, code: true, name: true },
+              },
+              breaks: true,
+            },
+            orderBy: { punchInAt: 'asc' },
+          }),
+          tx.attendanceSession.groupBy({
+            by: ['status'],
+            where,
+            _count: { _all: true },
+          }),
+          tx.attendanceSession.aggregate({
+            where,
+            _sum: {
+              presentUnits: true,
+              overtimePUnits: true,
+              totalPUnits: true,
+              overtimeHours: true,
+            },
+            _count: { _all: true },
+          }),
         ]);
-
-        const leaves =
-          siteWorkerIds.size > 0
-            ? await tx.leaveRequest.findMany({
-              where: {
-                companyId,
-                employeeId: { in: Array.from(siteWorkerIds) },
-                status: 'APPROVED',
-                startDate: { lte: businessDateObj },
-                endDate: { gte: businessDateObj },
-              },
-              include: {
-                employee: {
-                  select: { id: true, employeeCode: true, displayName: true, designation: true },
-                },
-              },
-            })
-            : [];
 
         const distinctEmployees = new Set(sessions.map((s) => s.employeeId));
         let completedSessions = 0;
@@ -850,21 +1018,60 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           else if (g.status === 'AUTO_CLOSED') autoClosedSessions = g._count._all;
         }
 
+        const deptMap = new Map<string, DepartmentMusterSummary>();
+        for (const s of sessions) {
+          const emp = s.employee as typeof s.employee & {
+            memberships: {
+              isPrimary: boolean;
+              department: { id: string; code: string; name: string; category: string };
+            }[];
+          };
+          const primaryMembership =
+            emp.memberships.find((m) => m.isPrimary) ?? emp.memberships[0];
+          if (primaryMembership?.department) {
+            const d = primaryMembership.department;
+            let dm = deptMap.get(d.id);
+            if (!dm) {
+              dm = {
+                departmentId: d.id,
+                departmentCode: d.code,
+                departmentName: d.name,
+                category: d.category,
+                totalEmployees: 0,
+                presentCount: 0,
+                absentCount: 0,
+                totalPresentUnits: 0,
+                totalOvertimeHours: 0,
+              };
+              deptMap.set(d.id, dm);
+            }
+            dm.presentCount += 1;
+            dm.totalEmployees += 1;
+            dm.totalPresentUnits = Number(
+              (dm.totalPresentUnits + Number(s.presentUnits)).toFixed(1),
+            );
+            dm.totalOvertimeHours = Number(
+              (dm.totalOvertimeHours + Number(s.overtimeHours)).toFixed(2),
+            );
+          }
+        }
+
         return {
-          siteId,
+          ...(siteId ? { siteId } : {}),
+          ...(headOfficeId ? { headOfficeId } : {}),
+          ...(departmentId ? { departmentId } : {}),
           businessDate,
           totalWorkers: distinctEmployees.size,
           totalSessions: totalsAgg._count._all,
           completedSessions,
           inProgressSessions,
           autoClosedSessions,
-          totalApprovedLeaves: leaves.length,
           totalPresentUnits: Number(Number(totalsAgg._sum.presentUnits ?? 0).toFixed(1)),
           totalOvertimePUnits: Number(Number(totalsAgg._sum.overtimePUnits ?? 0).toFixed(1)),
           totalTotalPUnits: Number(Number(totalsAgg._sum.totalPUnits ?? 0).toFixed(1)),
           totalOvertimeHours: Number(Number(totalsAgg._sum.overtimeHours ?? 0).toFixed(2)),
+          ...(deptMap.size > 0 ? { departmentSummaries: Array.from(deptMap.values()) } : {}),
           sessions,
-          leaves,
         };
       },
     },

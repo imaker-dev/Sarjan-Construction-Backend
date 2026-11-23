@@ -99,6 +99,26 @@ export interface UserAggregatedProfileResponse {
     carriedOverDays: number;
     availableDays: number;
   }[];
+  documents?: {
+    id: string;
+    documentType: string;
+    title: string;
+    documentNumber: string | null;
+    issuingAuthority: string | null;
+    issueDate: string | null;
+    expiryDate: string | null;
+    verificationStatus: string;
+    verifiedAt: string | null;
+    rejectionReason: string | null;
+    createdAt: string;
+    file: {
+      id: string;
+      fileName: string;
+      contentType: string | null;
+      sizeBytes: number | null;
+      status: string;
+    } | null;
+  }[];
 }
 
 export interface AuthConfig {
@@ -611,6 +631,47 @@ export class AuthService {
       }
     }
 
+    const documentsData: NonNullable<UserProfileResponse['documents']> = [];
+    if (emp?.documents) {
+      for (const doc of emp.documents) {
+        documentsData.push({
+          id: doc.id,
+          documentType: doc.documentType,
+          title: doc.title,
+          documentNumber: doc.documentNumber ?? null,
+          issuingAuthority: doc.issuingAuthority ?? null,
+          issueDate: doc.issueDate
+            ? doc.issueDate instanceof Date
+              ? doc.issueDate.toISOString().slice(0, 10)
+              : String(doc.issueDate).slice(0, 10)
+            : null,
+          expiryDate: doc.expiryDate
+            ? doc.expiryDate instanceof Date
+              ? doc.expiryDate.toISOString().slice(0, 10)
+              : String(doc.expiryDate).slice(0, 10)
+            : null,
+          verificationStatus: doc.verificationStatus,
+          verifiedAt: doc.verifiedAt
+            ? doc.verifiedAt instanceof Date
+              ? doc.verifiedAt.toISOString()
+              : String(doc.verifiedAt)
+            : null,
+          rejectionReason: doc.rejectionReason ?? null,
+          createdAt:
+            doc.createdAt instanceof Date ? doc.createdAt.toISOString() : String(doc.createdAt),
+          file: doc.document
+            ? {
+                id: doc.document.id,
+                fileName: doc.document.originalFileName,
+                contentType: doc.document.contentType ?? null,
+                sizeBytes: doc.document.sizeBytes ?? null,
+                status: doc.document.status,
+              }
+            : null,
+        });
+      }
+    }
+
     const response: UserProfileResponse = {
       id: full.id,
       loginId: full.loginId ?? '',
@@ -637,6 +698,7 @@ export class AuthService {
       permissions,
       assignments,
       departments,
+      documents: documentsData,
     };
 
     await this.cache.set(principalId, response, companyId);
@@ -776,6 +838,47 @@ export class AuthService {
       }
     }
 
+    const profileDocumentsData: NonNullable<UserAggregatedProfileResponse['documents']> = [];
+    if (emp?.documents) {
+      for (const doc of emp.documents) {
+        profileDocumentsData.push({
+          id: doc.id,
+          documentType: doc.documentType,
+          title: doc.title,
+          documentNumber: doc.documentNumber ?? null,
+          issuingAuthority: doc.issuingAuthority ?? null,
+          issueDate: doc.issueDate
+            ? doc.issueDate instanceof Date
+              ? doc.issueDate.toISOString().slice(0, 10)
+              : String(doc.issueDate).slice(0, 10)
+            : null,
+          expiryDate: doc.expiryDate
+            ? doc.expiryDate instanceof Date
+              ? doc.expiryDate.toISOString().slice(0, 10)
+              : String(doc.expiryDate).slice(0, 10)
+            : null,
+          verificationStatus: doc.verificationStatus,
+          verifiedAt: doc.verifiedAt
+            ? doc.verifiedAt instanceof Date
+              ? doc.verifiedAt.toISOString()
+              : String(doc.verifiedAt)
+            : null,
+          rejectionReason: doc.rejectionReason ?? null,
+          createdAt:
+            doc.createdAt instanceof Date ? doc.createdAt.toISOString() : String(doc.createdAt),
+          file: doc.document
+            ? {
+                id: doc.document.id,
+                fileName: doc.document.originalFileName,
+                contentType: doc.document.contentType ?? null,
+                sizeBytes: doc.document.sizeBytes ?? null,
+                status: doc.document.status,
+              }
+            : null,
+        });
+      }
+    }
+
     let mfaEnabled = false;
     let mfaType: string | null = null;
     if (this.mfaService) {
@@ -832,6 +935,7 @@ export class AuthService {
         activeSession: activeSessionData,
       },
       leaveBalances: leaveBalancesData,
+      documents: profileDocumentsData,
     };
   }
 

@@ -82,6 +82,7 @@ export function makeAuthRepos(store: AuthStore): AuthRepos {
               memberships: [],
               attendanceSessions: [],
               leaveBalances: [],
+              documents: [],
             })),
           roleAssignments: [],
         };

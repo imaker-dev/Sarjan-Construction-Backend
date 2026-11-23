@@ -103,14 +103,14 @@ describe('EmployeeDocumentService', () => {
     });
 
     employeeFindFirstSpy.mockImplementation((args: { where?: { id?: string; principalId?: string } }) => {
-      if (args?.where?.id === employeeId) {
+      if (args.where?.id === employeeId) {
         return Promise.resolve({
           id: employeeId,
           companyId,
           principalId: 'emp-user-principal',
         });
       }
-      if (args?.where?.principalId === 'emp-user-principal') {
+      if (args.where?.principalId === 'emp-user-principal') {
         return Promise.resolve({
           id: employeeId,
           companyId,

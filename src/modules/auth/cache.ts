@@ -46,6 +46,26 @@ export interface UserProfileResponse {
     headOfficeId?: string | null;
     headOfficeName?: string | null;
   }[];
+  documents?: {
+    id: string;
+    documentType: string;
+    title: string;
+    documentNumber: string | null;
+    issuingAuthority: string | null;
+    issueDate: string | null;
+    expiryDate: string | null;
+    verificationStatus: string;
+    verifiedAt: string | null;
+    rejectionReason: string | null;
+    createdAt: string;
+    file: {
+      id: string;
+      fileName: string;
+      contentType: string | null;
+      sizeBytes: number | null;
+      status: string;
+    } | null;
+  }[];
 }
 
 export interface UserProfileCache {

@@ -51,6 +51,7 @@ function makeService(over: Partial<AuthService> = {}) {
       operations: ['PROJECT_DASHBOARD_VIEW'],
       assignments: [],
       departments: [],
+      documents: [],
     }),
     getProfile: async () => ({
       principal: {
@@ -102,6 +103,7 @@ function makeService(over: Partial<AuthService> = {}) {
           availableDays: 9,
         },
       ],
+      documents: [],
     }),
     changePassword: async () => ({
       success: true,

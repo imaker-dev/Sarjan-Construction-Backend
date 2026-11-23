@@ -107,6 +107,26 @@ export interface FullPrincipalDetails extends Principal {
       pendingDays: unknown;
       carriedOverDays: unknown;
     }[];
+    documents?: {
+      id: string;
+      documentType: string;
+      title: string;
+      documentNumber: string | null;
+      issuingAuthority: string | null;
+      issueDate: Date | null;
+      expiryDate: Date | null;
+      verificationStatus: string;
+      verifiedAt: Date | null;
+      rejectionReason: string | null;
+      createdAt: Date;
+      document?: {
+        id: string;
+        originalFileName: string;
+        contentType: string | null;
+        sizeBytes: number | null;
+        status: string;
+      } | null;
+    }[];
   }[];
   roleAssignments: {
     id: string;
@@ -247,6 +267,20 @@ export function makeAuthRepos(tx: Tx): AuthRepos {
                     year: now.getFullYear(),
                   },
                   orderBy: { leaveType: 'asc' },
+                },
+                documents: {
+                  include: {
+                    document: {
+                      select: {
+                        id: true,
+                        originalFileName: true,
+                        contentType: true,
+                        sizeBytes: true,
+                        status: true,
+                      },
+                    },
+                  },
+                  orderBy: { createdAt: 'desc' },
                 },
               },
             },

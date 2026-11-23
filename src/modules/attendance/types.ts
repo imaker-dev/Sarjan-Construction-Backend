@@ -157,10 +157,136 @@ export interface DailyActivitySummary {
   activityLog: SessionActivityEvent[];
 }
 
+export interface WeeklyWorkHoursProgress {
+  weekStartDate: string;
+  weekEndDate: string;
+  targetWeeklyHours: number;
+  completedWeeklyHours: number;
+  remainingWeeklyHours: number;
+  progressPercentage: number;
+  isTargetCompleted: boolean;
+  remainingWorkDaysInWeek: number;
+  isLastWorkingDay: boolean;
+  requiredHoursToCompleteTarget: number;
+  status: 'ON_TRACK' | 'BEHIND' | 'COMPLETED' | 'DEFICIT_PENDING';
+}
+
+export interface DepartmentMusterSummary {
+  departmentId: string;
+  departmentCode: string;
+  departmentName: string;
+  category?: string | null;
+  totalEmployees: number;
+  presentCount: number;
+  absentCount: number;
+  totalPresentUnits: number;
+  totalOvertimeHours: number;
+}
+
 export type ActiveSessionWithTiming = AttendanceSession & {
   breaks?: AttendanceBreak[];
 } & Partial<ActiveSessionTiming> &
-  Partial<DailyActivitySummary>;
+  Partial<DailyActivitySummary> & {
+    weeklyProgress?: WeeklyWorkHoursProgress;
+  };
+
+export function resolveDateRangeForPeriod(
+  period?: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'CUSTOM',
+  referenceDate?: string,
+  from?: string,
+  to?: string,
+): { from: string; to: string } {
+  const refDateStr = referenceDate ?? from ?? new Date().toISOString().slice(0, 10);
+  const refDate = new Date(`${refDateStr}T00:00:00.000Z`);
+
+  if (period === 'DAILY') {
+    return { from: refDateStr, to: refDateStr };
+  }
+
+  if (period === 'WEEKLY') {
+    const dayOfWeek = refDate.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const monday = new Date(refDate.getTime() + diffToMonday * 86400000);
+    const saturday = new Date(monday.getTime() + 5 * 86400000);
+    return {
+      from: monday.toISOString().slice(0, 10),
+      to: saturday.toISOString().slice(0, 10),
+    };
+  }
+
+  if (period === 'MONTHLY') {
+    const year = refDate.getUTCFullYear();
+    const month = refDate.getUTCMonth();
+    const firstDay = new Date(Date.UTC(year, month, 1));
+    const lastDay = new Date(Date.UTC(year, month + 1, 0));
+    return {
+      from: firstDay.toISOString().slice(0, 10),
+      to: lastDay.toISOString().slice(0, 10),
+    };
+  }
+
+  return {
+    from: from ?? refDateStr,
+    to: to ?? refDateStr,
+  };
+}
+
+export function calculateWeeklyWorkHoursProgress(params: {
+  businessDate: string;
+  weeklySessions: { netDurationMins: number; businessDate: string; status?: string }[];
+  targetWeeklyHours?: number;
+}): WeeklyWorkHoursProgress {
+  const targetWeeklyHours = params.targetWeeklyHours ?? 48.0;
+  const { from: weekStartDate, to: weekEndDate } = resolveDateRangeForPeriod('WEEKLY', params.businessDate);
+
+  let totalMins = 0;
+  for (const s of params.weeklySessions) {
+    if (s.businessDate >= weekStartDate && s.businessDate <= weekEndDate) {
+      totalMins += s.netDurationMins || 0;
+    }
+  }
+
+  const completedWeeklyHours = Number((totalMins / 60).toFixed(2));
+  const remainingWeeklyHours = Number(Math.max(0, targetWeeklyHours - completedWeeklyHours).toFixed(2));
+  const progressPercentage = Number(Math.min(100, (completedWeeklyHours / targetWeeklyHours) * 100).toFixed(1));
+  const isTargetCompleted = completedWeeklyHours >= targetWeeklyHours;
+
+  const bDate = new Date(`${params.businessDate}T00:00:00.000Z`);
+  const dayOfWeek = bDate.getUTCDay();
+  const dayIndex = dayOfWeek === 0 ? 6 : dayOfWeek;
+  const remainingWorkDaysInWeek = Math.max(1, 6 - dayIndex + 1);
+  const isLastWorkingDay = dayIndex >= 6;
+
+  const requiredHoursToCompleteTarget = isTargetCompleted
+    ? 0
+    : isLastWorkingDay
+    ? remainingWeeklyHours
+    : Number((remainingWeeklyHours / remainingWorkDaysInWeek).toFixed(2));
+
+  let status: WeeklyWorkHoursProgress['status'] = 'ON_TRACK';
+  if (isTargetCompleted) {
+    status = 'COMPLETED';
+  } else if (isLastWorkingDay) {
+    status = 'DEFICIT_PENDING';
+  } else {
+    const expectedHoursSoFar = Math.min(targetWeeklyHours, dayIndex * 8.0);
+    status = completedWeeklyHours >= expectedHoursSoFar * 0.85 ? 'ON_TRACK' : 'BEHIND';
+  }
+
+  return {
+    weekStartDate,
+    weekEndDate,
+    targetWeeklyHours,
+    completedWeeklyHours,
+    remainingWeeklyHours,
+    progressPercentage,
+    isTargetCompleted,
+    remainingWorkDaysInWeek,
+    isLastWorkingDay,
+    requiredHoursToCompleteTarget,
+    status,
+  };
+}
 
 export function buildDailyActivitySummary(
   businessDate: string,
@@ -597,8 +723,18 @@ export const ListSessionsQuery = Type.Object({
   cursor: Type.Optional(Type.String()),
 });
 
+export const AttendancePeriodEnum = Type.Union([
+  Type.Literal('DAILY'),
+  Type.Literal('WEEKLY'),
+  Type.Literal('MONTHLY'),
+  Type.Literal('CUSTOM'),
+]);
+
 export const DailySummaryQuery = Type.Object({
-  siteId: Type.String({ format: 'uuid' }),
+  siteId: Type.Optional(Type.String({ format: 'uuid' })),
+  headOfficeId: Type.Optional(Type.String({ format: 'uuid' })),
+  departmentId: Type.Optional(Type.String({ format: 'uuid' })),
+  period: Type.Optional(AttendancePeriodEnum),
   businessDate: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
 });
 
@@ -661,9 +797,13 @@ export const ListTvtSessionsQuery = Type.Object({
 });
 
 export const MusterRollRangeQuery = Type.Object({
-  siteId: Type.String({ format: 'uuid' }),
-  from: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
-  to: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
+  siteId: Type.Optional(Type.String({ format: 'uuid' })),
+  headOfficeId: Type.Optional(Type.String({ format: 'uuid' })),
+  departmentId: Type.Optional(Type.String({ format: 'uuid' })),
+  period: Type.Optional(AttendancePeriodEnum),
+  date: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  from: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  to: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
   employeeId: Type.Optional(Type.String({ format: 'uuid' })),
   status: Type.Optional(
     Type.Union([

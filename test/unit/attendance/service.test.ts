@@ -864,6 +864,84 @@ describe('AttendanceService', () => {
       expect(res.workerSummaries[0]?.tradeCategory).toBe('MASON');
     });
 
+    it('supports Head Office query with period: WEEKLY', async () => {
+      const getMusterSpy = vi.fn().mockResolvedValue({
+        headOfficeId: 'ho-1',
+        period: 'WEEKLY',
+        from: '2026-11-23',
+        to: '2026-11-28',
+        totalSessions: 10,
+        totalMandays: 10,
+        totalPresentUnits: 10.0,
+        totalOvertimePUnits: 0,
+        totalTotalPUnits: 10.0,
+        totalOvertimeHours: 0,
+        departmentSummaries: [
+          {
+            departmentId: 'd1',
+            departmentCode: 'ACC',
+            departmentName: 'Accounts',
+            totalEmployees: 2,
+            presentCount: 2,
+            absentCount: 0,
+            totalPresentUnits: 10.0,
+            totalOvertimeHours: 0,
+          },
+        ],
+        workerSummaries: [
+          {
+            employeeId: 'e-1',
+            employeeCode: 'EMP-001',
+            displayName: 'Amit Verma',
+            tradeCategory: null,
+            department: { id: 'd1', code: 'ACC', name: 'Accounts' },
+            presentUnits: 5.0,
+            overtimePUnits: 0,
+            totalPUnits: 5.0,
+            overtimeHours: 0,
+            sessionsCount: 5,
+            daysPresent: 5,
+            leaveDays: 0,
+            weeklyProgress: {
+              weekStartDate: '2026-11-23',
+              weekEndDate: '2026-11-28',
+              targetWeeklyHours: 48.0,
+              completedWeeklyHours: 40.0,
+              remainingWeeklyHours: 8.0,
+              progressPercentage: 83.3,
+              isTargetCompleted: false,
+              remainingWorkDaysInWeek: 1,
+              isLastWorkingDay: true,
+              requiredHoursToCompleteTarget: 8.0,
+              status: 'DEFICIT_PENDING',
+            },
+          },
+        ],
+        sessions: [],
+        leaves: [],
+      });
+
+      const mockRepos: Partial<AttendanceRepos> = {
+        sessions: {
+          getMusterRollRange: getMusterSpy,
+        } as unknown as AttendanceRepos['sessions'],
+      };
+
+      const service = new AttendanceService(createMockUow(mockRepos), authorizer);
+      const res = await service.getMusterRollRange(actor, companyId, {
+        headOfficeId: 'ho-1',
+        period: 'WEEKLY',
+        date: '2026-11-25',
+      });
+
+      expect(res.headOfficeId).toBe('ho-1');
+      expect(res.from).toBe('2026-11-23');
+      expect(res.to).toBe('2026-11-28');
+      expect(res.departmentSummaries).toHaveLength(1);
+      expect(res.workerSummaries[0]?.weeklyProgress?.status).toBe('DEFICIT_PENDING');
+      expect(res.workerSummaries[0]?.weeklyProgress?.requiredHoursToCompleteTarget).toBe(8.0);
+    });
+
     it('rejects date range exceeding 31 days with InvalidDateRangeError', async () => {
       const mockRepos: Partial<AttendanceRepos> = {
         sessions: {

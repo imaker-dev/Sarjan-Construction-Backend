@@ -192,6 +192,7 @@ describe('getMe', () => {
     const p = await seedPrincipal({ loginId: 'cached@example.com' });
     const res1 = await service.getMe(p.id);
     expect(res1.loginId).toBe('cached@example.com');
+    expect(res1.documents).toEqual([]);
 
     // Simulate DB change
     p.loginId = 'changed@example.com';
@@ -274,6 +275,7 @@ describe('getMe', () => {
     expect(res.company?.code).toBe('C1');
     expect(res.attendance.hasActiveSession).toBe(false);
     expect(res.leaveBalances).toEqual([]);
+    expect(res.documents).toEqual([]);
   });
 });
 

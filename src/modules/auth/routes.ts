@@ -88,6 +88,30 @@ const ChangePasswordResponse = Type.Object({
 
 const EmptyResponse = Type.Object({});
 
+const UserDocumentItemSchema = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  documentType: Type.String(),
+  title: Type.String(),
+  documentNumber: Type.Union([Type.String(), Type.Null()]),
+  issuingAuthority: Type.Union([Type.String(), Type.Null()]),
+  issueDate: Type.Union([Type.String(), Type.Null()]),
+  expiryDate: Type.Union([Type.String(), Type.Null()]),
+  verificationStatus: Type.String(),
+  verifiedAt: Type.Union([Type.String(), Type.Null()]),
+  rejectionReason: Type.Union([Type.String(), Type.Null()]),
+  createdAt: Type.String(),
+  file: Type.Union([
+    Type.Object({
+      id: Type.String({ format: 'uuid' }),
+      fileName: Type.String(),
+      contentType: Type.Union([Type.String(), Type.Null()]),
+      sizeBytes: Type.Union([Type.Integer(), Type.Null()]),
+      status: Type.String(),
+    }),
+    Type.Null(),
+  ]),
+});
+
 const UserMeResponseSchema = Type.Object({
   id: Type.String({ format: 'uuid' }),
   loginId: Type.String(),
@@ -141,6 +165,7 @@ const UserMeResponseSchema = Type.Object({
       headOfficeName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     }),
   ),
+  documents: Type.Optional(Type.Array(UserDocumentItemSchema)),
 });
 
 const UserAggregatedProfileResponseSchema = Type.Object({
@@ -248,6 +273,7 @@ const UserAggregatedProfileResponseSchema = Type.Object({
       availableDays: Type.Number(),
     }),
   ),
+  documents: Type.Optional(Type.Array(UserDocumentItemSchema)),
 });
 
 export interface AuthRoutesOptions {

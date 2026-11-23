@@ -35,12 +35,15 @@ import {
   buildDailyActivitySummary,
   calculateActiveSessionTiming,
   calculateHaversineDistanceMeters,
+  calculateWeeklyWorkHoursProgress,
   calculateWorkAndOvertime,
   DEFAULT_ATTENDANCE_POLICY,
   getBusinessDate,
   MAX_MUSTER_ROLL_DAYS,
+  resolveDateRangeForPeriod,
   type ActiveSessionWithTiming,
   type DailyActivitySummary,
+  type WeeklyWorkHoursProgress,
   type AddTvtAttendeesInput,
   type CalculateDailyReportInput,
   type CreatePolicyInput,
@@ -1084,10 +1087,41 @@ export class AttendanceService {
         dailySummary = buildDailyActivitySummary(session.businessDate, [session]);
       }
 
+      let weeklyProgress: WeeklyWorkHoursProgress | undefined;
+      const { from: weekStart, to: weekEnd } = resolveDateRangeForPeriod(
+        'WEEKLY',
+        session.businessDate,
+      );
+      if (reposAny.sessions?.findSessionsForDateRange) {
+        const weeklySessions = await reposAny.sessions.findSessionsForDateRange(
+          companyId,
+          targetEmpId,
+          weekStart,
+          weekEnd,
+        );
+        weeklyProgress = calculateWeeklyWorkHoursProgress({
+          businessDate: session.businessDate,
+          weeklySessions,
+          targetWeeklyHours: 48.0,
+        });
+      } else if (reposAny.sessions?.findByEmployeeAndDate) {
+        const todaySessions = await reposAny.sessions.findByEmployeeAndDate(
+          companyId,
+          targetEmpId,
+          session.businessDate,
+        );
+        weeklyProgress = calculateWeeklyWorkHoursProgress({
+          businessDate: session.businessDate,
+          weeklySessions: todaySessions,
+          targetWeeklyHours: 48.0,
+        });
+      }
+
       return {
         ...session,
         ...timing,
         ...dailySummary,
+        ...(weeklyProgress ? { weeklyProgress } : {}),
       };
     });
   }
@@ -1141,13 +1175,27 @@ export class AttendanceService {
   }
 
   async getDailySummary(actor: ActorContext, companyId: string, filter: DailySummaryFilter) {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_READ,
-      siteTarget(companyId, filter.siteId),
-    );
+    if (filter.siteId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        siteTarget(companyId, filter.siteId),
+      );
+    } else if (filter.headOfficeId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        headOfficeTarget(companyId, filter.headOfficeId),
+      );
+    } else {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        companyTarget(companyId),
+      );
+    }
     return this.uow.run((repos) =>
-      repos.sessions.getDailySummary(companyId, filter.siteId, filter.businessDate),
+      repos.sessions.getDailySummary(companyId, filter),
     );
   }
 
@@ -2049,14 +2097,35 @@ export class AttendanceService {
   // -------------------------------------------------------------------------
 
   async getMusterRollRange(actor: ActorContext, companyId: string, filter: MusterRollRangeFilter) {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_READ,
-      siteTarget(companyId, filter.siteId),
+    if (filter.siteId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        siteTarget(companyId, filter.siteId),
+      );
+    } else if (filter.headOfficeId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        headOfficeTarget(companyId, filter.headOfficeId),
+      );
+    } else {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        companyTarget(companyId),
+      );
+    }
+
+    const { from: resolvedFrom, to: resolvedTo } = resolveDateRangeForPeriod(
+      filter.period,
+      filter.date,
+      filter.from,
+      filter.to,
     );
 
-    const fromDate = new Date(`${filter.from}T00:00:00.000Z`);
-    const toDate = new Date(`${filter.to}T00:00:00.000Z`);
+    const fromDate = new Date(`${resolvedFrom}T00:00:00.000Z`);
+    const toDate = new Date(`${resolvedTo}T00:00:00.000Z`);
 
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
       throw new InvalidDateRangeError('Invalid date format. Expected YYYY-MM-DD');
@@ -2074,7 +2143,13 @@ export class AttendanceService {
       );
     }
 
-    return this.uow.run((repos) => repos.sessions.getMusterRollRange(companyId, filter));
+    return this.uow.run((repos) =>
+      repos.sessions.getMusterRollRange(companyId, {
+        ...filter,
+        from: resolvedFrom,
+        to: resolvedTo,
+      }),
+    );
   }
 
   // -------------------------------------------------------------------------

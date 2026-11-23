@@ -288,6 +288,11 @@ export function attendanceRoutes(service: AttendanceService) {
                 remainingMinutesFor8Hours: active.remainingMinutesFor8Hours,
               }
             : {}),
+          ...(active.weeklyProgress !== undefined
+            ? {
+                weeklyProgress: active.weeklyProgress,
+              }
+            : {}),
           ...(active.activityLog !== undefined
             ? {
                 businessDate: active.businessDate,

@@ -3,9 +3,11 @@ import {
   buildDailyActivitySummary,
   calculateActiveSessionTiming,
   calculateHaversineDistanceMeters,
+  calculateWeeklyWorkHoursProgress,
   calculateWorkAndOvertime,
   getBusinessDate,
   getScheduledShiftStart,
+  resolveDateRangeForPeriod,
   type AttendancePolicyLike,
 } from '../../../src/modules/attendance/types.js';
 
@@ -393,6 +395,109 @@ describe('Attendance Types & Domain Helpers', () => {
       expect(summary.totalCheckOutsToday).toBe(0);
       expect(summary.currentlyCheckedIn).toBe(false);
       expect(summary.activityLog).toHaveLength(0);
+    });
+  });
+
+  describe('resolveDateRangeForPeriod', () => {
+    it('resolves DAILY period to the exact single date', () => {
+      const res = resolveDateRangeForPeriod('DAILY', '2026-11-25');
+      expect(res.from).toBe('2026-11-25');
+      expect(res.to).toBe('2026-11-25');
+    });
+
+    it('resolves WEEKLY period to Monday through Saturday boundaries', () => {
+      // 2026-11-25 is a Wednesday
+      const res = resolveDateRangeForPeriod('WEEKLY', '2026-11-25');
+      expect(res.from).toBe('2026-11-23'); // Monday
+      expect(res.to).toBe('2026-11-28'); // Saturday
+    });
+
+    it('resolves MONTHLY period to the 1st through the last day of the calendar month', () => {
+      // November 2026 has 30 days
+      const res = resolveDateRangeForPeriod('MONTHLY', '2026-11-15');
+      expect(res.from).toBe('2026-11-01');
+      expect(res.to).toBe('2026-11-30');
+    });
+
+    it('preserves custom from and to when period is CUSTOM or omitted', () => {
+      const res = resolveDateRangeForPeriod('CUSTOM', undefined, '2026-11-05', '2026-11-20');
+      expect(res.from).toBe('2026-11-05');
+      expect(res.to).toBe('2026-11-20');
+    });
+  });
+
+  describe('calculateWeeklyWorkHoursProgress (48-Hour Head Office Bar)', () => {
+    it('calculates on-track progress for mid-week work', () => {
+      // Wednesday: 24 hours completed (8h Mon, 8h Tue, 8h Wed)
+      const weeklySessions = [
+        { netDurationMins: 480, businessDate: '2026-11-23' },
+        { netDurationMins: 480, businessDate: '2026-11-24' },
+        { netDurationMins: 480, businessDate: '2026-11-25' },
+      ];
+
+      const res = calculateWeeklyWorkHoursProgress({
+        businessDate: '2026-11-25', // Wednesday
+        weeklySessions,
+        targetWeeklyHours: 48.0,
+      });
+
+      expect(res.weekStartDate).toBe('2026-11-23');
+      expect(res.weekEndDate).toBe('2026-11-28');
+      expect(res.targetWeeklyHours).toBe(48.0);
+      expect(res.completedWeeklyHours).toBe(24.0);
+      expect(res.remainingWeeklyHours).toBe(24.0);
+      expect(res.progressPercentage).toBe(50.0);
+      expect(res.isTargetCompleted).toBe(false);
+      expect(res.isLastWorkingDay).toBe(false);
+      expect(res.status).toBe('ON_TRACK');
+    });
+
+    it('enforces that on the last working day (Saturday), all remaining hours must be completed', () => {
+      // Saturday (last working day): 40 hours worked so far (Mon-Fri)
+      const weeklySessions = [
+        { netDurationMins: 480, businessDate: '2026-11-23' },
+        { netDurationMins: 480, businessDate: '2026-11-24' },
+        { netDurationMins: 480, businessDate: '2026-11-25' },
+        { netDurationMins: 480, businessDate: '2026-11-26' },
+        { netDurationMins: 480, businessDate: '2026-11-27' },
+      ];
+
+      const res = calculateWeeklyWorkHoursProgress({
+        businessDate: '2026-11-28', // Saturday (last day)
+        weeklySessions,
+        targetWeeklyHours: 48.0,
+      });
+
+      expect(res.isLastWorkingDay).toBe(true);
+      expect(res.completedWeeklyHours).toBe(40.0);
+      expect(res.remainingWeeklyHours).toBe(8.0);
+      expect(res.requiredHoursToCompleteTarget).toBe(8.0); // Exact 8h deficit on the last day!
+      expect(res.progressPercentage).toBe(83.3);
+      expect(res.isTargetCompleted).toBe(false);
+      expect(res.status).toBe('DEFICIT_PENDING');
+    });
+
+    it('marks target completed when 48 hours is achieved', () => {
+      const weeklySessions = [
+        { netDurationMins: 600, businessDate: '2026-11-23' }, // 10h
+        { netDurationMins: 600, businessDate: '2026-11-24' }, // 10h
+        { netDurationMins: 600, businessDate: '2026-11-25' }, // 10h
+        { netDurationMins: 600, businessDate: '2026-11-26' }, // 10h
+        { netDurationMins: 600, businessDate: '2026-11-27' }, // 10h (total 50h)
+      ];
+
+      const res = calculateWeeklyWorkHoursProgress({
+        businessDate: '2026-11-27',
+        weeklySessions,
+        targetWeeklyHours: 48.0,
+      });
+
+      expect(res.completedWeeklyHours).toBe(50.0);
+      expect(res.remainingWeeklyHours).toBe(0);
+      expect(res.progressPercentage).toBe(100.0);
+      expect(res.isTargetCompleted).toBe(true);
+      expect(res.requiredHoursToCompleteTarget).toBe(0);
+      expect(res.status).toBe('COMPLETED');
     });
   });
 });
