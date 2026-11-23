@@ -270,6 +270,9 @@ export function attendanceRoutes(service: AttendanceService) {
           return {
             session: null,
             ...(summary ?? {}),
+            ...(summary?.weeklyProgress !== undefined
+              ? { weeklyProgress: summary.weeklyProgress }
+              : {}),
           };
         }
 

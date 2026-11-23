@@ -1157,7 +1157,28 @@ export class AttendanceService {
         targetEmpId,
         dateStr,
       );
-      return buildDailyActivitySummary(dateStr, sessions);
+      const summary = buildDailyActivitySummary(dateStr, sessions);
+
+      let weeklyProgress: WeeklyWorkHoursProgress | undefined;
+      const { from: weekStart, to: weekEnd } = resolveDateRangeForPeriod('WEEKLY', dateStr);
+      if (reposAny.sessions?.findSessionsForDateRange) {
+        const weeklySessions = await reposAny.sessions.findSessionsForDateRange(
+          companyId,
+          targetEmpId,
+          weekStart,
+          weekEnd,
+        );
+        weeklyProgress = calculateWeeklyWorkHoursProgress({
+          businessDate: dateStr,
+          weeklySessions,
+          targetWeeklyHours: 48.0,
+        });
+      }
+
+      return {
+        ...summary,
+        ...(weeklyProgress ? { weeklyProgress } : {}),
+      };
     });
   }
 

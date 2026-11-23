@@ -169,6 +169,8 @@ export interface WeeklyWorkHoursProgress {
   isLastWorkingDay: boolean;
   requiredHoursToCompleteTarget: number;
   status: 'ON_TRACK' | 'BEHIND' | 'COMPLETED' | 'DEFICIT_PENDING';
+  priorDaysCompletedWeeklyHours?: number;
+  todayCompletedHours?: number;
 }
 
 export interface DepartmentMusterSummary {
@@ -233,20 +235,51 @@ export function resolveDateRangeForPeriod(
 
 export function calculateWeeklyWorkHoursProgress(params: {
   businessDate: string;
-  weeklySessions: { netDurationMins: number; businessDate: string; status?: string }[];
+  weeklySessions: {
+    netDurationMins: number;
+    businessDate: string;
+    status?: string;
+    punchInAt?: Date | string;
+    breaks?: { startTime: Date | string; endTime?: Date | string | null }[];
+  }[];
   targetWeeklyHours?: number;
 }): WeeklyWorkHoursProgress {
   const targetWeeklyHours = params.targetWeeklyHours ?? 48.0;
   const { from: weekStartDate, to: weekEndDate } = resolveDateRangeForPeriod('WEEKLY', params.businessDate);
 
   let totalMins = 0;
+  let priorDaysMins = 0;
+  let todayMins = 0;
+  const nowMs = Date.now();
+
   for (const s of params.weeklySessions) {
     if (s.businessDate >= weekStartDate && s.businessDate <= weekEndDate) {
-      totalMins += s.netDurationMins || 0;
+      let sessionMins = s.netDurationMins || 0;
+      if (s.status === 'IN_PROGRESS' && s.punchInAt) {
+        const punchInMs = new Date(s.punchInAt).getTime();
+        let breakMins = 0;
+        if (Array.isArray(s.breaks)) {
+          for (const b of s.breaks) {
+            const bStart = new Date(b.startTime).getTime();
+            const bEnd = b.endTime ? new Date(b.endTime).getTime() : nowMs;
+            breakMins += Math.max(0, Math.floor((bEnd - bStart) / 60000));
+          }
+        }
+        const grossMins = Math.max(0, Math.floor((nowMs - punchInMs) / 60000));
+        sessionMins = Math.max(0, grossMins - breakMins);
+      }
+      totalMins += sessionMins;
+      if (s.businessDate < params.businessDate) {
+        priorDaysMins += sessionMins;
+      } else if (s.businessDate === params.businessDate) {
+        todayMins += sessionMins;
+      }
     }
   }
 
   const completedWeeklyHours = Number((totalMins / 60).toFixed(2));
+  const priorDaysCompletedWeeklyHours = Number((priorDaysMins / 60).toFixed(2));
+  const todayCompletedHours = Number((todayMins / 60).toFixed(2));
   const remainingWeeklyHours = Number(Math.max(0, targetWeeklyHours - completedWeeklyHours).toFixed(2));
   const progressPercentage = Number(Math.min(100, (completedWeeklyHours / targetWeeklyHours) * 100).toFixed(1));
   const isTargetCompleted = completedWeeklyHours >= targetWeeklyHours;
@@ -285,6 +318,8 @@ export function calculateWeeklyWorkHoursProgress(params: {
     isLastWorkingDay,
     requiredHoursToCompleteTarget,
     status,
+    priorDaysCompletedWeeklyHours,
+    todayCompletedHours,
   };
 }
 

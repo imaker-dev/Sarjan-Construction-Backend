@@ -499,5 +499,30 @@ describe('Attendance Types & Domain Helpers', () => {
       expect(res.requiredHoursToCompleteTarget).toBe(0);
       expect(res.status).toBe('COMPLETED');
     });
+
+    it('calculates live ongoing duration for IN_PROGRESS session', () => {
+      const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000);
+      const weeklySessions = [
+        {
+          netDurationMins: 0,
+          businessDate: '2026-11-23',
+          status: 'IN_PROGRESS',
+          punchInAt: fiveHoursAgo.toISOString(),
+          breaks: [],
+        },
+      ];
+
+      const res = calculateWeeklyWorkHoursProgress({
+        businessDate: '2026-11-23',
+        weeklySessions,
+        targetWeeklyHours: 48.0,
+      });
+
+      expect(res.completedWeeklyHours).toBeCloseTo(5.0, 1);
+      expect(res.remainingWeeklyHours).toBeCloseTo(43.0, 1);
+      expect(res.progressPercentage).toBeCloseTo(10.4, 1);
+      expect(res.todayCompletedHours).toBeCloseTo(5.0, 1);
+      expect(res.priorDaysCompletedWeeklyHours).toBe(0);
+    });
   });
 });

@@ -859,6 +859,8 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             netDurationMins: s.netDurationMins,
             businessDate: s.businessDate,
             status: s.status,
+            punchInAt: s.punchInAt,
+            breaks: s.breaks,
           });
         }
 
