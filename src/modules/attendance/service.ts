@@ -1161,7 +1161,7 @@ export class AttendanceService {
 
       let weeklyProgress: WeeklyWorkHoursProgress | undefined;
       const { from: weekStart, to: weekEnd } = resolveDateRangeForPeriod('WEEKLY', dateStr);
-      if (reposAny.sessions?.findSessionsForDateRange) {
+      if (reposAny.sessions.findSessionsForDateRange) {
         const weeklySessions = await reposAny.sessions.findSessionsForDateRange(
           companyId,
           targetEmpId,

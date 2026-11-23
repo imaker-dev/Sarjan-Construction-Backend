@@ -765,7 +765,7 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             sessionsCount: number;
             daysSet: Set<string>;
             leaveDays: number;
-            sessionsList: { netDurationMins: number; businessDate: string; status?: string }[];
+            sessionsList: Parameters<typeof calculateWeeklyWorkHoursProgress>[0]['weeklySessions'];
           }
         >();
 
@@ -857,9 +857,11 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           w.daysSet.add(s.businessDate);
           w.sessionsList.push({
             netDurationMins: s.netDurationMins,
+            grossDurationMins: s.grossDurationMins,
             businessDate: s.businessDate,
             status: s.status,
             punchInAt: s.punchInAt,
+            punchOutAt: s.punchOutAt,
             breaks: s.breaks,
           });
         }

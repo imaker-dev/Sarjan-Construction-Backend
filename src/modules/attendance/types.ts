@@ -155,6 +155,7 @@ export interface DailyActivitySummary {
   totalWorkMinutesToday: number;
   totalBreakMinutesToday: number;
   activityLog: SessionActivityEvent[];
+  weeklyProgress?: WeeklyWorkHoursProgress;
 }
 
 export interface WeeklyWorkHoursProgress {
@@ -236,11 +237,18 @@ export function resolveDateRangeForPeriod(
 export function calculateWeeklyWorkHoursProgress(params: {
   businessDate: string;
   weeklySessions: {
-    netDurationMins: number;
+    netDurationMins?: number | null;
+    grossDurationMins?: number | null;
     businessDate: string;
     status?: string;
-    punchInAt?: Date | string;
-    breaks?: { startTime: Date | string; endTime?: Date | string | null }[];
+    punchInAt?: Date | string | null;
+    punchOutAt?: Date | string | null;
+    breaks?: {
+      startTime?: Date | string | null;
+      endTime?: Date | string | null;
+      startedAt?: Date | string | null;
+      endedAt?: Date | string | null;
+    }[];
   }[];
   targetWeeklyHours?: number;
 }): WeeklyWorkHoursProgress {
@@ -254,20 +262,42 @@ export function calculateWeeklyWorkHoursProgress(params: {
 
   for (const s of params.weeklySessions) {
     if (s.businessDate >= weekStartDate && s.businessDate <= weekEndDate) {
-      let sessionMins = s.netDurationMins || 0;
+      let sessionMins = s.netDurationMins ?? s.grossDurationMins ?? 0;
       if (s.status === 'IN_PROGRESS' && s.punchInAt) {
         const punchInMs = new Date(s.punchInAt).getTime();
         let breakMins = 0;
         if (Array.isArray(s.breaks)) {
           for (const b of s.breaks) {
-            const bStart = new Date(b.startTime).getTime();
-            const bEnd = b.endTime ? new Date(b.endTime).getTime() : nowMs;
-            breakMins += Math.max(0, Math.floor((bEnd - bStart) / 60000));
+            const bStartVal = b.startedAt ?? b.startTime;
+            const bEndVal = b.endedAt ?? b.endTime;
+            const bStart = bStartVal ? new Date(bStartVal).getTime() : NaN;
+            const bEnd = bEndVal ? new Date(bEndVal).getTime() : nowMs;
+            if (!isNaN(bStart) && !isNaN(bEnd)) {
+              breakMins += Math.max(0, Math.floor((bEnd - bStart) / 60000));
+            }
           }
         }
         const grossMins = Math.max(0, Math.floor((nowMs - punchInMs) / 60000));
         sessionMins = Math.max(0, grossMins - breakMins);
+      } else if (!sessionMins && s.punchInAt && s.punchOutAt) {
+        const punchInMs = new Date(s.punchInAt).getTime();
+        const punchOutMs = new Date(s.punchOutAt).getTime();
+        let breakMins = 0;
+        if (Array.isArray(s.breaks)) {
+          for (const b of s.breaks) {
+            const bStartVal = b.startedAt ?? b.startTime;
+            const bEndVal = b.endedAt ?? b.endTime;
+            const bStart = bStartVal ? new Date(bStartVal).getTime() : NaN;
+            const bEnd = bEndVal ? new Date(bEndVal).getTime() : punchOutMs;
+            if (!isNaN(bStart) && !isNaN(bEnd)) {
+              breakMins += Math.max(0, Math.floor((bEnd - bStart) / 60000));
+            }
+          }
+        }
+        const grossMins = Math.max(0, Math.floor((punchOutMs - punchInMs) / 60000));
+        sessionMins = Math.max(0, grossMins - breakMins);
       }
+
       totalMins += sessionMins;
       if (s.businessDate < params.businessDate) {
         priorDaysMins += sessionMins;
