@@ -15,12 +15,21 @@ Modular monolith backend for a multi-company, multi-project, multi-site construc
 ## Getting started
 
 ```bash
-cp .env.example .env        # fill in local values (placeholders match docker-compose)
+git clone https://github.com/imaker-dev/Sarjan-Construction-Backend.git
+cd Sarjan-Construction-Backend
+git checkout foundation
+
+cp .env.example .env        # defaults already match docker-compose (pg :5432, redis :6379)
+# in .env, also set:  BOOTSTRAP_ADMIN_LOGIN_ID / BOOTSTRAP_ADMIN_PASSWORD
+# (SMTP_* optional — invite emails fall back to returning claimCode)
+
 npm install
 npm run db:generate         # generate Prisma client (no DB connection needed)
-docker-compose up -d        # start local PostgreSQL + Redis (compose v2 CLI)
-npx prisma migrate deploy   # apply migrations
-npm run dev                 # start dev server with watch mode
+docker compose up -d        # local PostgreSQL + Redis (older CLIs: docker-compose up -d)
+npm run db:migrate:deploy   # apply all migrations
+npm run db:seed             # permission catalogue (idempotent upsert)
+npm run db:bootstrap        # platform admin from BOOTSTRAP_ADMIN_* env vars
+npm run dev                 # dev server, watch mode → http://localhost:3000 (+ /docs)
 ```
 
 Health endpoints:
