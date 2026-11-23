@@ -74,7 +74,9 @@ export class RoleNotificationDispatcher {
         companyId,
         role: { key: { in: roleKeys } },
         revokedAt: null,
-        ...(scope?.scopeType === 'HEAD_OFFICE' && scope.scopeId ? { headOfficeId: scope.scopeId } : {}),
+        ...(scope?.scopeType === 'HEAD_OFFICE' && scope.scopeId
+          ? { headOfficeId: scope.scopeId }
+          : {}),
         ...(scope?.scopeType === 'PROJECT' && scope.scopeId ? { projectId: scope.scopeId } : {}),
         ...(scope?.scopeType === 'SITE' && scope.scopeId ? { siteId: scope.scopeId } : {}),
       },

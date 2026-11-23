@@ -296,9 +296,7 @@ describe('Attendance Types & Domain Helpers', () => {
           shiftDurationMins: 480,
           breakMode: 'DYNAMIC',
         },
-        breaks: [
-          { startedAt: new Date('2026-11-21T06:00:00.000Z'), durationMins: 30 },
-        ],
+        breaks: [{ startedAt: new Date('2026-11-21T06:00:00.000Z'), durationMins: 30 }],
       });
 
       // Proper 8 hours = 03:00 UTC + 8h = 11:00 UTC

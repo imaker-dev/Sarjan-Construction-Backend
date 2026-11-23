@@ -13,10 +13,7 @@ declare module 'fastify' {
  * when NOTIFICATIONS_WORKER is 'on' or 'auto' in production.
  */
 export default fp(
-  async function attendanceWorkerPlugin(
-    app: FastifyInstance,
-    opts: { worker?: AttendanceWorker },
-  ) {
+  async function attendanceWorkerPlugin(app: FastifyInstance, opts: { worker?: AttendanceWorker }) {
     const mode = app.config.NOTIFICATIONS_WORKER;
     const enabled = mode === 'on' || (mode === 'auto' && app.config.NODE_ENV === 'production');
     if (!enabled) return;

@@ -33,6 +33,7 @@ docker compose up -d      # local PostgreSQL + Redis (see docker-compose.yml)
 ## Core Engineering & Optimization Rules
 
 ### 1. Database Optimization (High Priority)
+
 - **N+1 Query Problem:** Avoid executing one query per record inside loops; batch lookups and pre-fetch relations.
 - **Indexing:** Add indexes to frequently searched, filtered, joined, and sorted columns.
 - **Select Specific Columns:** Avoid `SELECT *` / full record fetching when only a few fields are needed.
@@ -45,6 +46,7 @@ docker compose up -d      # local PostgreSQL + Redis (see docker-compose.yml)
 - **Composite Indexes:** Use multi-column composite indexes when multi-predicate filtering and sorting patterns justify them.
 
 ### 2. Memory Optimization (High Priority)
+
 - **Memory Leaks:** Avoid retaining unused references and detached object trees.
 - **Large Arrays:** Avoid buffering massive datasets into memory; paginate or chunk.
 - **Streams:** Stream large file uploads/downloads and exports instead of loading entire buffers into RAM.
@@ -56,6 +58,7 @@ docker compose up -d      # local PostgreSQL + Redis (see docker-compose.yml)
 - **Buffer Management:** Avoid redundant copies of binary data and large buffers.
 
 ### 3. API & Backend Performance
+
 - **Rate Limiting:** Protect public and expensive endpoints against abusive bursts.
 - **Request Validation:** Strict runtime schema validation (TypeBox) on every incoming body, query, and parameter.
 - **Response Compression:** Enable gzip/brotli compression for payload responses.
@@ -68,6 +71,7 @@ docker compose up -d      # local PostgreSQL + Redis (see docker-compose.yml)
 - **Payload Size:** Enforce strict request body limits (e.g. 1MB default) and trim response envelopes.
 
 ### 4. Security Best Practices (Critical)
+
 - **Password Storage:** Never store plain text passwords; use Argon2id with OWASP-recommended parameters.
 - **Secrets Management:** Secrets stay in `.env` and environment variables; never hardcode or expose secrets to frontend clients.
 - **Auth & Authz Separation:** Distinct authentication (`app.authenticate`) and granular authorization (`requirePermission`, scope checks).
@@ -80,6 +84,7 @@ docker compose up -d      # local PostgreSQL + Redis (see docker-compose.yml)
 - **Error Privacy:** Sanitize error responses; never leak database schemas, stack traces, or internal paths in production errors.
 
 ### 5. Clean Code & Architecture
+
 - **SOLID Principles:** Single Responsibility, Open-Closed, Liskov Substitution, Interface Segregation, Dependency Inversion.
 - **DRY:** Extract common logic, helpers, and schemas; avoid duplicate domain routines.
 - **KISS & YAGNI:** Keep implementations simple and maintainable; avoid speculative or over-engineered features.

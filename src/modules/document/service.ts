@@ -228,7 +228,12 @@ export class DocumentService {
   async getRawStream(
     companyId: string,
     documentId: string,
-  ): Promise<{ document: Document; contentType: string; fileName: string; stream: import('node:stream').Readable }> {
+  ): Promise<{
+    document: Document;
+    contentType: string;
+    fileName: string;
+    stream: import('node:stream').Readable;
+  }> {
     const doc = await this.deps.uow.run(async (repos) => {
       const d = await repos.documents.findById(companyId, documentId);
       if (d === null) throw new OrgEntityNotFoundError('DOCUMENT');

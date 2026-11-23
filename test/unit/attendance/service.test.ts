@@ -21,9 +21,16 @@ function createMockUow(repos: Partial<AttendanceRepos>): AttendanceUnitOfWork {
   const dailyReports = repos.dailyReports ?? {
     findBySiteAndDate: vi.fn().mockResolvedValue(null),
   };
+  // W4: site punches now require an exact-site active membership. Tests that
+  // predate the check get an "eligible at site" default; membership-focused
+  // tests override this object explicitly.
+  const memberships = repos.memberships ?? {
+    hasActiveAtHeadOffice: vi.fn().mockResolvedValue(false),
+    hasActiveAtSite: vi.fn().mockResolvedValue(true),
+  };
   return {
     run: async <T>(fn: (r: AttendanceRepos) => Promise<T>): Promise<T> => {
-      return fn({ dailyReports, ...repos } as AttendanceRepos);
+      return fn({ dailyReports, memberships, ...repos } as AttendanceRepos);
     },
   };
 }
@@ -1586,7 +1593,10 @@ describe('Head-office punch anchoring', () => {
         findById: vi.fn().mockResolvedValue(sampleEmployee),
       },
       headOffices: { findById: hoFindById },
-      memberships: { hasActiveAtHeadOffice: vi.fn().mockResolvedValue(true) },
+      memberships: {
+        hasActiveAtHeadOffice: vi.fn().mockResolvedValue(true),
+        hasActiveAtSite: vi.fn().mockResolvedValue(true),
+      },
       sessions: {
         findActive: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockImplementation(async (_c: string, data: unknown) => {
@@ -1636,7 +1646,10 @@ describe('Head-office punch anchoring', () => {
 
   it('rejects when the employee has no active membership at that head office', async () => {
     const { mockRepos } = hoRepos({
-      memberships: { hasActiveAtHeadOffice: vi.fn().mockResolvedValue(false) },
+      memberships: {
+        hasActiveAtHeadOffice: vi.fn().mockResolvedValue(false),
+        hasActiveAtSite: vi.fn().mockResolvedValue(true),
+      },
     });
     const service = new AttendanceService(createMockUow(mockRepos), authorizer);
     await expect(

@@ -58,6 +58,7 @@ Authorization: Bearer <platform-token>
 → 200 {
     "companyId": "<uuid>",
     "claimCode": "<raw-claim-code>",      // shown ONCE — save it
+    "claimUrl": "https://app…/onboard?token=…",  // null if no trusted origin configured
     "claimExpiresAt": "…"
   }
 ```
@@ -75,6 +76,22 @@ POST /api/v1/platform/companies/:companyId/claim-token       # reissue claim cod
 ---
 
 ## Step 2 — Company Admin claims the account (unauthenticated)
+
+> **Claim-code purposes.** Every code is bound to exactly one operation and one
+> company: `COMPANY_ONBOARD` (platform-issued; may activate the first admin AND
+> write the company profile/Head Office via `/auth/claim/onboard`) or
+> `EMPLOYEE_INVITE` (company-issued; activates only the bound employee's login —
+> it is rejected at `/auth/claim/onboard` without being consumed). Both are
+> accepted at `/auth/claim` and `/auth/claim/verify`; an `EMPLOYEE_INVITE` code
+> additionally requires the bound employee to still be ACTIVE and still linked
+> to the code's principal.
+>
+> **`claimUrl` trust.** URLs are built only from the configured `APP_BASE_URL`,
+> or from a request `Origin`/`x-frontend-url` that exactly matches the
+> `CLAIM_URL_ORIGINS` allowlist (HTTPS required in production). When no trusted
+> origin resolves, `claimUrl` is `null` — deliver the `claimCode` manually.
+> Raw codes are shown once in the response and emailed once — never stored or
+> logged (only the SHA-256 hash is persisted).
 
 Two options:
 
@@ -337,9 +354,14 @@ POST  /api/v1/employees/:id/memberships/:membershipId/end
 ```bash
 POST /api/v1/employees/:id/invite      # EMPLOYEE_INVITE
 { "loginId": "ramesh@sarjan.com", "loginIdType": "EMAIL" }
-→ { "claimCode": "<raw>", "claimExpiresAt": "…" }       # share with employee
+→ { "claimCode": "<raw>",                      # shown once — share manually or via email
+    "claimUrl": "https://…/verify-employee?token=…",  // null when no trusted origin
+    "claimExpiresAt": "…",
+    "delivery": "EMAIL_SENT|EMAIL_FAILED|NOT_ATTEMPTED" }
 
-POST /api/v1/employees/:id/invite/resend
+POST /api/v1/employees/:id/invite/resend       # revokes prior codes, mints a new one
+                                            # 409 ACCOUNT_ALREADY_CLAIMED once the
+                                            # employee has claimed (nothing to resend)
 POST /api/v1/auth/claim                # employee sets password (unauthenticated)
 { "token": "<claim-code>", "password": "…" }
 

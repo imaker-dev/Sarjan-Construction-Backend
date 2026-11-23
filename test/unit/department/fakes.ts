@@ -1,4 +1,11 @@
-import type { Department, Employee, HeadOffice, Project, Site } from '@prisma/client';
+import type {
+  Department,
+  DepartmentMembership,
+  Employee,
+  HeadOffice,
+  Project,
+  Site,
+} from '@prisma/client';
 import type {
   DepartmentRepos,
   DepartmentUnitOfWork,
@@ -19,6 +26,9 @@ export interface DeptStore {
   sites: Site[];
   headOffices: HeadOffice[];
   auditLog: AuditRecord[];
+  memberships: DepartmentMembership[];
+  /** Departments that had the default operation set seeded at create. */
+  seededOperations: { departmentId: string; scopeType: string }[];
 }
 
 export function emptyDeptStore(): DeptStore {
@@ -29,6 +39,8 @@ export function emptyDeptStore(): DeptStore {
     sites: [],
     headOffices: [],
     auditLog: [],
+    memberships: [],
+    seededOperations: [],
   };
 }
 
@@ -140,13 +152,20 @@ export function makeDepartmentRepos(store: DeptStore): DepartmentRepos {
       },
       list: async (companyId, filter) =>
         store.departments
-          .filter(
-            (d) =>
-              d.companyId === companyId &&
-              (filter?.status === undefined || d.status === filter.status) &&
-              (filter?.projectId === undefined || d.projectId === filter.projectId) &&
-              (filter?.siteId === undefined || d.siteId === filter.siteId),
-          )
+          .filter((d) => {
+            if (d.companyId !== companyId) return false;
+            if (filter?.status !== undefined && d.status !== filter.status) return false;
+            if (filter?.projectId !== undefined) {
+              const siteProject =
+                d.siteId !== null
+                  ? store.sites.find((s) => s.id === d.siteId)?.projectId
+                  : undefined;
+              if (d.projectId !== filter.projectId && siteProject !== filter.projectId) {
+                return false;
+              }
+            }
+            return filter?.siteId === undefined || d.siteId === filter.siteId;
+          })
           .map((d) => {
             const ho = store.headOffices.find(
               (h) => h.id === d.baseHeadOfficeId && h.companyId === companyId,
@@ -194,6 +213,30 @@ export function makeDepartmentRepos(store: DeptStore): DepartmentRepos {
         dept.version += 1;
         return { ...dept };
       },
+      clearHeadIf: async (companyId, id, employeeId) => {
+        const dept = store.departments.find(
+          (d) => d.id === id && d.companyId === companyId && d.headEmployeeId === employeeId,
+        );
+        if (!dept) return { count: 0 };
+        dept.headEmployeeId = null;
+        dept.version += 1;
+        return { count: 1 };
+      },
+      seedDefaultOperations: async (companyId, departmentId, scopeType) => {
+        store.seededOperations.push({ departmentId, scopeType });
+        return 0;
+      },
+    },
+    memberships: {
+      hasActive: async (companyId, departmentId, employeeId, at) =>
+        store.memberships.some(
+          (m) =>
+            m.companyId === companyId &&
+            m.departmentId === departmentId &&
+            m.employeeId === employeeId &&
+            m.startedAt <= at &&
+            (m.endedAt === null || m.endedAt > at),
+        ),
     },
     audit: {
       record: async (entry) => {

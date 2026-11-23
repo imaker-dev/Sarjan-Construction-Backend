@@ -30,7 +30,9 @@ const PublishFormBody = Type.Object({
 });
 
 const ListFormsQuery = Type.Object({
-  status: Type.Optional(Type.Union([Type.Literal('DRAFT'), Type.Literal('ACTIVE'), Type.Literal('ARCHIVED')])),
+  status: Type.Optional(
+    Type.Union([Type.Literal('DRAFT'), Type.Literal('ACTIVE'), Type.Literal('ARCHIVED')]),
+  ),
   operationId: Type.Optional(Type.String({ format: 'uuid' })),
 });
 
@@ -150,4 +152,3 @@ export function formRoutes(service: FormService) {
     );
   };
 }
-

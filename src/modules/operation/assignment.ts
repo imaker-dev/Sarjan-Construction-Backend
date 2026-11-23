@@ -200,9 +200,10 @@ export class OperationAssignmentService {
       scopeId: companyId,
     });
     return this.run(async (r) => {
-      await this.assertActiveDept(companyId, departmentId);
+      const dept = await this.assertActiveDept(companyId, departmentId);
       const op = await r.catalogue.find(operationKey);
       if (!op) throw new OrgEntityNotFoundError('OPERATION');
+      this.assertScopeApplicability(op, dept.scopeType);
       try {
         const row = await r.deptOps.upsert({
           companyId,
@@ -286,12 +287,13 @@ export class OperationAssignmentService {
       scopeId: companyId,
     });
     return this.run(async (r) => {
-      await this.assertActiveDept(companyId, departmentId);
+      const dept = await this.assertActiveDept(companyId, departmentId);
       const op = await r.catalogue.find(operationKey);
       if (!op) throw new OrgEntityNotFoundError('OPERATION');
 
       const existing = await r.deptOps.findByKey(companyId, departmentId, operationKey);
       const nextStatus = targetStatus ?? (existing?.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE');
+      if (nextStatus === 'ACTIVE') this.assertScopeApplicability(op, dept.scopeType);
 
       const row = await r.deptOps.upsert({
         companyId,
@@ -493,6 +495,7 @@ export class OperationAssignmentService {
       await this.assertActiveEmployee(companyId, employeeId);
       const op = await r.catalogue.find(operationKey);
       if (!op) throw new OrgEntityNotFoundError('OPERATION');
+      await this.assertDirectGrantEligible(companyId, employeeId, op);
 
       try {
         const row = await r.empOps.upsert({
@@ -630,6 +633,9 @@ export class OperationAssignmentService {
       }
 
       const nextStatus = targetStatus ?? (currentStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE');
+      if (nextStatus === 'ACTIVE') {
+        await this.assertDirectGrantEligible(companyId, employeeId, op);
+      }
 
       const row = await r.empOps.upsert({
         companyId,
@@ -696,7 +702,12 @@ export class OperationAssignmentService {
       deptIds.length === 0
         ? []
         : this.prisma.departmentOperation.findMany({
-            where: { companyId, departmentId: { in: deptIds }, status: 'ACTIVE' },
+            where: {
+              companyId,
+              departmentId: { in: deptIds },
+              status: 'ACTIVE',
+              department: { status: 'ACTIVE' },
+            },
             select: { operationKey: true },
           }),
       this.getRoleScopedOperationKeys(companyId, employeeId),
@@ -706,9 +717,16 @@ export class OperationAssignmentService {
         .filter((e) => e.status === 'INACTIVE' || e.status === 'REVOKED')
         .map((e) => e.operationKey),
     );
-    const directActiveKeys = empOps.filter((e) => e.status === 'ACTIVE').map((e) => e.operationKey);
-
     const enabledSet = new Set(enabled.map((e) => e.operationKey));
+    // Direct grants are only effective while backed by an eligible department:
+    // the op must still be ACTIVE on an ACTIVE department the employee holds
+    // an open membership in. Disabling the op everywhere, ending the
+    // membership, or deactivating the department removes access on the next
+    // authorization check — the row alone never grants coverage.
+    const directActiveKeys = empOps
+      .filter((e) => e.status === 'ACTIVE' && enabledSet.has(e.operationKey))
+      .map((e) => e.operationKey);
+
     const inheritedActive = Array.from(enabledSet).filter((k) => !inactiveKeys.has(k));
     const roleActive = roleScopedKeys.filter((k) => !inactiveKeys.has(k));
     return Array.from(new Set([...inheritedActive, ...directActiveKeys, ...roleActive])).sort();
@@ -719,8 +737,10 @@ export class OperationAssignmentService {
    * RoleAssignments (PROJECT scope), then collect ACTIVE operations enabled
    * on departments scoped to those projects or to sites beneath them.
    * Company-wide (Head Office) departments are structurally out of scope —
-   * only projectId/siteId-scoped departments match. Sensitive operations are
-   * never covered by role access.
+   * only projectId/siteId-scoped departments match. Only catalogue entries
+   * explicitly marked leadershipInheritable (and non-sensitive) are covered;
+   * approval/payment/payroll and other high-impact ops are never inherited —
+   * they require department membership plus an explicit per-employee grant.
    */
   async getLeadershipScopedOperationKeys(companyId: string, employeeId: string): Promise<string[]> {
     const emp = await this.prisma.employee.findFirst({
@@ -759,11 +779,20 @@ export class OperationAssignmentService {
           status: 'ACTIVE',
           OR: [{ projectId: { in: projectIds } }, { siteId: { in: siteIds } }],
         },
-        operation: { sensitive: false },
+        operation: { sensitive: false, leadershipInheritable: true },
       },
-      select: { operationKey: true },
+      select: {
+        operationKey: true,
+        department: { select: { scopeType: true } },
+        operation: { select: { appliesTo: true } },
+      },
     });
-    return deptOps.map((d) => d.operationKey);
+    // Belt-and-suspenders: the op must also be valid for the department's
+    // scope under catalogue metadata, in case it was enabled before the
+    // appliesTo rule existed.
+    return deptOps
+      .filter((d) => d.operation.appliesTo.includes(d.department.scopeType))
+      .map((d) => d.operationKey);
   }
 
   /** Union of every role-derived coverage source (PD/PI projects + Finance roles). */
@@ -816,11 +845,320 @@ export class OperationAssignmentService {
     return entries.map((e) => e.key);
   }
 
+  /**
+   * Effective-operation inspection for a project or site: which employees can
+   * perform which catalogue operations inside that scope, with source
+   * attribution. Keyset-paginated on (employeeId, operationKey).
+   *
+   * - PROJECT: departments scoped to the project or any of its sites, plus
+   *   leadership coverage from active PD/PI assignments on the project.
+   * - SITE: departments scoped to the site, plus leadership coverage from
+   *   active PD/PI assignments on the site's parent project.
+   * Only ACTIVE rows contribute — revoked grants, ended memberships, disabled
+   * department ops, and inactive departments never appear. Sensitive employee
+   * fields are never selected; only id/employeeCode/displayName are returned.
+   */
+  async listEffectiveOperationsForScope(
+    actor: ActorContext,
+    companyId: string,
+    target: { scopeType: 'PROJECT' | 'SITE'; scopeId: string },
+    options: { cursor?: string | undefined; limit?: number | undefined } = {},
+  ) {
+    await this.authorizer.assertPermission(
+      actor.actorId,
+      target.scopeType === 'PROJECT' ? 'ORG_PROJECT_READ' : 'ORG_SITE_READ',
+      { companyId, scopeType: target.scopeType, scopeId: target.scopeId },
+    );
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+
+    // Same-company parent check + resolve the dept set for the scope.
+    let projectId: string;
+    let siteId: string | null = null;
+    if (target.scopeType === 'PROJECT') {
+      const project = await this.prisma.project.findFirst({
+        where: { id: target.scopeId, companyId },
+        select: { id: true },
+      });
+      if (!project) throw new OrgEntityNotFoundError('PROJECT');
+      projectId = project.id;
+    } else {
+      const site = await this.prisma.site.findFirst({
+        where: { id: target.scopeId, companyId },
+        select: { id: true, projectId: true },
+      });
+      if (!site) throw new OrgEntityNotFoundError('SITE');
+      projectId = site.projectId;
+      siteId = site.id;
+    }
+
+    const departments = await this.prisma.department.findMany({
+      where:
+        target.scopeType === 'PROJECT'
+          ? {
+              companyId,
+              status: 'ACTIVE',
+              OR: [{ projectId }, { site: { is: { projectId, companyId } } }],
+            }
+          : { companyId, status: 'ACTIVE', siteId: siteId ?? '' },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        scopeType: true,
+        projectId: true,
+        siteId: true,
+      },
+    });
+    const deptById = new Map(departments.map((d) => [d.id, d]));
+    const deptIds = departments.map((d) => d.id);
+
+    const [deptOps, memberships, catalogue] = await Promise.all([
+      deptIds.length === 0
+        ? []
+        : this.prisma.departmentOperation.findMany({
+            where: { companyId, departmentId: { in: deptIds }, status: 'ACTIVE' },
+            select: { departmentId: true, operationKey: true },
+          }),
+      deptIds.length === 0
+        ? []
+        : this.prisma.departmentMembership.findMany({
+            where: { companyId, departmentId: { in: deptIds }, endedAt: null },
+            select: { employeeId: true, departmentId: true },
+          }),
+      this.prisma.operationCatalogueEntry.findMany({
+        select: {
+          key: true,
+          domain: true,
+          name: true,
+          sensitive: true,
+          appliesTo: true,
+          leadershipInheritable: true,
+        },
+      }),
+    ]);
+    const opByKey = new Map(catalogue.map((c) => [c.key, c]));
+
+    // Dept ops valid for their dept's scope only.
+    const validDeptOps = deptOps.filter((d) => {
+      const dept = deptById.get(d.departmentId);
+      const op = opByKey.get(d.operationKey);
+      return dept !== undefined && (op?.appliesTo.includes(dept.scopeType) ?? false);
+    });
+
+    // Active PD/PI assignments on the (parent) project → leadership coverage.
+    const now = new Date();
+    const leadershipAssignments = await this.prisma.roleAssignment.findMany({
+      where: {
+        companyId,
+        revokedAt: null,
+        scopeType: 'PROJECT',
+        projectId,
+        role: { key: { in: [...PROJECT_LEADERSHIP_KEYS] } },
+        OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }],
+        AND: [{ OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }] }],
+      },
+      select: { id: true, principalId: true, projectId: true, role: { select: { key: true } } },
+    });
+    const leaderPrincipalIds = leadershipAssignments.map((a) => a.principalId);
+
+    const allEmployeeIds = [...new Set(memberships.map((m) => m.employeeId))];
+    const employees = await this.prisma.employee.findMany({
+      where: {
+        companyId,
+        status: 'ACTIVE',
+        OR: [{ id: { in: allEmployeeIds } }, { principalId: { in: leaderPrincipalIds } }],
+      },
+      select: { id: true, employeeCode: true, displayName: true, principalId: true },
+    });
+    const empById = new Map(employees.map((e) => [e.id, e]));
+    const empByPrincipal = new Map<string, (typeof employees)[number]>();
+    for (const e of employees) {
+      if (e.principalId !== null) empByPrincipal.set(e.principalId, e);
+    }
+
+    const empOps = await this.prisma.employeeOperation.findMany({
+      where: { companyId, employeeId: { in: employees.map((e) => e.id) } },
+      select: { employeeId: true, operationKey: true, status: true },
+    });
+    const empOpStatus = new Map(empOps.map((e) => [`${e.employeeId}|${e.operationKey}`, e.status]));
+
+    interface Row {
+      employeeId: string;
+      operationKey: string;
+      source: 'DEPARTMENT' | 'DIRECT' | 'ROLE';
+      inherited: boolean;
+      departmentId: string | null;
+      roleAssignmentId: string | null;
+      roleKey: string | null;
+    }
+    const rows = new Map<string, Row>();
+    const suppressed = (employeeId: string, key: string) => {
+      const s = empOpStatus.get(`${employeeId}|${key}`);
+      return s === 'INACTIVE' || s === 'REVOKED';
+    };
+
+    // Department coverage — a DIRECT row exists but stays dept-backed.
+    for (const m of memberships) {
+      if (!empById.has(m.employeeId)) continue; // inactive employee
+      for (const dOp of validDeptOps) {
+        if (dOp.departmentId !== m.departmentId) continue;
+        if (suppressed(m.employeeId, dOp.operationKey)) continue;
+        const key = `${m.employeeId}|${dOp.operationKey}`;
+        const explicit = empOpStatus.get(key) === 'ACTIVE';
+        const existing = rows.get(key);
+        // Prefer DIRECT attribution; keep the explaining department.
+        if (existing === undefined || (explicit && existing.source !== 'DIRECT')) {
+          rows.set(key, {
+            employeeId: m.employeeId,
+            operationKey: dOp.operationKey,
+            source: explicit ? 'DIRECT' : 'DEPARTMENT',
+            inherited: !explicit,
+            departmentId: dOp.departmentId,
+            roleAssignmentId: null,
+            roleKey: null,
+          });
+        }
+      }
+    }
+
+    // Leadership coverage — inheritable ops enabled on this scope's depts.
+    const leadershipKeys = new Set(
+      validDeptOps
+        .filter((d) => {
+          const op = opByKey.get(d.operationKey);
+          return op !== undefined && !op.sensitive && op.leadershipInheritable;
+        })
+        .map((d) => d.operationKey),
+    );
+    const leaderDeptByKey = new Map<string, string>();
+    for (const d of validDeptOps) {
+      if (leadershipKeys.has(d.operationKey) && !leaderDeptByKey.has(d.operationKey)) {
+        leaderDeptByKey.set(d.operationKey, d.departmentId);
+      }
+    }
+    for (const a of leadershipAssignments) {
+      const emp = empByPrincipal.get(a.principalId);
+      if (emp === undefined) continue; // no active employee row for this principal
+      for (const key of leadershipKeys) {
+        if (suppressed(emp.id, key)) continue;
+        const rowKey = `${emp.id}|${key}`;
+        if (rows.has(rowKey)) continue; // already covered by dept/direct
+        rows.set(rowKey, {
+          employeeId: emp.id,
+          operationKey: key,
+          source: 'ROLE',
+          inherited: true,
+          departmentId: leaderDeptByKey.get(key) ?? null,
+          roleAssignmentId: a.id,
+          roleKey: a.role.key,
+        });
+      }
+    }
+
+    const sorted = [...rows.values()].sort((a, b) =>
+      `${a.employeeId}|${a.operationKey}`.localeCompare(`${b.employeeId}|${b.operationKey}`),
+    );
+    let start = 0;
+    const cursor = options.cursor;
+    if (cursor !== undefined && cursor.length > 0) {
+      const idx = sorted.findIndex((r) => `${r.employeeId}|${r.operationKey}` > cursor);
+      start = idx === -1 ? sorted.length : idx;
+    }
+    const page = sorted.slice(start, start + limit);
+    const next = sorted[start + limit];
+    const items = page.map((r) => {
+      const emp = empById.get(r.employeeId);
+      const op = opByKey.get(r.operationKey);
+      const dept = r.departmentId !== null ? deptById.get(r.departmentId) : undefined;
+      return {
+        employeeId: r.employeeId,
+        employeeCode: emp?.employeeCode ?? '',
+        displayName: emp?.displayName ?? '',
+        operationKey: r.operationKey,
+        name: op?.name ?? r.operationKey,
+        domain: op?.domain ?? 'OPERATIONS',
+        sensitive: op?.sensitive ?? false,
+        leadershipInheritable: op?.leadershipInheritable ?? false,
+        source: r.source,
+        inherited: r.inherited,
+        department:
+          dept === undefined
+            ? null
+            : {
+                id: dept.id,
+                code: dept.code,
+                name: dept.name,
+                scopeType: dept.scopeType,
+              },
+        roleAssignment:
+          r.roleAssignmentId === null
+            ? null
+            : { id: r.roleAssignmentId, roleKey: r.roleKey, scopeType: 'PROJECT', projectId },
+      };
+    });
+    return {
+      items,
+      nextCursor: next === undefined ? null : `${next.employeeId}|${next.operationKey}`,
+    };
+  }
+
   private async assertActiveDept(companyId: string, departmentId: string) {
     const dept = await this.prisma.department.findFirst({ where: { id: departmentId, companyId } });
     if (!dept) throw new OrgEntityNotFoundError('DEPARTMENT');
     if (dept.status !== 'ACTIVE') {
       throw new OrgValidationError('departmentId', 'department must be active');
+    }
+    return dept;
+  }
+
+  /** The op must be valid for the department's scope under catalogue metadata. */
+  private assertScopeApplicability(op: { appliesTo: string[] }, scopeType: string) {
+    if (!op.appliesTo.includes(scopeType)) {
+      throw new OrgValidationError(
+        'operationKey',
+        `operation is not applicable to ${scopeType}-scoped departments`,
+      );
+    }
+  }
+
+  /**
+   * Direct-grant eligibility: the employee must hold an effective open
+   * membership in an ACTIVE department that has the operation enabled and
+   * ACTIVE, and the operation must be valid for that department's scope.
+   * No direct-override bypass exists — leadership coverage is the separate
+   * approved path for PD/PI.
+   */
+  private async assertDirectGrantEligible(
+    companyId: string,
+    employeeId: string,
+    op: { key: string; appliesTo: string[] },
+  ) {
+    const memberships = await this.prisma.departmentMembership.findMany({
+      where: { companyId, employeeId, endedAt: null },
+      select: { departmentId: true },
+    });
+    const deptIds = memberships.map((m) => m.departmentId);
+    if (deptIds.length === 0) {
+      throw new OrgValidationError(
+        'operationKey',
+        'operation must be enabled on an active department the employee belongs to',
+      );
+    }
+    const deptOps = await this.prisma.departmentOperation.findMany({
+      where: {
+        companyId,
+        departmentId: { in: deptIds },
+        operationKey: op.key,
+        status: 'ACTIVE',
+        department: { status: 'ACTIVE' },
+      },
+      select: { department: { select: { scopeType: true } } },
+    });
+    if (!deptOps.some((d) => op.appliesTo.includes(d.department.scopeType))) {
+      throw new OrgValidationError(
+        'operationKey',
+        'operation must be enabled on an active department the employee belongs to',
+      );
     }
   }
 

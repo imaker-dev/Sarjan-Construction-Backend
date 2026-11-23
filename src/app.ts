@@ -25,6 +25,8 @@ import { RoleNotificationDispatcher } from './modules/notification/role-dispatch
 import { notificationRoutes } from './modules/notification/routes.js';
 import notificationWorkerPlugin from './plugins/notification-worker.js';
 import { OrganizationService } from './modules/organization/service.js';
+import { DelegationService } from './modules/organization/delegation.js';
+import { delegationRoutes } from './modules/organization/delegation-routes.js';
 import { DepartmentService } from './modules/department/service.js';
 import { organizationRoutes } from './modules/organization/routes.js';
 import { departmentRoutes } from './modules/department/routes.js';
@@ -151,6 +153,23 @@ const OPERATION_DOCS: Record<
       'isPrimary is NOT client-controlled — the first head office is always the company primary.',
   },
   'GET /org/company': { summary: 'Read own company profile', permission: 'ORG_COMPANY_READ' },
+  'GET /org/company/delegations': {
+    summary: 'Read company delegation switches',
+    description:
+      'Delegation switches are all OFF by default and only ever amplify ' +
+      'holders of the matching SCOPED permission inside their assigned ' +
+      'project/site — they never grant company-wide or sibling access.',
+    permission: 'ORG_COMPANY_READ',
+  },
+  'PATCH /org/company/delegations': {
+    summary: 'Update company delegation switches',
+    description:
+      'siteCreate/siteUpdate delegate site administration; deptManage ' +
+      'delegates project- and site-scoped department administration ' +
+      '(company/HO departments are never delegated). expectedVersion guards ' +
+      'optimistic concurrency (409 on stale).',
+    permission: 'ORG_COMPANY_UPDATE',
+  },
   'PATCH /org/company': {
     summary: 'Update company profile (optimistic version)',
     permission: 'ORG_COMPANY_UPDATE',
@@ -274,7 +293,9 @@ const OPERATION_DOCS: Record<
       'Optional siteType, land/parcel, facilities, contact, and sensitive ' +
       'access/emergency fields (the latter two are written here but only ' +
       'readable with ORG_SITE_SENSITIVE_READ). landParcelId must reference a ' +
-      'parcel of the same project.',
+      'parcel of the same project. Authorization evaluates at the body ' +
+      'projectId: a company-scope grant covers any project; a project-scoped ' +
+      'grant additionally requires the company siteCreate delegation switch.',
     permission: 'ORG_SITE_CREATE',
   },
   'GET /org/sites/:id': {
@@ -284,11 +305,109 @@ const OPERATION_DOCS: Record<
       'of ORG_SITE_SENSITIVE_READ; omitted otherwise.',
     permission: 'ORG_SITE_READ',
   },
+  'GET /org/projects/:id/effective-operations': {
+    summary: 'Inspect effective operations within a project',
+    description:
+      'Lists which employees can perform which catalogue operations inside the ' +
+      'project (and its sites), with source attribution: DEPARTMENT (inherited ' +
+      'from an active dept enablement), DIRECT (explicit per-employee grant ' +
+      'backed by dept enablement), or ROLE (PD/PI leadership coverage of ' +
+      'leadership-inheritable ops). Keyset-paginated via cursor; only safe ' +
+      'employee identity fields are returned.',
+    permission: 'ORG_PROJECT_READ',
+  },
+  'GET /org/sites/:id/effective-operations': {
+    summary: 'Inspect effective operations within a site',
+    description:
+      'Same shape as the project inspection endpoint, scoped to departments ' +
+      'of the site plus leadership coverage inherited from the parent ' +
+      "project's active PD/PI assignments.",
+    permission: 'ORG_SITE_READ',
+  },
+  'GET /org/projects/:id/activity': {
+    summary: 'Project activity feed (includes child sites)',
+    description:
+      'Audit events whose project scope is proven from server-side entity ' +
+      'data — caller metadata never establishes scope, and events with ' +
+      'unresolvable or security-sensitive entities are excluded. Keyset ' +
+      'cursor on (occurredAt, id); sensitive changedFields values are ' +
+      'redacted and audit metadata is never returned.',
+    permission: 'ORG_PROJECT_READ',
+  },
+  'GET /org/sites/:id/activity': {
+    summary: 'Site activity feed',
+    description:
+      'Same shape as the project activity feed, restricted to events ' +
+      'provably scoped to this site.',
+    permission: 'ORG_SITE_READ',
+  },
+  'POST /org/sites/:id/workforce/:employeeId/suspend': {
+    summary: 'Suspend site workforce member',
+    description:
+      'Ends all ACTIVE memberships in departments scoped to THIS site ' +
+      '(server-controlled endedAt, endReason=SUSPENDED). A project-only ' +
+      'membership is not in scope. Body: reason (required, 1-500 chars, ' +
+      'audit-only), expectedReturnDate (optional ISO date -> suspendUntil). ' +
+      'Employee.status/Principal.status are never changed. Scoped callers ' +
+      'need EMPLOYEE_MEMBER_MANAGE at this site plus the memberSuspend ' +
+      'delegation switch; company-wide EMPLOYEE_MANAGE/' +
+      'EMPLOYEE_MEMBER_MANAGE bypasses the switch. 409 WORKFORCE_NOT_ACTIVE ' +
+      'when no active in-scope memberships; 409 AMBIGUOUS_PRIMARY when the ' +
+      'remaining effective set would lack a primary.',
+    permission: 'EMPLOYEE_MEMBER_MANAGE (scoped + memberSuspend) or company-wide',
+  },
+  'POST /org/sites/:id/workforce/:employeeId/exit': {
+    summary: 'Permanently exit site workforce member',
+    description:
+      'Ends ACTIVE in-scope memberships with endReason=EXITED and appends a ' +
+      'SiteWorkforceExit marker that blocks reinstatement of this episode. ' +
+      'Rows already SUSPENDED keep their reason — history is never rewritten. ' +
+      'Body: reason (required, 1-500 chars). Requires memberExit delegation ' +
+      'switch (or company-wide EMPLOYEE_MANAGE/EMPLOYEE_MEMBER_MANAGE). ' +
+      '409 ALREADY_EXITED on repeat exit; 404 when no in-scope rows exist.',
+    permission: 'EMPLOYEE_MEMBER_MANAGE (scoped + memberExit) or company-wide',
+  },
+  'POST /org/sites/:id/workforce/:employeeId/reinstate': {
+    summary: 'Reinstate suspended site workforce member',
+    description:
+      'Creates NEW membership rows for the whole eligible SUSPENDED set ' +
+      '(ended rows are never reopened; supersededBy links them). ' +
+      'All-or-nothing: any inactive, exit-marked, or out-of-scope department ' +
+      'aborts the restore. Body: note (optional, <=500 chars). Requires the ' +
+      'memberSuspend switch or company-wide admin. 409 NOTHING_TO_REINSTATE, ' +
+      'ALREADY_EXITED, or AMBIGUOUS_PRIMARY as applicable.',
+    permission: 'EMPLOYEE_MEMBER_MANAGE (scoped + memberSuspend) or company-wide',
+  },
+  'POST /org/projects/:id/workforce/:employeeId/suspend': {
+    summary: 'Suspend project workforce member',
+    description:
+      'Same contract as the site suspend route; the affected set covers ' +
+      'departments pinned to this project AND its child-site departments.',
+    permission: 'EMPLOYEE_MEMBER_MANAGE (scoped + memberSuspend) or company-wide',
+  },
+  'POST /org/projects/:id/workforce/:employeeId/exit': {
+    summary: 'Permanently exit project workforce member',
+    description:
+      'Same contract as the site exit route; the marker covers the whole ' +
+      'project including child sites.',
+    permission: 'EMPLOYEE_MEMBER_MANAGE (scoped + memberExit) or company-wide',
+  },
+  'POST /org/projects/:id/workforce/:employeeId/reinstate': {
+    summary: 'Reinstate suspended project workforce member',
+    description:
+      'Same contract as the site reinstate route; restorable rows are those ' +
+      'in project departments or child-site departments not covered by an ' +
+      'exit marker.',
+    permission: 'EMPLOYEE_MEMBER_MANAGE (scoped + memberSuspend) or company-wide',
+  },
   'PATCH /org/sites/:id': {
     summary: 'Update site',
     description:
       'Patch semantics: absent keys untouched, explicit null clears the field. ' +
-      'expectedVersion guards optimistic concurrency (409 on stale).',
+      'expectedVersion guards optimistic concurrency (409 on stale). A ' +
+      'project/site-scoped ORG_SITE_UPDATE grant additionally requires the ' +
+      'company siteUpdate delegation switch; company-scope grants are ' +
+      'unaffected.',
     permission: 'ORG_SITE_UPDATE',
   },
   'POST /org/sites/:id/documents': {
@@ -325,7 +444,9 @@ const OPERATION_DOCS: Record<
       'PROCUREMENT, STORE, MACHINERY, SAFETY, QUALITY, SITE_ENGINEERING, KITCHEN, OPERATIONS, CUSTOM); ' +
       'categoryLabel is required when category=CUSTOM. scopeId is required for PROJECT/SITE scopes ' +
       'and omitted for COMPANY. baseHeadOfficeId is physical location only — never a permission scope. ' +
-      'capabilityKey is an internal routing identifier.',
+      'capabilityKey is an internal routing identifier. Authorization evaluates at the declared ' +
+      'scopeType/scopeId: project/site-scoped mutations by non-company holders also require the ' +
+      'company deptManage delegation switch; company departments keep the company-scope check.',
     permission: 'DEPARTMENT_CONFIGURE',
   },
   'GET /departments/:id': {
@@ -984,6 +1105,9 @@ export interface BuildAppOptions {
     employeeDocumentService?: EmployeeDocumentService;
     documentService?: DocumentService;
     organizationService?: OrganizationService;
+    delegationService?: DelegationService;
+    departmentService?: DepartmentService;
+    auditService?: AuditService;
     // Test hook: inject the sentinel platform-company id (null = none).
     platformCompanyId?: string | null;
   };
@@ -1377,12 +1501,23 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       },
       (companyId, employeeId) => opAssignment.getEffectiveOperations(companyId, employeeId),
     );
+  const delegationService =
+    services.delegationService ??
+    new DelegationService(app.prisma, {
+      assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+        accessControl.assertPermission(pid, key, target),
+    });
+  await app.register(delegationRoutes(delegationService), { prefix: '/api/v1' });
   await app.register(
     organizationRoutes(
       services.organizationService ??
         new OrganizationService(new PrismaOrgUnitOfWork(app.prisma), {
           hasPermission: (pid: string, key: string, target: ScopeTarget) =>
             accessControl.hasPermission(pid, key, target),
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+          delegationEnabled: (companyId: string, flag) =>
+            delegationService.isEnabled(companyId, flag),
           assertInitialBudgetAuthority: (actor, companyId) =>
             financeService.assertInitialBudgetAuthority(actor, companyId),
         }),
@@ -1394,10 +1529,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   );
   await app.register(
     departmentRoutes(
-      new DepartmentService(new PrismaDepartmentUnitOfWork(app.prisma), {
-        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-          accessControl.assertPermission(pid, key, target),
-      }),
+      services.departmentService ??
+        new DepartmentService(new PrismaDepartmentUnitOfWork(app.prisma), {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+          hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.hasPermission(pid, key, target),
+          delegationEnabled: (companyId: string, flag) =>
+            delegationService.isEnabled(companyId, flag),
+        }),
     ),
     { prefix: '/api/v1' },
   );
@@ -1421,6 +1561,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           {
             assertPermission: (pid: string, key: string, target: ScopeTarget) =>
               accessControl.assertPermission(pid, key, target),
+            hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.hasPermission(pid, key, target),
+            delegationEnabled: (companyId: string, flag) =>
+              delegationService.isEnabled(companyId, flag),
           },
           userProfileCache,
         ),
@@ -1430,6 +1574,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           userProfileCache,
           mailService,
           app.config.APP_BASE_URL,
+          app.config.CLAIM_URL_ORIGINS.split(',')
+            .map((o) => o.trim())
+            .filter((o) => o !== ''),
+          nodeEnv === 'production',
         ),
       employeeDocumentService,
     ),
@@ -1511,10 +1659,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(financeRoutes(financeService), { prefix: '/api/v1' });
   await app.register(
     auditRoutes(
-      new AuditService(app.prisma, {
-        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-          accessControl.assertPermission(pid, key, target),
-      }),
+      services.auditService ??
+        new AuditService(app.prisma, {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+        }),
     ),
     { prefix: '/api/v1' },
   );
@@ -1526,6 +1675,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           app.config.APP_BASE_URL,
           (actor, principalId, meta) =>
             authService.createImpersonationSession(actor, principalId, meta),
+          nodeEnv === 'production',
         ),
       platformResolver,
     ),

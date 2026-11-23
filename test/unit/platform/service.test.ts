@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { PlatformService } from '../../../src/modules/platform/service.js';
 import type {
@@ -119,6 +120,23 @@ function makeUow(store: Store): PlatformUnitOfWork {
         }
         return count;
       },
+      findBound: async (companyId, employeeId) => {
+        const e = store.employees.find((x) => x.id === employeeId && x.companyId === companyId);
+        if (e === undefined) return null;
+        return {
+          id: e.id,
+          status: e.status as string,
+          principalId: (e.principalId ?? null) as string | null,
+          displayName: (e.displayName ?? '') as string,
+        };
+      },
+      findByPrincipalCompany: async (principalId, companyId) => {
+        const e = store.employees.find(
+          (x) => x.principalId === principalId && x.companyId === companyId,
+        );
+        if (e === undefined) return null;
+        return { id: e.id, displayName: (e.displayName ?? '') as string };
+      },
     },
     roles: {
       create: async (data) => {
@@ -162,7 +180,13 @@ function makeUow(store: Store): PlatformUnitOfWork {
         );
         if (!t) return null;
         t.consumedAt = now;
-        return { id: t.id, principalId: t.principalId as string };
+        return {
+          id: t.id,
+          principalId: t.principalId as string,
+          purpose: (t.purpose ?? null) as 'COMPANY_ONBOARD' | 'EMPLOYEE_INVITE' | null,
+          companyId: (t.companyId ?? null) as string | null,
+          employeeId: (t.employeeId ?? null) as string | null,
+        };
       },
       revokeActive: async (principalId, at) => {
         let count = 0;
@@ -180,22 +204,27 @@ function makeUow(store: Store): PlatformUnitOfWork {
         );
         if (!t) return null;
         const p = store.principals.find((x) => x.id === t.principalId);
-        const emp = store.employees.find((x) => x.principalId === t.principalId);
-        const comp = store.companies.find((x) => x.id === emp?.companyId);
+        const comp = store.companies.find((x) => x.id === t.companyId);
+        if (comp === undefined) return null; // unbound token → fail closed
+        const emp =
+          t.employeeId !== undefined && t.employeeId !== null
+            ? store.employees.find((x) => x.id === t.employeeId)
+            : store.employees.find(
+                (x) => x.principalId === t.principalId && x.companyId === comp.id,
+              );
         const loginId = typeof p?.loginId === 'string' ? p.loginId : '';
         const displayName = typeof emp?.displayName === 'string' ? emp.displayName : '';
-        const companyId = typeof comp?.id === 'string' ? comp.id : '';
-        const companyCode = typeof comp?.code === 'string' ? comp.code : '';
-        const companyName = typeof comp?.name === 'string' ? comp.name : '';
         return {
           id: t.id,
           principalId: t.principalId as string,
           expiresAt: t.expiresAt as Date,
+          purpose: (t.purpose ?? null) as 'COMPANY_ONBOARD' | 'EMPLOYEE_INVITE' | null,
+          employeeId: (t.employeeId ?? null) as string | null,
           adminLoginId: loginId,
           adminDisplayName: displayName,
-          companyId,
-          companyCode,
-          companyName,
+          companyId: comp.id,
+          companyCode: comp.code as string,
+          companyName: comp.name as string,
         };
       },
     },
@@ -423,6 +452,132 @@ describe('claim lifecycle', () => {
     await expect(svc.consumeClaim(created.claimCode, 'x'.repeat(12))).rejects.toThrow();
     const r = await svc.consumeClaim(reissued.claimCode, 'y'.repeat(12));
     expect(r.status).toBe('CLAIMED');
+  });
+});
+
+describe('claim token purpose and binding (Slice A)', () => {
+  const hashOf = (raw: string) => createHash('sha256').update(raw).digest('hex');
+
+  /** Seed a bound EMPLOYEE_INVITE scenario. */
+  function seedInvite(opts: { employeeStatus?: string; relinked?: boolean } = {}) {
+    store.companies.push({ id: 'co-A', code: 'COA', name: 'Co A', isPlatform: false });
+    store.principals.push({ id: 'pri-emp', status: 'SUSPENDED', loginId: 'w@co.test' });
+    store.employees.push({
+      id: 'emp-1',
+      companyId: 'co-A',
+      principalId: opts.relinked === true ? 'pri-other' : 'pri-emp',
+      status: opts.employeeStatus ?? 'ACTIVE',
+      displayName: 'Worker',
+    });
+    const raw = 'ab'.repeat(32);
+    store.claimTokens.push({
+      id: 'tok-inv',
+      principalId: 'pri-emp',
+      tokenHash: hashOf(raw),
+      expiresAt: new Date(Date.now() + 3_600_000),
+      consumedAt: null,
+      purpose: 'EMPLOYEE_INVITE',
+      companyId: 'co-A',
+      employeeId: 'emp-1',
+    });
+    return { raw };
+  }
+
+  const unconsumed = (id: string) =>
+    (
+      store.claimTokens.find((t) => t.id === id) as unknown as {
+        consumedAt: Date | null;
+      }
+    ).consumedAt === null;
+
+  it('EMPLOYEE_INVITE code claims at /auth/claim and audits the bound company', async () => {
+    const { raw } = seedInvite();
+    const r = await svc.consumeClaim(raw, 'worker-password-1');
+    expect(r.status).toBe('CLAIMED');
+    expect(unconsumed('tok-inv')).toBe(false);
+    const audit = store.auditLog.find((a) => a.action === 'ACCOUNT_CLAIM_COMPLETED');
+    expect(audit?.companyId).toBe('co-A');
+    expect(store.principals.find((p) => p.id === 'pri-emp')?.status).toBe('ACTIVE');
+  });
+
+  it('EMPLOYEE_INVITE code is rejected at /auth/claim/onboard WITHOUT being consumed', async () => {
+    const { raw } = seedInvite();
+    await expect(
+      svc.consumeClaimAndOnboard(raw, { password: 'worker-password-1' }),
+    ).rejects.toThrow('claim code');
+    expect(unconsumed('tok-inv')).toBe(true); // purpose mismatch never burns the code
+    expect(store.principals.find((p) => p.id === 'pri-emp')?.status).toBe('SUSPENDED');
+  });
+
+  it('EMPLOYEE_INVITE claim fails closed when the bound employee is deactivated', async () => {
+    const { raw } = seedInvite({ employeeStatus: 'INACTIVE' });
+    await expect(svc.consumeClaim(raw, 'worker-password-1')).rejects.toThrow('claim code');
+    expect(unconsumed('tok-inv')).toBe(true); // still reissuable after reactivation
+  });
+
+  it('EMPLOYEE_INVITE claim fails when the employee was relinked to another principal', async () => {
+    const { raw } = seedInvite({ relinked: true });
+    await expect(svc.consumeClaim(raw, 'worker-password-1')).rejects.toThrow('claim code');
+    expect(unconsumed('tok-inv')).toBe(true);
+  });
+
+  it('live token with no purpose/company binding fails closed everywhere', async () => {
+    store.principals.push({ id: 'pri-x', status: 'SUSPENDED', loginId: 'x@x.test' });
+    const raw = 'cd'.repeat(32);
+    store.claimTokens.push({
+      id: 'tok-legacy',
+      principalId: 'pri-x',
+      tokenHash: hashOf(raw),
+      expiresAt: new Date(Date.now() + 3_600_000),
+      consumedAt: null,
+      purpose: null,
+      companyId: null,
+      employeeId: null,
+    });
+    await expect(svc.verifyClaim(raw)).rejects.toThrow();
+    await expect(svc.consumeClaim(raw, 'p'.repeat(12))).rejects.toThrow('claim code');
+    await expect(svc.consumeClaimAndOnboard(raw, { password: 'p'.repeat(12) })).rejects.toThrow(
+      'claim code',
+    );
+    expect(unconsumed('tok-legacy')).toBe(true);
+  });
+
+  it('verify resolves the BOUND company deterministically for multi-company principals', async () => {
+    store.companies.push(
+      { id: 'co-A', code: 'COA', name: 'Co A', isPlatform: false },
+      { id: 'co-B', code: 'COB', name: 'Co B', isPlatform: false },
+    );
+    store.principals.push({ id: 'pri-m', status: 'SUSPENDED', loginId: 'm@x.test' });
+    store.employees.push(
+      {
+        id: 'emp-A',
+        companyId: 'co-A',
+        principalId: 'pri-m',
+        status: 'ACTIVE',
+        displayName: 'Worker A',
+      },
+      {
+        id: 'emp-B',
+        companyId: 'co-B',
+        principalId: 'pri-m',
+        status: 'ACTIVE',
+        displayName: 'Worker B',
+      },
+    );
+    const raw = 'ef'.repeat(32);
+    store.claimTokens.push({
+      id: 'tok-B',
+      principalId: 'pri-m',
+      tokenHash: hashOf(raw),
+      expiresAt: new Date(Date.now() + 3_600_000),
+      consumedAt: null,
+      purpose: 'EMPLOYEE_INVITE',
+      companyId: 'co-B',
+      employeeId: 'emp-B',
+    });
+    const info = await svc.verifyClaim(raw);
+    expect(info.companyCode).toBe('COB'); // bound company, not employees[0]
+    expect(info.adminDisplayName).toBe('Worker B');
   });
 });
 

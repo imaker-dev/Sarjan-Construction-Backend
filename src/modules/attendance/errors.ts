@@ -142,5 +142,3 @@ export class DailyReportConflictError extends AttendanceError {
     this.name = 'DailyReportConflictError';
   }
 }
-
-

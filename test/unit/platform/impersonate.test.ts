@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PlatformService } from '../../../src/modules/platform/service.js';
-import type { PlatformUnitOfWork, PlatformRepos } from '../../../src/modules/platform/repository.js';
+import type {
+  PlatformUnitOfWork,
+  PlatformRepos,
+} from '../../../src/modules/platform/repository.js';
 import type { ActorContext, AuditRecord } from '../../../src/modules/organization/types.js';
 
 describe('PlatformService - impersonateCompany', () => {
@@ -57,7 +60,9 @@ describe('PlatformService - impersonateCompany', () => {
       },
     );
 
-    const result = (await service.impersonateCompany(superAdminActor, 'c-1', { ip: '127.0.0.1' })) as {
+    const result = (await service.impersonateCompany(superAdminActor, 'c-1', {
+      ip: '127.0.0.1',
+    })) as {
       accessToken: string;
       impersonated: boolean;
     };

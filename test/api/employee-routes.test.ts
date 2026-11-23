@@ -188,7 +188,11 @@ describe('employee routes', () => {
         method: 'POST',
         url: '/api/v1/employees',
         headers,
-        payload: { employeeCode: 'EMP-M1', displayName: 'Member Emp', engagementType: 'DIRECT_EMPLOYEE' },
+        payload: {
+          employeeCode: 'EMP-M1',
+          displayName: 'Member Emp',
+          engagementType: 'DIRECT_EMPLOYEE',
+        },
       });
       expect(empRes.statusCode).toBe(200);
       const emp = empRes.json<{ id: string }>();

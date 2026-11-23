@@ -22,12 +22,12 @@ Content-Type: application/json        # multipart/form-data for /documents/uploa
 >   `initialBudget` and all Finance APIs.
 >
 > **Document routes** resolve at PROJECT/SITE scope, so company-scope holders
-> (owner, finance) **and** project-scoped PD/PI of *that* project can work the
+> (owner, finance) **and** project-scoped PD/PI of _that_ project can work the
 > register. See the permission matrix in §10.
 
 Conventions used everywhere:
 
-- **Money/areas/quantities** are decimal *strings*: `"142500000.00"`.
+- **Money/areas/quantities** are decimal _strings_: `"142500000.00"`.
 - **Dates** are `YYYY-MM-DD`; timestamps in responses are ISO-8601.
 - **PATCH semantics**: omitted keys are untouched; explicit `null` clears a
   nullable field.
@@ -178,17 +178,17 @@ Permission: ORG_PROJECT_CREATE @ COMPANY
 
 ### Field reference — project profile
 
-| Group | Fields | Notes |
-|---|---|---|
-| Identity | `code`* (≤40, unique/company), `name`* (≤200), `description`, `timezone`* (IANA) | `code`/`name` normalized |
-| Classification | `projectType`, `projectSubtype`, `contractType` | enums below |
-| Client | `clientName`, `clientContactName/Phone/Email` | |
-| Contract | `contractRef`, `workOrderRef`, `tenderRef`, `contractValue`, `contractCurrency`, `contractDate`, `workOrderDate` | `contractValue`+`contractCurrency` must come **as a pair** |
-| Location | `locationAddressLine`, `locationLocality`, `locationCity/District/State/Pin/Country`, `geoLatitude`/`geoLongitude` | coords must be **paired** |
-| Scope | `scopeSummary`, `landArea`+`landAreaUnit`, `builtUpArea`, `numBuildings`, `numFloorsMax`, `numUnits`, `linearLengthKm`, `carriagewayWidthM` | `landArea`+`landAreaUnit` as a pair; type-specific fields are optional data, not hard-rejected |
-| Programme | `startDate`, `endDate`, `ntpDate`, `revisedEndDate`, `actualStartDate`, `actualEndDate` | `endDate ≥ startDate`; actual dates are **not** constrained to planned range |
-| Registers | `landParcels[]`, `documents[]`, `approvals[]` | max 50 each, created in the same transaction |
-| Estimate | `initialBudget` | see §5 |
+| Group          | Fields                                                                                                                                      | Notes                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Identity       | `code`* (≤40, unique/company), `name`* (≤200), `description`, `timezone`* (IANA)                                                            | `code`/`name` normalized                                                                       |
+| Classification | `projectType`, `projectSubtype`, `contractType`                                                                                             | enums below                                                                                    |
+| Client         | `clientName`, `clientContactName/Phone/Email`                                                                                               |                                                                                                |
+| Contract       | `contractRef`, `workOrderRef`, `tenderRef`, `contractValue`, `contractCurrency`, `contractDate`, `workOrderDate`                            | `contractValue`+`contractCurrency` must come **as a pair**                                     |
+| Location       | `locationAddressLine`, `locationLocality`, `locationCity/District/State/Pin/Country`, `geoLatitude`/`geoLongitude`                          | coords must be **paired**                                                                      |
+| Scope          | `scopeSummary`, `landArea`+`landAreaUnit`, `builtUpArea`, `numBuildings`, `numFloorsMax`, `numUnits`, `linearLengthKm`, `carriagewayWidthM` | `landArea`+`landAreaUnit` as a pair; type-specific fields are optional data, not hard-rejected |
+| Programme      | `startDate`, `endDate`, `ntpDate`, `revisedEndDate`, `actualStartDate`, `actualEndDate`                                                     | `endDate ≥ startDate`; actual dates are **not** constrained to planned range                   |
+| Registers      | `landParcels[]`, `documents[]`, `approvals[]`                                                                                               | max 50 each, created in the same transaction                                                   |
+| Estimate       | `initialBudget`                                                                                                                             | see §5                                                                                         |
 
 ### Enums
 
@@ -214,7 +214,8 @@ Permission: ORG_PROJECT_CREATE @ COMPANY
   "headOfficeId": "ho-uuid",
   "projectType": "RESIDENTIAL",
   "version": 0,
-  "createdAt": "…", "updatedAt": "…",
+  "createdAt": "…",
+  "updatedAt": "…",
   "…": "all profile fields echoed",
   "initialBudget": {
     "budgetId": "budget-uuid",
@@ -270,19 +271,35 @@ GET   /api/v1/org/projects?status=&headOfficeId=  ORG_PROJECT_READ @ COMPANY
 
 ```json
 // PATCH — name set, contractValue cleared, optimistic check
-{ "name": "Skyline Residency Ph-1", "contractValue": null, "contractCurrency": null, "expectedVersion": 3 }
+{
+  "name": "Skyline Residency Ph-1",
+  "contractValue": null,
+  "contractCurrency": null,
+  "expectedVersion": 3
+}
 ```
 
 `GET /:id` response = project row + registers:
 
 ```json
 {
-  "id": "proj-uuid", "code": "PRJ-007", "status": "ACTIVE", "version": 4,
-  "landParcels": [ { "id": "…", "surveyNo": "KH-112/45", "area": "8500.00", "areaUnit": "SQM" } ],
-  "documents":   [ { "id": "link-uuid", "documentId": "…", "documentType": "DRAWING",
-                     "title": "Tower-A GA Plan", "discipline": "ARCHITECTURAL",
-                     "revision": "R2", "linkStatus": "FOR_CONSTRUCTION" } ],
-  "approvals":   [ { "id": "…", "approvalType": "RERA", "status": "APPLIED", "referenceNo": "…" } ]
+  "id": "proj-uuid",
+  "code": "PRJ-007",
+  "status": "ACTIVE",
+  "version": 4,
+  "landParcels": [{ "id": "…", "surveyNo": "KH-112/45", "area": "8500.00", "areaUnit": "SQM" }],
+  "documents": [
+    {
+      "id": "link-uuid",
+      "documentId": "…",
+      "documentType": "DRAWING",
+      "title": "Tower-A GA Plan",
+      "discipline": "ARCHITECTURAL",
+      "revision": "R2",
+      "linkStatus": "FOR_CONSTRUCTION"
+    }
+  ],
+  "approvals": [{ "id": "…", "approvalType": "RERA", "status": "APPLIED", "referenceNo": "…" }]
 }
 ```
 
@@ -297,9 +314,15 @@ GET  /api/v1/org/projects/:id/parcels   ORG_PROJECT_READ   @ PROJECT :id
 
 ```json
 // POST
-{ "surveyNo": "KH-112/46", "plotNo": "43", "area": "4000.00",
-  "areaUnit": "SQM", "possessionDate": "2026-11-05",
-  "boundaryDescription": "west of tower A", "documentId": null }
+{
+  "surveyNo": "KH-112/46",
+  "plotNo": "43",
+  "area": "4000.00",
+  "areaUnit": "SQM",
+  "possessionDate": "2026-11-05",
+  "boundaryDescription": "west of tower A",
+  "documentId": null
+}
 ```
 
 ```json
@@ -327,18 +350,20 @@ POST /api/v1/org/projects/:id/documents   DOCUMENT_LINK @ PROJECT :id
 ```
 
 ```json
-{ "documentId": "doc-uuid",
+{
+  "documentId": "doc-uuid",
   "documentType": "DRAWING",
   "title": "Tower-A GA Plan",
   "discipline": "ARCHITECTURAL",
   "documentNumber": "SKL-AR-101",
   "revision": "R2",
   "issueDate": "2026-09-20",
-  "linkStatus": "FOR_CONSTRUCTION" }
+  "linkStatus": "FOR_CONSTRUCTION"
+}
 ```
 
 The Document must be `AVAILABLE`, same company, and its upload scope must
-*contain* the project (`COMPANY`-scope or this project's scope). Otherwise
+_contain_ the project (`COMPANY`-scope or this project's scope). Otherwise
 `404`/`422`. Same document can't be linked twice (`409`).
 
 ### 5b. Upload a file (multipart)
@@ -383,7 +408,8 @@ PATCH /api/v1/org/projects/:id/approvals/:approvalId      ORG_PROJECT_UPDATE @ C
 
 ```json
 // POST
-{ "approvalType": "FIRE_NOC",
+{
+  "approvalType": "FIRE_NOC",
   "issuingAuthority": "Fire & Emergency Services",
   "jurisdiction": "Patna",
   "referenceNo": "FES/PAT/2026/334",
@@ -391,7 +417,8 @@ PATCH /api/v1/org/projects/:id/approvals/:approvalId      ORG_PROJECT_UPDATE @ C
   "appliedDate": "2026-10-05",
   "validUntil": null,
   "documentId": null,
-  "notes": "Submitted with layout plan" }
+  "notes": "Submitted with layout plan"
+}
 ```
 
 These are **external authority records** (RERA, fire NOC, environmental…) —
@@ -476,24 +503,29 @@ Permission: ORG_SITE_CREATE @ COMPANY
   "emergencyDetails": "Assembly point: gate 2; first-aid at store",
 
   "documents": [
-    { "documentId": "doc-uuid", "documentType": "SURVEY",
-      "title": "Topo survey", "discipline": "SURVEY", "revision": "R0" }
+    {
+      "documentId": "doc-uuid",
+      "documentType": "SURVEY",
+      "title": "Topo survey",
+      "discipline": "SURVEY",
+      "revision": "R0"
+    }
   ]
 }
 ```
 
 ### Field rules
 
-| Rule | Detail |
-|---|---|
-| `projectId` | required; must exist in this company (cross-company → 404) |
-| `timezone` | omitted/`null` → **inherits parent project timezone** |
-| coordinates | `geoLatitude`/`geoLongitude` must be **paired**; ranges −90..90 / −180..180 |
-| `geoFenceRadiusM` | requires coordinates; feeds attendance punch geofence |
-| `landParcelId` | must reference a **land parcel of the same project** |
-| `plotArea` + `areaUnit` | pair rule — one without the other → `422` |
-| `siteType` | `MAIN_CONSTRUCTION \| BATCHING_PLANT \| LAYDOWN_YARD \| LABOUR_CAMP \| OFFICE \| STORE \| WORKSHOP \| OTHER` |
-| `facilities` | free-form JSON object — validated shape TBD; keep to small boolean flags |
+| Rule                                         | Detail                                                                                                                                                    |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `projectId`                                  | required; must exist in this company (cross-company → 404)                                                                                                |
+| `timezone`                                   | omitted/`null` → **inherits parent project timezone**                                                                                                     |
+| coordinates                                  | `geoLatitude`/`geoLongitude` must be **paired**; ranges −90..90 / −180..180                                                                               |
+| `geoFenceRadiusM`                            | requires coordinates; feeds attendance punch geofence                                                                                                     |
+| `landParcelId`                               | must reference a **land parcel of the same project**                                                                                                      |
+| `plotArea` + `areaUnit`                      | pair rule — one without the other → `422`                                                                                                                 |
+| `siteType`                                   | `MAIN_CONSTRUCTION \| BATCHING_PLANT \| LAYDOWN_YARD \| LABOUR_CAMP \| OFFICE \| STORE \| WORKSHOP \| OTHER`                                              |
+| `facilities`                                 | free-form JSON object — validated shape TBD; keep to small boolean flags                                                                                  |
 | **`accessInstructions`, `emergencyDetails`** | **sensitive** — accepted on write, but **omitted from all responses** unless the caller holds `ORG_SITE_SENSITIVE_READ`. Never returned in list payloads. |
 
 Response `201`: site row (`status: PLANNED`, `version: 0`), sensitive fields
@@ -537,12 +569,12 @@ the **parent project**, or the site itself.
 
 ### Who can do what
 
-| Actor | Grant | Project docs | Site docs |
-|---|---|---|---|
-| Company owner / admin | `DOCUMENT_*` @ company | ✅ all projects | ✅ all sites |
-| `FINANCE_MANAGER` / `FINANCE_STAFF` | `DOCUMENT_*` @ company | ✅ | ✅ |
+| Actor                                   | Grant                        | Project docs        | Site docs                               |
+| --------------------------------------- | ---------------------------- | ------------------- | --------------------------------------- |
+| Company owner / admin                   | `DOCUMENT_*` @ company       | ✅ all projects     | ✅ all sites                            |
+| `FINANCE_MANAGER` / `FINANCE_STAFF`     | `DOCUMENT_*` @ company       | ✅                  | ✅                                      |
 | `PROJECT_DIRECTOR` / `PROJECT_INCHARGE` | `DOCUMENT_*` @ their project | ✅ own project only | ✅ own project's sites (ancestor chain) |
-| Anyone else | — | ❌ 403 | ❌ 403 |
+| Anyone else                             | —                            | ❌ 403              | ❌ 403                                  |
 
 `POST .../documents/upload` additionally re-asserts `DOCUMENT_UPLOAD` inside
 `DocumentService` — the check runs twice.
@@ -551,14 +583,14 @@ the **parent project**, or the site itself.
 
 ## Errors you will hit
 
-| Code | Cause |
-|---|---|
-| `400` | schema violation — bad enum, missing required field, unpaired coords, bad decimal/date/uuid |
-| `403` / `ACCESS_DENIED` | permission or operation gate failed (e.g. `initialBudget` without finance authority) |
-| `404` | entity not found **or cross-company id** (tenant isolation is fail-closed) |
-| `409 VERSION_CONFLICT` | stale `expectedVersion` |
-| `409 ASSIGNMENT_EXISTS` / duplicate link | same document already on the register |
-| `422` (validation) | business rule — e.g. `endDate < startDate`, `contractValue` without currency, parcel of a different project, `OTHER` approval without `customType` |
+| Code                                     | Cause                                                                                                                                              |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400`                                    | schema violation — bad enum, missing required field, unpaired coords, bad decimal/date/uuid                                                        |
+| `403` / `ACCESS_DENIED`                  | permission or operation gate failed (e.g. `initialBudget` without finance authority)                                                               |
+| `404`                                    | entity not found **or cross-company id** (tenant isolation is fail-closed)                                                                         |
+| `409 VERSION_CONFLICT`                   | stale `expectedVersion`                                                                                                                            |
+| `409 ASSIGNMENT_EXISTS` / duplicate link | same document already on the register                                                                                                              |
+| `422` (validation)                       | business rule — e.g. `endDate < startDate`, `contractValue` without currency, parcel of a different project, `OTHER` approval without `customType` |
 
 ## Quick checklist for a new project
 

@@ -87,7 +87,12 @@ export class MfaService {
 
     // Store in Redis: code + attempts
     const otpKey = `mfa:otp:${jti}`;
-    await this.redis.set(otpKey, JSON.stringify({ principalId, code, attempts: 0 }), 'EX', OTP_TTL_SECONDS);
+    await this.redis.set(
+      otpKey,
+      JSON.stringify({ principalId, code, attempts: 0 }),
+      'EX',
+      OTP_TTL_SECONDS,
+    );
 
     // Send Email OTP via MailService
     if (this.mailService) {
@@ -187,7 +192,11 @@ export class MfaService {
       const nextAttempts = data.attempts + 1;
       if (nextAttempts >= MAX_ATTEMPTS) {
         await this.redis.del(otpKey);
-        throw new AppError(429, 'MFA_LOCKED', 'Too many failed attempts. Please request a new code.');
+        throw new AppError(
+          429,
+          'MFA_LOCKED',
+          'Too many failed attempts. Please request a new code.',
+        );
       }
       let remainingSeconds = OTP_TTL_SECONDS;
       if (typeof this.redis.ttl === 'function') {
@@ -200,7 +209,11 @@ export class MfaService {
         'EX',
         remainingSeconds,
       );
-      throw new AppError(400, 'INVALID_MFA_CODE', `Invalid code. ${String(MAX_ATTEMPTS - nextAttempts)} attempt(s) remaining.`);
+      throw new AppError(
+        400,
+        'INVALID_MFA_CODE',
+        `Invalid code. ${String(MAX_ATTEMPTS - nextAttempts)} attempt(s) remaining.`,
+      );
     }
 
     // Success — consume OTP single-use

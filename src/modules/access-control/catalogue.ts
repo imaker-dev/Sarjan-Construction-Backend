@@ -54,6 +54,19 @@ export const PERMISSIONS = [
   'OUTBOX_ADMIN',
   'EMPLOYEE_READ',
   'EMPLOYEE_MANAGE',
+  // Placement only — scoped membership administration inside project/site
+  // departments. Distinct from EMPLOYEE_MANAGE (lifecycle) and gated by the
+  // company "placement" delegation switch for scoped holders.
+  'EMPLOYEE_MEMBER_MANAGE',
+  // Profile-only workforce onboarding (no login/invite) into project/site
+  // departments — distinct from EMPLOYEE_MANAGE (lifecycle) and
+  // EMPLOYEE_MEMBER_MANAGE (existing employees), gated by the company
+  // "employeeOnboard" delegation switch for scoped holders.
+  'EMPLOYEE_ONBOARD',
+  // Scoped read of contact/emergency-contact fields on department members —
+  // the ONLY scoped path to contact data. Granted to PI/PD only; company
+  // readers keep the company-wide employee detail route.
+  'EMPLOYEE_CONTACT_READ',
   'COMPLIANCE_READ',
   'COMPLIANCE_MANAGE',
   'EMPLOYEE_INVITE',

@@ -75,59 +75,62 @@ model Company {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
-  headOffices           HeadOffice[]
-  projects              Project[]
-  sites                 Site[]
-  auditLogs             AuditLog[]
-  employees             Employee[]
-  departmentMemberships DepartmentMembership[]
-  roles                 Role[]
-  roleAssignments       RoleAssignment[]
-  departments           Department[]
-  operations            Operation[]
-  operationVersions     OperationVersion[]
-  forms                 Form[]
-  formVersions          FormVersion[]
-  workflows             Workflow[]
-  workflowVersions      WorkflowVersion[]
-  rules                 Rule[]
-  ruleVersions          RuleVersion[]
-  workflowInstances     WorkflowInstance[]
-  workflowTransitions   WorkflowTransition[]
-  approvalTasks         ApprovalTask[]
-  approvalDecisions     ApprovalDecision[]
-  formSubmissions       FormSubmission[]
-  submissionRevisions   SubmissionRevision[]
-  documents             Document[]
-  documentLinks         DocumentLink[]
-  outboxEvents          OutboxEvent[]
-  notifications         Notification[]
-  complianceRecords     ComplianceRecord[]
-  departmentOperations  DepartmentOperation[]
-  employeeOperations    EmployeeOperation[]
-  attendancePolicies    AttendancePolicy[]
-  attendanceSessions    AttendanceSession[]
-  attendanceBreaks      AttendanceBreak[]
-  leavePolicies         LeavePolicy[]
-  leaveTypeDefs         LeaveTypeDef[]
-  leavePolicyVersions   LeavePolicyVersion[]
-  leaveBalances         LeaveBalance[]
-  leaveRequests         LeaveRequest[]
-  safetyTvtSessions     SafetyTvtSession[]
-  safetyTvtAttendees    SafetyTvtAttendee[]
-  holidayCalendars      HolidayCalendar[]
-  holidays              Holiday[]
-  workSchedules         WorkSchedule[]
-  holidayCategories     HolidayCategory[]
-  workScheduleRevisions WorkScheduleRevision[]
-  workScheduleOverrides WorkScheduleOverride[]
-  projectBudgets        ProjectBudget[]
-  budgetRevisions       BudgetRevision[]
-  budgetRevisionLines   BudgetRevisionLine[]
-  budgetReviewDecisions BudgetReviewDecision[]
-  cashFlowForecasts     CashFlowForecast[]
-  cashFlowForecastLines CashFlowForecastLine[]
+  headOffices            HeadOffice[]
+  projects               Project[]
+  sites                  Site[]
+  auditLogs              AuditLog[]
+  employees              Employee[]
+  departmentMemberships  DepartmentMembership[]
+  siteWorkforceExits     SiteWorkforceExit[]
+  claimTokens            ClaimToken[]
+  roles                  Role[]
+  roleAssignments        RoleAssignment[]
+  departments            Department[]
+  operations             Operation[]
+  operationVersions      OperationVersion[]
+  forms                  Form[]
+  formVersions           FormVersion[]
+  workflows              Workflow[]
+  workflowVersions       WorkflowVersion[]
+  rules                  Rule[]
+  ruleVersions           RuleVersion[]
+  workflowInstances      WorkflowInstance[]
+  workflowTransitions    WorkflowTransition[]
+  approvalTasks          ApprovalTask[]
+  approvalDecisions      ApprovalDecision[]
+  formSubmissions        FormSubmission[]
+  submissionRevisions    SubmissionRevision[]
+  documents              Document[]
+  documentLinks          DocumentLink[]
+  outboxEvents           OutboxEvent[]
+  notifications          Notification[]
+  complianceRecords      ComplianceRecord[]
+  departmentOperations   DepartmentOperation[]
+  employeeOperations     EmployeeOperation[]
+  attendancePolicies     AttendancePolicy[]
+  attendanceSessions     AttendanceSession[]
+  attendanceBreaks       AttendanceBreak[]
+  leavePolicies          LeavePolicy[]
+  leaveTypeDefs          LeaveTypeDef[]
+  leavePolicyVersions    LeavePolicyVersion[]
+  leaveBalances          LeaveBalance[]
+  leaveRequests          LeaveRequest[]
+  safetyTvtSessions      SafetyTvtSession[]
+  safetyTvtAttendees     SafetyTvtAttendee[]
+  holidayCalendars       HolidayCalendar[]
+  holidays               Holiday[]
+  workSchedules          WorkSchedule[]
+  holidayCategories      HolidayCategory[]
+  workScheduleRevisions  WorkScheduleRevision[]
+  workScheduleOverrides  WorkScheduleOverride[]
+  projectBudgets         ProjectBudget[]
+  budgetRevisions        BudgetRevision[]
+  budgetRevisionLines    BudgetRevisionLine[]
+  budgetReviewDecisions  BudgetReviewDecision[]
+  cashFlowForecasts      CashFlowForecast[]
+  cashFlowForecastLines  CashFlowForecastLine[]
   dailySiteReports       DailySiteReport[]
+  delegationPolicy       CompanyDelegationPolicy?
   dailySiteReportLabours DailySiteReportLabour[]
   dailyReportAuditLogs   DailyReportAuditLog[]
   employeeDocuments      EmployeeDocument[]
@@ -138,31 +141,31 @@ model Company {
 }
 
 model HeadOffice {
-  id           String        @id @default(uuid()) @db.Uuid
-  companyId    String        @db.Uuid
-  code         String
-  name         String
-  legalName    String?
-  addressLine1 String?
-  addressLine2 String?
-  locality     String?
-  city         String?
-  district     String?
-  state        String?
-  pinCode      String?
-  country      String?
-  contactName  String?
-  contactPhone String?
-  contactEmail String?
-  geoLatitude     Decimal?  @db.Decimal(9, 6)
-  geoLongitude    Decimal?  @db.Decimal(9, 6)
+  id              String        @id @default(uuid()) @db.Uuid
+  companyId       String        @db.Uuid
+  code            String
+  name            String
+  legalName       String?
+  addressLine1    String?
+  addressLine2    String?
+  locality        String?
+  city            String?
+  district        String?
+  state           String?
+  pinCode         String?
+  country         String?
+  contactName     String?
+  contactPhone    String?
+  contactEmail    String?
+  geoLatitude     Decimal?      @db.Decimal(9, 6)
+  geoLongitude    Decimal?      @db.Decimal(9, 6)
   geoFenceRadiusM Int?
   timezone        String? // NULL = default Asia/Kolkata for attendance business dates
-  isPrimary    Boolean       @default(false)
-  status       OrgNodeStatus @default(ACTIVE)
-  version      Int           @default(0)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  isPrimary       Boolean       @default(false)
+  status          OrgNodeStatus @default(ACTIVE)
+  version         Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   company            Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
   projects           Project[]
@@ -182,31 +185,31 @@ model HeadOffice {
 }
 
 model Project {
-  id               String        @id @default(uuid()) @db.Uuid
-  companyId        String        @db.Uuid
-  headOfficeId     String        @db.Uuid
-  code             String
-  name             String
-  description      String?
-  projectType      ProjectType   @default(OTHER)
-  clientName       String?
-  contractRef      String?
-  locationCity     String?
-  locationDistrict String?
-  locationState    String?
-  locationPin      String?
+  id                  String        @id @default(uuid()) @db.Uuid
+  companyId           String        @db.Uuid
+  headOfficeId        String        @db.Uuid
+  code                String
+  name                String
+  description         String?
+  projectType         ProjectType   @default(OTHER)
+  clientName          String?
+  contractRef         String?
+  locationCity        String?
+  locationDistrict    String?
+  locationState       String?
+  locationPin         String?
   // ---- Extended profile (Project/Site setup milestone) --------------------
-  projectSubtype     String?
-  contractType       ContractType?
-  clientContactName  String?
-  clientContactPhone String?
-  clientContactEmail String?
-  workOrderRef       String?
-  tenderRef          String?
-  contractValue      Decimal?       @db.Decimal(18, 2)
-  contractCurrency   String?        @db.VarChar(3)
-  contractDate       DateTime?      @db.Date
-  workOrderDate      DateTime?      @db.Date
+  projectSubtype      String?
+  contractType        ContractType?
+  clientContactName   String?
+  clientContactPhone  String?
+  clientContactEmail  String?
+  workOrderRef        String?
+  tenderRef           String?
+  contractValue       Decimal?      @db.Decimal(18, 2)
+  contractCurrency    String?       @db.VarChar(3)
+  contractDate        DateTime?     @db.Date
+  workOrderDate       DateTime?     @db.Date
   locationAddressLine String?
   locationLocality    String?
   locationCountry     String?
@@ -222,20 +225,20 @@ model Project {
   numUnits            Int?
   linearLengthKm      Decimal?      @db.Decimal(10, 3)
   carriagewayWidthM   Decimal?      @db.Decimal(8, 2)
-  timezone         String // IANA name, validated in the service layer
-  status           ProjectStatus @default(PLANNED)
-  startDate        DateTime?     @db.Date
-  endDate          DateTime?     @db.Date
-  ntpDate          DateTime?     @db.Date
-  revisedEndDate   DateTime?     @db.Date
-  actualStartDate  DateTime?     @db.Date
-  actualEndDate    DateTime?     @db.Date
-  version          Int           @default(0)
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  timezone            String // IANA name, validated in the service layer
+  status              ProjectStatus @default(PLANNED)
+  startDate           DateTime?     @db.Date
+  endDate             DateTime?     @db.Date
+  ntpDate             DateTime?     @db.Date
+  revisedEndDate      DateTime?     @db.Date
+  actualStartDate     DateTime?     @db.Date
+  actualEndDate       DateTime?     @db.Date
+  version             Int           @default(0)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
 
-  company            Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  headOffice         HeadOffice         @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  headOffice         HeadOffice          @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
   sites              Site[]
   roleAssignments    RoleAssignment[]
   departments        Department[]
@@ -249,6 +252,7 @@ model Project {
   landParcels        ProjectLandParcel[]
   projectDocuments   ProjectDocument[]
   approvals          ProjectApproval[]
+  siteWorkforceExits SiteWorkforceExit[]
 
   @@unique([companyId, code])
   // Referenced by Site's composite FK (projectId, companyId).
@@ -262,36 +266,36 @@ model Project {
 }
 
 model Site {
-  id              String        @id @default(uuid()) @db.Uuid
-  companyId       String        @db.Uuid
-  projectId       String        @db.Uuid
-  code            String
-  name            String
-  address         String?
-  addressLine1    String?
-  addressLine2    String?
-  locality        String?
-  city            String?
-  district        String?
-  state           String?
-  pinCode         String?
-  country         String?
-  geoLatitude     Decimal?      @db.Decimal(9, 6)
-  geoLongitude    Decimal?      @db.Decimal(9, 6)
-  geoFenceRadiusM Int?
+  id                 String        @id @default(uuid()) @db.Uuid
+  companyId          String        @db.Uuid
+  projectId          String        @db.Uuid
+  code               String
+  name               String
+  address            String?
+  addressLine1       String?
+  addressLine2       String?
+  locality           String?
+  city               String?
+  district           String?
+  state              String?
+  pinCode            String?
+  country            String?
+  geoLatitude        Decimal?      @db.Decimal(9, 6)
+  geoLongitude       Decimal?      @db.Decimal(9, 6)
+  geoFenceRadiusM    Int?
   // ---- Extended profile (Project/Site setup milestone) --------------------
   description        String?
   siteType           SiteType?
   // Links this site to a parcel of the parent project (source of truth for
   // parcel-level land detail); standalone sites use plotArea/surveyNo below.
-  landParcelId       String?      @db.Uuid
-  plotArea           Decimal?     @db.Decimal(14, 2)
+  landParcelId       String?       @db.Uuid
+  plotArea           Decimal?      @db.Decimal(14, 2)
   areaUnit           AreaUnit?
   surveyNo           String?
-  possessionDate     DateTime?    @db.Date
-  handoverDate       DateTime?    @db.Date
+  possessionDate     DateTime?     @db.Date
+  handoverDate       DateTime?     @db.Date
   scopeSummary       String?
-  mobilizationDate   DateTime?    @db.Date
+  mobilizationDate   DateTime?     @db.Date
   accessArrangements String?
   facilities         Json?
   siteContactName    String?
@@ -300,11 +304,11 @@ model Site {
   // Sensitive fields — serialized only for holders of ORG_SITE_SENSITIVE_READ.
   accessInstructions String?
   emergencyDetails   String?
-  timezone        String? // NULL = inherit project timezone
-  status          OrgNodeStatus @default(ACTIVE)
-  version         Int           @default(0)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  timezone           String? // NULL = inherit project timezone
+  status             OrgNodeStatus @default(ACTIVE)
+  version            Int           @default(0)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
 
   company            Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
   project            Project             @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
@@ -319,6 +323,7 @@ model Site {
   workSchedules      WorkSchedule[]
   dailySiteReports   DailySiteReport[]
   siteDocuments      SiteDocument[]
+  siteWorkforceExits SiteWorkforceExit[]
 
   // Site codes are unique within a project (approved decision).
   @@unique([projectId, code])
@@ -357,22 +362,22 @@ model ProjectLandParcel {
 // Drawing/register metadata linking an uploaded Document to a Project. The
 // link row carries the register fields; bytes live in Document storage only.
 model ProjectDocument {
-  id                    String                 @id @default(uuid()) @db.Uuid
-  companyId             String                 @db.Uuid
-  projectId             String                 @db.Uuid
-  documentId            String                 @db.Uuid
+  id                    String                @id @default(uuid()) @db.Uuid
+  companyId             String                @db.Uuid
+  projectId             String                @db.Uuid
+  documentId            String                @db.Uuid
   documentType          OrgDocumentType
   title                 String
   documentNumber        String?
   discipline            DrawingDiscipline?
   revision              String?
-  issueDate             DateTime?              @db.Date
-  linkStatus            OrgDocumentLinkStatus  @default(ISSUED)
-  attachedByPrincipalId String?                @db.Uuid
+  issueDate             DateTime?             @db.Date
+  linkStatus            OrgDocumentLinkStatus @default(ISSUED)
+  attachedByPrincipalId String?               @db.Uuid
   metadata              Json?
-  version               Int                    @default(0)
-  createdAt             DateTime               @default(now()) @db.Timestamptz
-  updatedAt             DateTime               @updatedAt @db.Timestamptz
+  version               Int                   @default(0)
+  createdAt             DateTime              @default(now()) @db.Timestamptz
+  updatedAt             DateTime              @updatedAt @db.Timestamptz
 
   company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
   project    Project    @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
@@ -389,22 +394,22 @@ model ProjectDocument {
 // separate from ProjectDocument — project-level and site-level registers do
 // not mix.
 model SiteDocument {
-  id                    String                 @id @default(uuid()) @db.Uuid
-  companyId             String                 @db.Uuid
-  siteId                String                 @db.Uuid
-  documentId            String                 @db.Uuid
+  id                    String                @id @default(uuid()) @db.Uuid
+  companyId             String                @db.Uuid
+  siteId                String                @db.Uuid
+  documentId            String                @db.Uuid
   documentType          OrgDocumentType
   title                 String
   documentNumber        String?
   discipline            DrawingDiscipline?
   revision              String?
-  issueDate             DateTime?              @db.Date
-  linkStatus            OrgDocumentLinkStatus  @default(ISSUED)
-  attachedByPrincipalId String?                @db.Uuid
+  issueDate             DateTime?             @db.Date
+  linkStatus            OrgDocumentLinkStatus @default(ISSUED)
+  attachedByPrincipalId String?               @db.Uuid
   metadata              Json?
-  version               Int                    @default(0)
-  createdAt             DateTime               @default(now()) @db.Timestamptz
-  updatedAt             DateTime               @updatedAt @db.Timestamptz
+  version               Int                   @default(0)
+  createdAt             DateTime              @default(now()) @db.Timestamptz
+  updatedAt             DateTime              @updatedAt @db.Timestamptz
 
   company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
   site       Site       @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
@@ -570,32 +575,33 @@ model Principal {
   createdAt    DateTime        @default(now()) @db.Timestamptz
   updatedAt    DateTime        @updatedAt @db.Timestamptz
 
-  employees                Employee[]
-  sessions                 AuthSession[]
-  roleAssignments          RoleAssignment[]
-  granted                  RoleAssignment[]     @relation("GrantedBy")
-  publishedOps             OperationVersion[]
-  formVersions             FormVersion[]
-  workflowVersions         WorkflowVersion[]
-  ruleVersions             RuleVersion[]
-  startedWorkflowInstances WorkflowInstance[]
-  workflowTransitions      WorkflowTransition[]
-  approvalTasks            ApprovalTask[]
-  approvalDecisions        ApprovalDecision[]
-  formSubmissions          FormSubmission[]
-  submissionRevisions      SubmissionRevision[]
-  claimTokens              ClaimToken[]
-  uploadedDocuments        Document[]           @relation("DocumentUploader")
-  reviewedDocuments        Document[]           @relation("DocumentReviewer")
-  linkedDocuments          DocumentLink[]       @relation("DocumentLinker")
-  unlinkedDocuments        DocumentLink[]       @relation("DocumentUnlinker")
-  notifications            Notification[]
-  submittedBudgetRevisions BudgetRevision[]     @relation("BudgetRevisionSubmitter")
-  decidedBudgetRevisions   BudgetRevision[]     @relation("BudgetRevisionDecider")
-  budgetReviewDecisions    BudgetReviewDecision[]
-  verifiedEmployeeDocuments EmployeeDocument[]   @relation("EmployeeDocVerifier")
-  attachedProjectDocuments  ProjectDocument[]    @relation("ProjectDocAttacher")
-  attachedSiteDocuments     SiteDocument[]       @relation("SiteDocAttacher")
+  employees                 Employee[]
+  sessions                  AuthSession[]
+  roleAssignments           RoleAssignment[]
+  granted                   RoleAssignment[]       @relation("GrantedBy")
+  publishedOps              OperationVersion[]
+  formVersions              FormVersion[]
+  workflowVersions          WorkflowVersion[]
+  ruleVersions              RuleVersion[]
+  startedWorkflowInstances  WorkflowInstance[]
+  workflowTransitions       WorkflowTransition[]
+  approvalTasks             ApprovalTask[]
+  approvalDecisions         ApprovalDecision[]
+  formSubmissions           FormSubmission[]
+  submissionRevisions       SubmissionRevision[]
+  claimTokens               ClaimToken[]
+  uploadedDocuments         Document[]             @relation("DocumentUploader")
+  reviewedDocuments         Document[]             @relation("DocumentReviewer")
+  linkedDocuments           DocumentLink[]         @relation("DocumentLinker")
+  unlinkedDocuments         DocumentLink[]         @relation("DocumentUnlinker")
+  notifications             Notification[]
+  submittedBudgetRevisions  BudgetRevision[]       @relation("BudgetRevisionSubmitter")
+  decidedBudgetRevisions    BudgetRevision[]       @relation("BudgetRevisionDecider")
+  workforceExitsRecorded    SiteWorkforceExit[]    @relation("SiteWorkforceExitActor")
+  budgetReviewDecisions     BudgetReviewDecision[]
+  verifiedEmployeeDocuments EmployeeDocument[]     @relation("EmployeeDocVerifier")
+  attachedProjectDocuments  ProjectDocument[]      @relation("ProjectDocAttacher")
+  attachedSiteDocuments     SiteDocument[]         @relation("SiteDocAttacher")
 }
 
 // Company-scoped workforce record. Login linkage is optional — most labourers
@@ -625,6 +631,8 @@ model Employee {
   principal          Principal?             @relation(fields: [principalId], references: [id], onDelete: Restrict)
   headedDepartments  Department[]
   memberships        DepartmentMembership[]
+  siteWorkforceExits SiteWorkforceExit[]
+  claimTokens        ClaimToken[]
   employeeOperations EmployeeOperation[]
   attendancePolicies AttendancePolicy[]
   attendanceSessions AttendanceSession[]
@@ -645,6 +653,10 @@ model Employee {
   // Referenced by Department's composite FK (headEmployeeId, companyId) so a
   // department head must be an employee of the same company.
   @@unique([id, companyId])
+  // Referenced by ClaimToken's triple FK (employeeId, companyId, principalId)
+  // so an invite token provably binds the employee's own linked principal.
+  // Nullable principalId is fine — NULL rows are simply never referenced.
+  @@unique([id, companyId, principalId])
   // Principal -> Employee lookup (FK not covered by the composite unique).
   @@index([principalId])
   // Scoped active-employee lists: WHERE companyId = ? [AND status = ?].
@@ -1565,13 +1577,13 @@ model Document {
   createdAt             DateTime       @default(now()) @db.Timestamptz
   updatedAt             DateTime       @updatedAt @db.Timestamptz
 
-  company           Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  uploadedBy        Principal?         @relation("DocumentUploader", fields: [uploadedByPrincipalId], references: [id], onDelete: Restrict)
-  reviewedBy        Principal?         @relation("DocumentReviewer", fields: [reviewedByPrincipalId], references: [id], onDelete: Restrict)
+  company           Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  uploadedBy        Principal?          @relation("DocumentUploader", fields: [uploadedByPrincipalId], references: [id], onDelete: Restrict)
+  reviewedBy        Principal?          @relation("DocumentReviewer", fields: [reviewedByPrincipalId], references: [id], onDelete: Restrict)
   // Composite FKs keep the scope target inside this company.
-  headOffice        HeadOffice?        @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
-  project           Project?           @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  site              Site?              @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  headOffice        HeadOffice?         @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  project           Project?            @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site              Site?               @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
   links             DocumentLink[]
   complianceRecords ComplianceRecord[]
   employeeDocuments EmployeeDocument[]
@@ -1720,17 +1732,37 @@ model Notification {
 // code is claimed and when it is invalidated by reissue (a "closed" code —
 // either way it can never be used again). Active count per principal is
 // capped at one by ClaimToken_one_active_per_principal.
+// purpose binds the code to the ONE operation it may perform — NULL is
+// allowed only on already-closed legacy rows (ClaimToken_purpose_binding_ck).
+enum ClaimTokenPurpose {
+  // Activate the company's first admin AND complete company/HO onboarding.
+  COMPANY_ONBOARD
+  // Activate the bound employee's login only — never company data.
+  EMPLOYEE_INVITE
+}
+
 model ClaimToken {
-  id          String    @id @default(uuid()) @db.Uuid
-  principalId String    @db.Uuid
-  tokenHash   String    @unique
-  expiresAt   DateTime  @db.Timestamptz
-  consumedAt  DateTime? @db.Timestamptz
-  createdAt   DateTime  @default(now()) @db.Timestamptz
+  id          String             @id @default(uuid()) @db.Uuid
+  principalId String             @db.Uuid
+  tokenHash   String             @unique
+  purpose     ClaimTokenPurpose?
+  companyId   String?            @db.Uuid
+  employeeId  String?            @db.Uuid
+  expiresAt   DateTime           @db.Timestamptz
+  consumedAt  DateTime?          @db.Timestamptz
+  createdAt   DateTime           @default(now()) @db.Timestamptz
 
   principal Principal @relation(fields: [principalId], references: [id], onDelete: Restrict)
+  // Bound tenant context — COMPANY_ONBOARD carries the company being
+  // onboarded; EMPLOYEE_INVITE carries the employee's company.
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  // EMPLOYEE_INVITE only. The triple composite FK enforces company match
+  // AND that the token's principalId is the employee's linked principal —
+  // a same-company FK alone would let a token bind to someone else's row.
+  employee Employee? @relation(fields: [employeeId, companyId, principalId], references: [id, companyId, principalId], onDelete: Restrict)
 
   @@index([principalId, consumedAt])
+  @@index([companyId, employeeId, consumedAt])
 }
 
 enum CompanyEntityType {
@@ -1796,6 +1828,17 @@ model ComplianceRecord {
   @@index([companyId, status, category])
 }
 
+// Why a membership ended — appended at end time, never rewritten.
+// SUSPENDED is restorable via reinstatement (a NEW row); EXITED is not.
+// Null on legacy rows = "ended by an unspecified flow".
+enum DepartmentMembershipEndReason {
+  PLACEMENT_END
+  TRANSFERRED
+  SUSPENDED
+  EXITED
+  DEACTIVATED
+}
+
 // Effective-dated organizational placement of an Employee in a Department.
 // Placement only — it NEVER grants API permission; role assignments do that.
 // A row is ACTIVE iff endedAt IS NULL (single source of truth, no status col).
@@ -1807,30 +1850,77 @@ model DepartmentMembership {
   isPrimary    Boolean   @default(false)
   startedAt    DateTime  @default(now()) @db.Timestamptz
   endedAt      DateTime? @db.Timestamptz
-  version      Int       @default(0)
-  createdAt    DateTime  @default(now()) @db.Timestamptz
-  updatedAt    DateTime  @updatedAt @db.Timestamptz
+  // Lifecycle end metadata — set once when the row ends, never rewritten.
+  endReason    DepartmentMembershipEndReason?
+  endNote      String? // audit-grade context; never in feed/notifications
+  suspendUntil DateTime? @db.Date // structured expected-return date (SUSPENDED only)
+  // Links an ended row to the new membership that reinstated it. Composite
+  // FK keeps the replacement inside the same company AND employee.
+  supersededBy String? @db.Uuid
+  version      Int     @default(0)
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @updatedAt @db.Timestamptz
 
   company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
   employee   Employee   @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
   department Department @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  supersededByMembership DepartmentMembership?  @relation("MembershipSupersession", fields: [companyId, employeeId, supersededBy], references: [companyId, employeeId, id], onDelete: Restrict)
+  supersedes             DepartmentMembership[] @relation("MembershipSupersession")
 
   // Partial unique indexes (in migration SQL):
   //   one ACTIVE membership per (employee, department): WHERE "endedAt" IS NULL
   //   one ACTIVE PRIMARY per (employee, company):    WHERE "endedAt" IS NULL AND "isPrimary"
   @@unique([id, companyId])
+  // Composite FK target for supersededBy — same-company, same-employee.
+  @@unique([companyId, employeeId, id])
   @@index([companyId, employeeId, endedAt])
   @@index([companyId, departmentId, endedAt])
+}
+
+// Append-only marker: an employee was permanently exited from a site or
+// project workforce. Reinstatement of SUSPENDED rows is blocked while a
+// covering marker exists. Exactly one of siteId/projectId is set (CHECK).
+// Does NOT block fresh placement — it records the decision, not a ban.
+model SiteWorkforceExit {
+  id                  String    @id @default(uuid()) @db.Uuid
+  companyId           String    @db.Uuid
+  employeeId          String    @db.Uuid
+  siteId              String?   @db.Uuid
+  projectId           String?   @db.Uuid
+  exitedAt            DateTime  @default(now()) @db.Timestamptz
+  exitedByPrincipalId String?   @db.Uuid
+  note                String?
+
+  company  Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee Employee   @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  site     Site?      @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  project  Project?   @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  exitedBy Principal? @relation("SiteWorkforceExitActor", fields: [exitedByPrincipalId], references: [id], onDelete: Restrict)
+
+  // Partial unique indexes (in migration SQL):
+  //   (companyId, employeeId, siteId)    WHERE siteId IS NOT NULL
+  //   (companyId, employeeId, projectId) WHERE projectId IS NOT NULL
+  // CHECK (num_nonnulls(siteId, projectId) = 1)
+  @@unique([id, companyId])
+  @@index([companyId, employeeId])
 }
 
 // Global, read-only operation catalogue — the master list of work types an
 // admin can enable on departments. Seeded by migration; no companyId.
 model OperationCatalogueEntry {
-  key         String  @id
-  domain      String // EMPLOYEE_RECORDS|PAYROLL|BILLING|QUOTATION|WALLET|REPORT
-  name        String
-  description String
-  sensitive   Boolean @default(false)
+  key                   String      @id
+  domain                String // EMPLOYEE_RECORDS|PAYROLL|BILLING|QUOTATION|WALLET|REPORT
+  name                  String
+  description           String
+  sensitive             Boolean     @default(false)
+  // Department scopes this operation may be enabled on. A DepartmentOperation
+  // row is only valid when the department's scopeType is in this list.
+  appliesTo             ScopeType[] @default([COMPANY])
+  // Whether PROJECT-scoped leadership roles (PD/PI) inherit this operation
+  // from departments under their assigned projects/sites. Defaults false —
+  // only explicitly reviewed, project-relevant ops may be set true. Approval,
+  // payment, payroll, and other high-impact ops must never be inherited.
+  leadershipInheritable Boolean     @default(false)
 
   departmentOperations DepartmentOperation[]
   employeeOperations   EmployeeOperation[]
@@ -2035,11 +2125,11 @@ model AttendanceSession {
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
 
-  company    Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  employee   Employee         @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
-  site       Site?            @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  headOffice HeadOffice?      @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
-  policy     AttendancePolicy @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
+  company    Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee   Employee          @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  site       Site?             @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  headOffice HeadOffice?       @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  policy     AttendancePolicy  @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
   breaks     AttendanceBreak[]
 
   @@unique([id, companyId])
@@ -2099,58 +2189,58 @@ enum LabourCategory {
 }
 
 model DailySiteReport {
-  id                    String            @id @default(uuid()) @db.Uuid
-  companyId             String            @db.Uuid
-  projectId             String            @db.Uuid
-  siteId                String            @db.Uuid
-  businessDate          String            @db.VarChar(10) // e.g. "2026-11-21"
-  status                DailyReportStatus @default(DRAFT)
+  id           String            @id @default(uuid()) @db.Uuid
+  companyId    String            @db.Uuid
+  projectId    String            @db.Uuid
+  siteId       String            @db.Uuid
+  businessDate String            @db.VarChar(10) // e.g. "2026-11-21"
+  status       DailyReportStatus @default(DRAFT)
 
   // Site & Environmental Conditions
-  weather               WeatherCondition  @default(CLEAR)
-  weatherStoppageHours  Decimal           @default(0) @db.Decimal(4, 2)
-  workProgressNotes     String?           @db.Text
-  siteObstaclesRemarks  String?           @db.Text
+  weather                WeatherCondition @default(CLEAR)
+  weatherStoppageHours   Decimal          @default(0) @db.Decimal(4, 2)
+  workProgressNotes      String?          @db.Text
+  siteObstaclesRemarks   String?          @db.Text
   safetyIncidentReported Boolean          @default(false)
-  safetyNotes           String?           @db.Text
+  safetyNotes            String?          @db.Text
 
   // Aggregated Workforce Totals (Materialized Snapshot)
-  totalWorkersHeadcount Int               @default(0)
-  totalPresentUnits     Decimal           @default(0) @db.Decimal(6, 1)
-  totalOvertimeHours    Decimal           @default(0) @db.Decimal(6, 2)
-  totalOvertimePUnits   Decimal           @default(0) @db.Decimal(6, 1)
-  totalFlaggedSessions  Int               @default(0)
+  totalWorkersHeadcount Int     @default(0)
+  totalPresentUnits     Decimal @default(0) @db.Decimal(6, 1)
+  totalOvertimeHours    Decimal @default(0) @db.Decimal(6, 2)
+  totalOvertimePUnits   Decimal @default(0) @db.Decimal(6, 1)
+  totalFlaggedSessions  Int     @default(0)
 
   // Category Breakdown Totals
-  catAStaffCount        Int               @default(0)
-  catAStaffUnits        Decimal           @default(0) @db.Decimal(6, 1)
-  catBDirectCount       Int               @default(0)
-  catBDirectUnits       Decimal           @default(0) @db.Decimal(6, 1)
-  catCSubconCount       Int               @default(0)
-  catCSubconUnits       Decimal           @default(0) @db.Decimal(6, 1)
+  catAStaffCount  Int     @default(0)
+  catAStaffUnits  Decimal @default(0) @db.Decimal(6, 1)
+  catBDirectCount Int     @default(0)
+  catBDirectUnits Decimal @default(0) @db.Decimal(6, 1)
+  catCSubconCount Int     @default(0)
+  catCSubconUnits Decimal @default(0) @db.Decimal(6, 1)
 
   // Workflow Sign-off metadata
-  submittedById         String?           @db.Uuid
-  submittedAt           DateTime?         @db.Timestamptz
-  approvedById          String?           @db.Uuid
-  approvedAt            DateTime?         @db.Timestamptz
-  rejectionReason       String?           @db.Text
-  lockedById            String?           @db.Uuid
-  lockedAt              DateTime?         @db.Timestamptz
+  submittedById   String?   @db.Uuid
+  submittedAt     DateTime? @db.Timestamptz
+  approvedById    String?   @db.Uuid
+  approvedAt      DateTime? @db.Timestamptz
+  rejectionReason String?   @db.Text
+  lockedById      String?   @db.Uuid
+  lockedAt        DateTime? @db.Timestamptz
 
-  version               Int               @default(0)
-  createdAt             DateTime          @default(now()) @db.Timestamptz
-  updatedAt             DateTime          @updatedAt @db.Timestamptz
+  version   Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
 
-  company               Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  project               Project           @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  site                  Site              @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  submittedBy           Employee?         @relation("DsrSubmittedBy", fields: [submittedById, companyId], references: [id, companyId], onDelete: SetNull)
-  approvedBy            Employee?         @relation("DsrApprovedBy", fields: [approvedById, companyId], references: [id, companyId], onDelete: SetNull)
-  lockedBy              Employee?         @relation("DsrLockedBy", fields: [lockedById, companyId], references: [id, companyId], onDelete: SetNull)
+  company     Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project     Project   @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site        Site      @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  submittedBy Employee? @relation("DsrSubmittedBy", fields: [submittedById, companyId], references: [id, companyId], onDelete: SetNull)
+  approvedBy  Employee? @relation("DsrApprovedBy", fields: [approvedById, companyId], references: [id, companyId], onDelete: SetNull)
+  lockedBy    Employee? @relation("DsrLockedBy", fields: [lockedById, companyId], references: [id, companyId], onDelete: SetNull)
 
-  labourSummaries       DailySiteReportLabour[]
-  auditLogs             DailyReportAuditLog[]
+  labourSummaries DailySiteReportLabour[]
+  auditLogs       DailyReportAuditLog[]
 
   @@unique([id, companyId])
   @@unique([companyId, siteId, businessDate])
@@ -2160,26 +2250,26 @@ model DailySiteReport {
 }
 
 model DailySiteReportLabour {
-  id                    String            @id @default(uuid()) @db.Uuid
-  companyId             String            @db.Uuid
-  reportId              String            @db.Uuid
-  category              LabourCategory
+  id        String         @id @default(uuid()) @db.Uuid
+  companyId String         @db.Uuid
+  reportId  String         @db.Uuid
+  category  LabourCategory
 
   // Specific Subcontractor or Department grouping
-  subcontractorId       String?           @db.Uuid
-  subcontractorName     String?           @db.VarChar(150)
-  tradeCategory         String            @db.VarChar(100)
+  subcontractorId   String? @db.Uuid
+  subcontractorName String? @db.VarChar(150)
+  tradeCategory     String  @db.VarChar(100)
 
-  headcount             Int               @default(0)
-  presentUnits          Decimal           @default(0) @db.Decimal(6, 1)
-  overtimeHours         Decimal           @default(0) @db.Decimal(6, 2)
-  remarks               String?           @db.VarChar(255)
+  headcount     Int     @default(0)
+  presentUnits  Decimal @default(0) @db.Decimal(6, 1)
+  overtimeHours Decimal @default(0) @db.Decimal(6, 2)
+  remarks       String? @db.VarChar(255)
 
-  createdAt             DateTime          @default(now()) @db.Timestamptz
-  updatedAt             DateTime          @updatedAt @db.Timestamptz
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
 
-  company               Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  report                DailySiteReport   @relation(fields: [reportId, companyId], references: [id, companyId], onDelete: Cascade)
+  company Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  report  DailySiteReport @relation(fields: [reportId, companyId], references: [id, companyId], onDelete: Cascade)
 
   @@unique([id, companyId])
   @@index([companyId, reportId])
@@ -2187,24 +2277,23 @@ model DailySiteReportLabour {
 }
 
 model DailyReportAuditLog {
-  id                    String            @id @default(uuid()) @db.Uuid
-  companyId             String            @db.Uuid
-  reportId              String            @db.Uuid
-  actorId               String            @db.Uuid
-  action                String            @db.VarChar(60) // "CREATED", "AUTO_CALCULATED", "EDITED_HEADER", "REGULARIZED_SESSION", "APPROVED", "LOCKED", "REJECTED"
-  fieldName             String?           @db.VarChar(100)
-  oldValue              String?           @db.Text
-  newValue              String?           @db.Text
-  reason                String            @db.VarChar(255)
-  createdAt             DateTime          @default(now()) @db.Timestamptz
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  reportId  String   @db.Uuid
+  actorId   String   @db.Uuid
+  action    String   @db.VarChar(60) // "CREATED", "AUTO_CALCULATED", "EDITED_HEADER", "REGULARIZED_SESSION", "APPROVED", "LOCKED", "REJECTED"
+  fieldName String?  @db.VarChar(100)
+  oldValue  String?  @db.Text
+  newValue  String?  @db.Text
+  reason    String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @db.Timestamptz
 
-  company               Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  report                DailySiteReport   @relation(fields: [reportId, companyId], references: [id, companyId], onDelete: Cascade)
+  company Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  report  DailySiteReport @relation(fields: [reportId, companyId], references: [id, companyId], onDelete: Cascade)
 
   @@unique([id, companyId])
   @@index([companyId, reportId, createdAt])
 }
-
 
 // ---------------------------------------------------------------------------
 // Leave Management (Milestone Phase 2)
@@ -2744,27 +2833,27 @@ model ProjectBudget {
 // Immutable budget content: lines are inserted once with the revision;
 // the row itself only ever moves through the review state machine.
 model BudgetRevision {
-  id                    String               @id @default(uuid()) @db.Uuid
-  companyId             String               @db.Uuid
-  budgetId              String               @db.Uuid
-  revision              Int // strictly increasing per budget
-  status                BudgetRevisionStatus @default(DRAFT)
-  totalAmount           Decimal              @default(0) @db.Decimal(18, 2)
-  notes                 String?
-  submittedByPrincipalId String?             @db.Uuid
-  submittedAt           DateTime?            @db.Timestamptz
-  decidedByPrincipalId  String?              @db.Uuid
-  decidedAt             DateTime?            @db.Timestamptz
-  idempotencyKey        String?
-  requestFingerprint    String? // sha256 of the semantic command
-  version               Int                  @default(0)
-  createdAt             DateTime             @default(now()) @db.Timestamptz
-  updatedAt             DateTime             @updatedAt @db.Timestamptz
+  id                     String               @id @default(uuid()) @db.Uuid
+  companyId              String               @db.Uuid
+  budgetId               String               @db.Uuid
+  revision               Int // strictly increasing per budget
+  status                 BudgetRevisionStatus @default(DRAFT)
+  totalAmount            Decimal              @default(0) @db.Decimal(18, 2)
+  notes                  String?
+  submittedByPrincipalId String?              @db.Uuid
+  submittedAt            DateTime?            @db.Timestamptz
+  decidedByPrincipalId   String?              @db.Uuid
+  decidedAt              DateTime?            @db.Timestamptz
+  idempotencyKey         String?
+  requestFingerprint     String? // sha256 of the semantic command
+  version                Int                  @default(0)
+  createdAt              DateTime             @default(now()) @db.Timestamptz
+  updatedAt              DateTime             @updatedAt @db.Timestamptz
 
-  company     Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  budget      ProjectBudget           @relation(fields: [budgetId, companyId], references: [id, companyId], onDelete: Restrict)
-  submittedBy Principal?              @relation("BudgetRevisionSubmitter", fields: [submittedByPrincipalId], references: [id], onDelete: Restrict)
-  decidedBy   Principal?              @relation("BudgetRevisionDecider", fields: [decidedByPrincipalId], references: [id], onDelete: Restrict)
+  company     Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  budget      ProjectBudget          @relation(fields: [budgetId, companyId], references: [id, companyId], onDelete: Restrict)
+  submittedBy Principal?             @relation("BudgetRevisionSubmitter", fields: [submittedByPrincipalId], references: [id], onDelete: Restrict)
+  decidedBy   Principal?             @relation("BudgetRevisionDecider", fields: [decidedByPrincipalId], references: [id], onDelete: Restrict)
   lines       BudgetRevisionLine[]
   decisions   BudgetReviewDecision[]
 
@@ -2865,4 +2954,39 @@ model CashFlowForecastLine {
   forecast CashFlowForecast @relation(fields: [forecastId, companyId], references: [id, companyId], onDelete: Restrict)
 
   @@index([companyId, forecastId, sortOrder, id])
+}
+
+// ---------------------------------------------------------------------------
+// Company-controlled delegation switches for scoped project/site
+// administration (PI/PD). Every flag defaults OFF — a missing row means
+// nothing is delegated. Versioned for optimistic concurrency.
+// ---------------------------------------------------------------------------
+model CompanyDelegationPolicy {
+  id              String   @id @default(uuid()) @db.Uuid
+  companyId       String   @unique @db.Uuid
+  // PI/PD (or other scoped holders) may create sites under their projects.
+  siteCreate      Boolean  @default(false)
+  // Scoped holders may update site details/status under their projects.
+  siteUpdate      Boolean  @default(false)
+  // Scoped holders may create/update/transition project- and site-scoped
+  // departments. Company and Head Office departments are never delegated.
+  deptManage      Boolean  @default(false)
+  // Scoped holders may place employees in project/site departments — add,
+  // update, end, and transfer memberships inside their assigned scope only.
+  placement       Boolean  @default(false)
+  // Scoped holders may onboard workforce profiles (no login, no invite) into
+  // project/site departments inside their assigned scope only.
+  employeeOnboard Boolean  @default(false)
+  // Scoped holders may suspend and reinstate workforce at their assigned
+  // projects/sites — ends in-scope memberships; never touches out-of-scope
+  // rows, Employee.status, or Principal.status.
+  memberSuspend   Boolean  @default(false)
+  // Scoped holders may permanently exit workforce at their assigned
+  // projects/sites — a stronger, separately delegated authority.
+  memberExit      Boolean  @default(false)
+  version         Int      @default(0)
+  createdAt       DateTime @default(now()) @db.Timestamptz
+  updatedAt       DateTime @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
 }

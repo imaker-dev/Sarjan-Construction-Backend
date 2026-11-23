@@ -23,6 +23,7 @@ import type { OrgDocumentScopeInfo, OrgRepos, OrgUnitOfWork } from './repository
 import type { OrgNodeStatus, ProjectStatus } from '@prisma/client';
 import type { ScopeTarget } from '../access-control/service.js';
 import { OrgEntityNotFoundError, OrgValidationError } from './errors.js';
+import { ForbiddenError } from '../../common/errors/app-error.js';
 import {
   assertTransition,
   COMPANY_TRANSITIONS,
@@ -51,6 +52,21 @@ export interface OrganizationServiceDeps {
     principalId: string,
     permissionKey: string,
     target: ScopeTarget,
+  ) => Promise<boolean>;
+  /** Scoped-permission assert for delegated site create/update. */
+  assertPermission?: (
+    principalId: string,
+    permissionKey: string,
+    target: ScopeTarget,
+  ) => Promise<void>;
+  /**
+   * Company-controlled delegation switches (all default OFF). Scoped holders
+   * may act only when the company enabled the matching flag; absent probe →
+   * treated as OFF (fail closed).
+   */
+  delegationEnabled?: (
+    companyId: string,
+    flag: 'siteCreate' | 'siteUpdate' | 'deptManage',
   ) => Promise<boolean>;
   /**
    * Finance authority gate for nested `initialBudget` creation. Must assert
@@ -716,6 +732,11 @@ export class OrganizationService {
       const { projects, sites, landParcels, audit } = repos;
       const project = await projects.findById(companyId, projectId);
       if (!project) throw new OrgEntityNotFoundError('PROJECT');
+      await this.assertSiteWriteAuthority(actor, companyId, 'siteCreate', 'ORG_SITE_CREATE', {
+        companyId,
+        scopeType: 'PROJECT',
+        scopeId: projectId,
+      });
       if (input.landParcelId !== undefined) {
         const parcel = await landParcels.findById(companyId, input.landParcelId);
         if (parcel?.projectId !== projectId) {
@@ -826,6 +847,11 @@ export class OrganizationService {
     return this.uow.run(async (repos) => {
       const existing = await repos.sites.findById(companyId, id);
       if (!existing) throw new OrgEntityNotFoundError('SITE');
+      await this.assertSiteWriteAuthority(actor, companyId, 'siteUpdate', 'ORG_SITE_UPDATE', {
+        companyId,
+        scopeType: 'SITE',
+        scopeId: id,
+      });
       if (patch.landParcelId !== undefined && patch.landParcelId !== null) {
         const parcel = await repos.landParcels.findById(companyId, patch.landParcelId);
         if (parcel?.projectId !== existing.projectId) {
@@ -1299,6 +1325,43 @@ export class OrganizationService {
         scopeId: companyId,
       }));
     return canSee ? site : stripSiteSensitive(site);
+  }
+
+  /**
+   * Site write authority: company-scope permission holders keep their
+   * existing path; scoped (project/site) holders additionally require the
+   * matching company delegation switch. When no authz deps are wired the
+   * method is a no-op — legacy test doubles keep their route-level contract;
+   * production always provides all three probes (fail closed on a missing
+   * delegation probe).
+   */
+  private async assertSiteWriteAuthority(
+    actor: ActorContext,
+    companyId: string,
+    flag: 'siteCreate' | 'siteUpdate',
+    permission: string,
+    target: ScopeTarget,
+  ): Promise<void> {
+    if (this.deps?.assertPermission === undefined) return;
+    const companyWide =
+      this.deps.hasPermission !== undefined &&
+      (await this.deps.hasPermission(actor.actorId, permission, {
+        companyId,
+        scopeType: 'COMPANY',
+        scopeId: companyId,
+      }));
+    if (companyWide) return;
+    const delegated =
+      this.deps.delegationEnabled === undefined
+        ? false
+        : await this.deps.delegationEnabled(companyId, flag);
+    if (!delegated) {
+      throw new ForbiddenError(
+        'DELEGATION_DISABLED',
+        'company has not enabled delegated site administration',
+      );
+    }
+    await this.deps.assertPermission(actor.actorId, permission, target);
   }
 
   /** Create-time cross-field checks for the extended project profile. */

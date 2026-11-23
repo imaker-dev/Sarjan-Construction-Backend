@@ -166,12 +166,21 @@ const CompanyStatusBody = Type.Object({
   expectedVersion: Type.Optional(Type.Integer()),
 });
 
+const OperationScope = Type.Union([
+  Type.Literal('COMPANY'),
+  Type.Literal('HEAD_OFFICE'),
+  Type.Literal('PROJECT'),
+  Type.Literal('SITE'),
+]);
+
 const CreateOperationBody = Type.Object({
   key: Type.String({ minLength: 1, maxLength: 80 }),
   domain: Type.String({ minLength: 1, maxLength: 80 }),
   name: Type.String({ minLength: 1, maxLength: 200 }),
   description: Type.Optional(Type.String({ maxLength: 1000 })),
   sensitive: Type.Optional(Type.Boolean()),
+  appliesTo: Type.Optional(Type.Array(OperationScope, { minItems: 1, uniqueItems: true })),
+  leadershipInheritable: Type.Optional(Type.Boolean()),
 });
 
 const DeleteOperationParams = Type.Object({

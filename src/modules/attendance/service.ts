@@ -394,6 +394,17 @@ export class AttendanceService {
       if (input.siteId !== undefined && site === null) {
         throw new AttendanceEntityNotFoundError('Site', input.siteId);
       }
+      // Site punches require an active membership in a department scoped to
+      // THIS site — a project-only membership does not authorize punching at
+      // every child site, and suspension/exit removes eligibility instantly.
+      if (site !== null) {
+        const atSite = await repos.memberships.hasActiveAtSite(companyId, employeeId, site.id);
+        if (!atSite) {
+          throw new PunchNotAllowedError(
+            'Employee has no active membership in a department scoped to this site',
+          );
+        }
+      }
       const headOffice =
         input.headOfficeId !== undefined
           ? await repos.headOffices.findById(companyId, input.headOfficeId)

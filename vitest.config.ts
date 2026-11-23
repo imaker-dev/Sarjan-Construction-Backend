@@ -10,5 +10,8 @@ export default defineConfig({
     // parallel runs when TEST_DATABASE_URL is set in the shell.
     exclude: [...configDefaults.exclude, 'test/integration/**'],
     environment: 'node',
+    // API tests build the whole Fastify app; first compile per worker can
+    // exceed the 5s default under parallel load.
+    testTimeout: 15000,
   },
 });

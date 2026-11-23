@@ -132,6 +132,8 @@ describe('platform company creation + claim (real PostgreSQL)', () => {
         principalId: padm2.id,
         tokenHash: 'beef'.repeat(16),
         expiresAt: new Date(Date.now() + 60_000),
+        purpose: 'COMPANY_ONBOARD',
+        companyId: existing.id,
       },
     });
     await expect(
@@ -140,6 +142,8 @@ describe('platform company creation + claim (real PostgreSQL)', () => {
           principalId: padm2.id,
           tokenHash: 'dead'.repeat(16),
           expiresAt: new Date(Date.now() + 60_000),
+          purpose: 'COMPANY_ONBOARD',
+          companyId: existing.id,
         },
       }),
     ).rejects.toThrow();

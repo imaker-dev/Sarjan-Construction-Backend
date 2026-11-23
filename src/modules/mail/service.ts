@@ -97,7 +97,9 @@ export class MailService {
         subject: options.subject,
         ...(options.text !== undefined ? { text: options.text } : {}),
         ...(options.html !== undefined ? { html: options.html } : {}),
-        ...(options.replyTo !== undefined ? { replyTo: options.replyTo } : { replyTo: this.config.fromEmail }),
+        ...(options.replyTo !== undefined
+          ? { replyTo: options.replyTo }
+          : { replyTo: this.config.fromEmail }),
         ...(options.attachments !== undefined ? { attachments: options.attachments } : {}),
       });
 
@@ -120,7 +122,9 @@ export class MailService {
    * Send an employee onboarding / invitation email with claim code.
    */
   async sendEmployeeInvitation(options: EmployeeInvitationMailOptions): Promise<SendMailResult> {
-    const claimUrl = options.claimUrl ?? 'https://sarjan.imaker.in/verify-employee';
+    // No fabricated fallback URL — when the deployment has no trusted
+    // frontend origin, the email shows only the code (manual claim entry).
+    const claimUrl = options.claimUrl;
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e0e0e0; border-radius: 8px;">
         <div style="text-align: center; margin-bottom: 24px;">
@@ -136,11 +140,15 @@ export class MailService {
               ${options.claimCode}
             </span>
           </div>
-          <p style="text-align: center; margin-top: 16px;">
+          ${
+            claimUrl !== undefined
+              ? `<p style="text-align: center; margin-top: 16px;">
             <a href="${claimUrl}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
               Claim Your Account
             </a>
-          </p>
+          </p>`
+              : `<p style="text-align: center; margin-top: 16px; color: #64748b;">Enter this code on the claim page provided by your administrator.</p>`
+          }
         </div>
         <p style="font-size: 13px; color: #94a3b8; text-align: center; margin-bottom: 0;">
           This code is single-use and will expire after onboarding. If you did not expect this invitation, please ignore this email.
@@ -148,7 +156,7 @@ export class MailService {
       </div>
     `;
 
-    const text = `Hello ${options.employeeName},\n\nYou have been invited to join ${options.companyName} on the Sarjan Construction ERP platform.\n\nYour account claim code is: ${options.claimCode}\n\nClaim your account at: ${claimUrl}\n\nThank you,\nSarjan Construction`;
+    const text = `Hello ${options.employeeName},\n\nYou have been invited to join ${options.companyName} on the Sarjan Construction ERP platform.\n\nYour account claim code is: ${options.claimCode}\n\n${claimUrl !== undefined ? `Claim your account at: ${claimUrl}` : 'Enter this code on the claim page provided by your administrator.'}\n\nThank you,\nSarjan Construction`;
 
     return this.sendMail({
       to: options.to,

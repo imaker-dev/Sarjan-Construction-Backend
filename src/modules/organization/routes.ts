@@ -771,9 +771,19 @@ export function organizationRoutes(
     );
 
     // ----------------------------------------------------------------- sites
+    // Create authorizes against the TARGET project (body.projectId): company
+    // grants cover it via scope chains; delegated scoped holders additionally
+    // need the company siteCreate switch — enforced in the service.
     app.post(
       '/org/sites',
-      { schema: { body: CreateSite }, ...perm('ORG_SITE_CREATE', atCompany) },
+      {
+        schema: { body: CreateSite },
+        ...perm('ORG_SITE_CREATE', (r) => ({
+          companyId: companyIdOf(r),
+          scopeType: 'PROJECT',
+          scopeId: (r.body as { projectId?: string }).projectId ?? '',
+        })),
+      },
       async (req, reply) => {
         const { projectId, ...rest } = req.body as { projectId: string } & Record<string, unknown>;
         const input = mapDates(rest, SITE_DATE_KEYS);
@@ -803,9 +813,11 @@ export function organizationRoutes(
     app.get('/org/sites/:id', perm('ORG_SITE_READ', atSite), async (req) =>
       service.getSite(actorOf(req), companyIdOf(req), param(req, 'id')),
     );
+    // Update authorizes at the site scope — a project grant covers its own
+    // sites; delegated callers additionally need company siteUpdate (service).
     app.patch(
       '/org/sites/:id',
-      { schema: { body: UpdateSite }, ...perm('ORG_SITE_UPDATE', atCompany) },
+      { schema: { body: UpdateSite }, ...perm('ORG_SITE_UPDATE', atSite) },
       async (req) => {
         const { expectedVersion, ...patch } = req.body as Record<string, unknown> & {
           expectedVersion?: number;

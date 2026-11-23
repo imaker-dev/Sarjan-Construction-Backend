@@ -970,4 +970,3 @@ export type UpdateDailyReportInput = Static<typeof UpdateDailyReportBody>;
 export type UpdateLabourSummaryInput = Static<typeof UpdateLabourSummaryBody>;
 export type RejectDailyReportInput = Static<typeof RejectDailyReportBody>;
 export type LockDailyReportInput = Static<typeof LockDailyReportBody>;
-

@@ -102,7 +102,11 @@ export class EmployeeDocumentService {
     return employee;
   }
 
-  private async isSelf(actor: ActorContext, companyId: string, employeeId: string): Promise<boolean> {
+  private async isSelf(
+    actor: ActorContext,
+    companyId: string,
+    employeeId: string,
+  ): Promise<boolean> {
     if (actor.actorType !== 'USER') return false;
     const callerEmp = await this.deps.prisma.employee.findFirst({
       where: { companyId, principalId: actor.actorId },
@@ -110,17 +114,33 @@ export class EmployeeDocumentService {
     return callerEmp?.id === employeeId;
   }
 
-  private async checkReadAccess(actor: ActorContext, companyId: string, employeeId: string): Promise<void> {
+  private async checkReadAccess(
+    actor: ActorContext,
+    companyId: string,
+    employeeId: string,
+  ): Promise<void> {
     const self = await this.isSelf(actor, companyId, employeeId);
     if (!self) {
-      await this.deps.authorizer.assertPermission(actor.actorId, EMPLOYEE_READ, companyTarget(companyId));
+      await this.deps.authorizer.assertPermission(
+        actor.actorId,
+        EMPLOYEE_READ,
+        companyTarget(companyId),
+      );
     }
   }
 
-  private async checkManageOrSelfAccess(actor: ActorContext, companyId: string, employeeId: string): Promise<void> {
+  private async checkManageOrSelfAccess(
+    actor: ActorContext,
+    companyId: string,
+    employeeId: string,
+  ): Promise<void> {
     const self = await this.isSelf(actor, companyId, employeeId);
     if (!self) {
-      await this.deps.authorizer.assertPermission(actor.actorId, EMPLOYEE_MANAGE, companyTarget(companyId));
+      await this.deps.authorizer.assertPermission(
+        actor.actorId,
+        EMPLOYEE_MANAGE,
+        companyTarget(companyId),
+      );
     }
   }
 
@@ -285,7 +305,11 @@ export class EmployeeDocumentService {
     input: UpdateEmployeeDocumentInput,
   ): Promise<EmployeeDocumentWithDetails> {
     await this.assertEmployeeExists(companyId, employeeId);
-    await this.deps.authorizer.assertPermission(actor.actorId, EMPLOYEE_MANAGE, companyTarget(companyId));
+    await this.deps.authorizer.assertPermission(
+      actor.actorId,
+      EMPLOYEE_MANAGE,
+      companyTarget(companyId),
+    );
 
     const existing = await this.deps.repo.findByEmployeeAndId(companyId, employeeId, documentId);
     if (!existing) throw new OrgEntityNotFoundError('EMPLOYEE_DOCUMENT');
@@ -330,13 +354,23 @@ export class EmployeeDocumentService {
     input: VerifyEmployeeDocumentInput,
   ): Promise<EmployeeDocumentWithDetails> {
     await this.assertEmployeeExists(companyId, employeeId);
-    await this.deps.authorizer.assertPermission(actor.actorId, EMPLOYEE_MANAGE, companyTarget(companyId));
+    await this.deps.authorizer.assertPermission(
+      actor.actorId,
+      EMPLOYEE_MANAGE,
+      companyTarget(companyId),
+    );
 
     const existing = await this.deps.repo.findByEmployeeAndId(companyId, employeeId, documentId);
     if (!existing) throw new OrgEntityNotFoundError('EMPLOYEE_DOCUMENT');
 
-    if (input.status === 'REJECTED' && (!input.rejectionReason || input.rejectionReason.trim().length === 0)) {
-      throw new OrgValidationError('rejectionReason', 'reason is required when rejecting a document');
+    if (
+      input.status === 'REJECTED' &&
+      (!input.rejectionReason || input.rejectionReason.trim().length === 0)
+    ) {
+      throw new OrgValidationError(
+        'rejectionReason',
+        'reason is required when rejecting a document',
+      );
     }
 
     const verified = await this.deps.repo.verify(companyId, documentId, {
@@ -348,7 +382,8 @@ export class EmployeeDocumentService {
 
     await this.deps.prisma.auditLog.create({
       data: auditEntry(actor, {
-        action: input.status === 'VERIFIED' ? 'EMPLOYEE_DOCUMENT_VERIFIED' : 'EMPLOYEE_DOCUMENT_REJECTED',
+        action:
+          input.status === 'VERIFIED' ? 'EMPLOYEE_DOCUMENT_VERIFIED' : 'EMPLOYEE_DOCUMENT_REJECTED',
         entityType: 'EMPLOYEE_DOCUMENT',
         entityId: documentId,
         companyId,
@@ -367,7 +402,11 @@ export class EmployeeDocumentService {
     documentId: string,
   ): Promise<void> {
     await this.assertEmployeeExists(companyId, employeeId);
-    await this.deps.authorizer.assertPermission(actor.actorId, EMPLOYEE_MANAGE, companyTarget(companyId));
+    await this.deps.authorizer.assertPermission(
+      actor.actorId,
+      EMPLOYEE_MANAGE,
+      companyTarget(companyId),
+    );
 
     const existing = await this.deps.repo.findByEmployeeAndId(companyId, employeeId, documentId);
     if (!existing) throw new OrgEntityNotFoundError('EMPLOYEE_DOCUMENT');
@@ -390,7 +429,11 @@ export class EmployeeDocumentService {
     companyId: string,
     withinDays = 30,
   ): Promise<EmployeeDocumentWithDetails[]> {
-    await this.deps.authorizer.assertPermission(actor.actorId, EMPLOYEE_READ, companyTarget(companyId));
+    await this.deps.authorizer.assertPermission(
+      actor.actorId,
+      EMPLOYEE_READ,
+      companyTarget(companyId),
+    );
     const thresholdDate = new Date();
     thresholdDate.setDate(thresholdDate.getDate() + withinDays);
     return this.deps.repo.findExpiring(companyId, thresholdDate);

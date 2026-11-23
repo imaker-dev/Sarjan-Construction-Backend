@@ -41,11 +41,7 @@ export class AttendanceWorker {
       },
       { connection: this.connection, concurrency: 1 },
     );
-    await this.queue.add(
-      SWEEP_JOB,
-      {},
-      { repeat: { every: SWEEP_INTERVAL_MS }, jobId: SWEEP_JOB },
-    );
+    await this.queue.add(SWEEP_JOB, {}, { repeat: { every: SWEEP_INTERVAL_MS }, jobId: SWEEP_JOB });
     await this.queue.add(
       SETTLEMENT_JOB,
       {},

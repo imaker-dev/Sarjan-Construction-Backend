@@ -27,6 +27,18 @@ export default fp(
       app.log.error({ err }, 'redis connection error');
     });
 
+    // lazyConnect means the client never connects on its own, and
+    // enableOfflineQueue:false makes every command fail while disconnected.
+    // Connect during boot so requests always hit a ready client — a dead
+    // Redis fails the app start outright (fail-closed, same as the prod
+    // rate-limit client). Tests skip this so buildApp() stays free of
+    // network I/O.
+    if (app.config.NODE_ENV !== 'test') {
+      app.addHook('onReady', async () => {
+        await redis.connect();
+      });
+    }
+
     app.decorate('redis', redis);
 
     app.addHook('onClose', async () => {

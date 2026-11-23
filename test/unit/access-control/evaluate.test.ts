@@ -175,9 +175,7 @@ describe('AccessControlService.hasPermission', () => {
 
     it('denies immediately once the last FINANCE membership is gone', async () => {
       const svc = serviceWith([financeAssignment()], siteChain, activePrincipal, false);
-      await expect(svc.hasPermission('p1', 'FINANCE_BUDGET_READ', finTarget)).resolves.toBe(
-        false,
-      );
+      await expect(svc.hasPermission('p1', 'FINANCE_BUDGET_READ', finTarget)).resolves.toBe(false);
     });
 
     it('COMPANY_OWNER keeps Finance access without membership', async () => {

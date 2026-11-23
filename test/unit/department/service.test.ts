@@ -101,6 +101,25 @@ describe('createDepartment', () => {
     });
     expect(dept.siteId).toBe('s1');
     expect(dept.projectId).toBeNull();
+    // Field-scope departments get the default operation set at creation.
+    expect(store.seededOperations).toEqual([{ departmentId: dept.id, scopeType: 'SITE' }]);
+  });
+
+  it('seeds default operations on PROJECT departments, not COMPANY/HEAD_OFFICE', async () => {
+    store.projects.push(fakeProject({ id: 'p1', companyId: 'c1' }));
+    const projDept = await service.createDepartment(actor, 'c1', {
+      scopeType: 'PROJECT',
+      scopeId: 'p1',
+      code: 'pe',
+      name: 'Project Engineering',
+    });
+    const coDept = await service.createDepartment(actor, 'c1', {
+      scopeType: 'COMPANY',
+      code: 'hr',
+      name: 'HR',
+    });
+    expect(store.seededOperations).toEqual([{ departmentId: projDept.id, scopeType: 'PROJECT' }]);
+    expect(store.seededOperations.find((s) => s.departmentId === coDept.id)).toBeUndefined();
   });
 
   it('rejects a head employee from another company', async () => {
@@ -323,5 +342,103 @@ describe('no delete surface', () => {
     for (const key of Object.keys(svc)) {
       expect(key.toLowerCase()).not.toMatch(/delete|remove/);
     }
+  });
+});
+
+describe('delegated department administration (deptManage)', () => {
+  const scopedAuthorizer = (delegated: boolean) => ({
+    calls: [] as { permissionKey: string; target: { scopeType: string; scopeId: string } }[],
+    async assertPermission(
+      principalId: string,
+      permissionKey: string,
+      target: { companyId: string; scopeType: never; scopeId: string },
+    ) {
+      this.calls.push({ permissionKey, target });
+    },
+    async hasPermission() {
+      return false; // scoped caller — never a company-scope grant
+    },
+    async delegationEnabled(_companyId: string, flag: string) {
+      return flag === 'deptManage' && delegated;
+    },
+  });
+
+  const projDept = { scopeType: 'PROJECT' as const, scopeId: 'pr-1', code: 'pe', name: 'PE' };
+
+  it('flag off → scoped create denied (fail closed), even with a scoped grant', async () => {
+    store.projects.push(fakeProject({ id: 'pr-1', companyId: 'c1' }));
+    const scoped = new DepartmentService(new FakeDeptUoW(store), scopedAuthorizer(false));
+    await expect(scoped.createDepartment(actor, 'c1', projDept)).rejects.toThrow(
+      'delegated department administration',
+    );
+    expect(store.departments).toHaveLength(0);
+  });
+
+  it('flag on → scoped create allowed and permission asserted at project scope', async () => {
+    store.projects.push(fakeProject({ id: 'pr-1', companyId: 'c1' }));
+    const authz = scopedAuthorizer(true);
+    const scoped = new DepartmentService(new FakeDeptUoW(store), authz);
+    const dept = await scoped.createDepartment(actor, 'c1', projDept);
+    expect(dept.scopeType).toBe('PROJECT');
+    expect(authz.calls[0]?.target).toMatchObject({ scopeType: 'PROJECT', scopeId: 'pr-1' });
+  });
+
+  it('flag on → scoped update + status allowed; company caller unaffected by flag', async () => {
+    store.departments.push(fakeDepartment({ id: 'd-p', scopeType: 'PROJECT', projectId: 'pr-1' }));
+    const scoped = new DepartmentService(new FakeDeptUoW(store), scopedAuthorizer(true));
+    const updated = await scoped.updateDepartment(actor, 'c1', 'd-p', { name: 'Renamed' });
+    expect(updated.name).toBe('Renamed');
+    const transitioned = await scoped.transitionDepartmentStatus(actor, 'c1', 'd-p', 'ACTIVE');
+    expect(transitioned.status).toBe('ACTIVE');
+
+    // Company-grant holder (hasPermission → true at company): flag off still allowed.
+    const coAuth = {
+      async assertPermission() {
+        return undefined;
+      },
+      async hasPermission() {
+        return true;
+      },
+      async delegationEnabled() {
+        return false;
+      },
+    };
+    store.departments.push(fakeDepartment({ id: 'd-p2', scopeType: 'PROJECT', projectId: 'pr-1' }));
+    const co = new DepartmentService(new FakeDeptUoW(store), coAuth);
+    await expect(co.updateDepartment(actor, 'c1', 'd-p2', { name: 'OK' })).resolves.toBeDefined();
+  });
+
+  it('flag off → scoped update/status denied on project depts', async () => {
+    store.departments.push(fakeDepartment({ id: 'd-p', scopeType: 'PROJECT', projectId: 'pr-1' }));
+    const scoped = new DepartmentService(new FakeDeptUoW(store), scopedAuthorizer(false));
+    await expect(scoped.updateDepartment(actor, 'c1', 'd-p', { name: 'x' })).rejects.toThrow(
+      'delegated department administration',
+    );
+    await expect(scoped.transitionDepartmentStatus(actor, 'c1', 'd-p', 'ACTIVE')).rejects.toThrow(
+      'delegated department administration',
+    );
+  });
+
+  it('COMPANY-scope departments never consult the flag', async () => {
+    store.departments.push(fakeDepartment({ id: 'd-c', scopeType: 'COMPANY' }));
+    let flagCalls = 0;
+    const coAuth = {
+      async assertPermission() {
+        return undefined;
+      },
+      async hasPermission() {
+        return false;
+      },
+      async delegationEnabled() {
+        flagCalls += 1;
+        return false;
+      },
+    };
+    const svc = new DepartmentService(new FakeDeptUoW(store), coAuth);
+    // assertPermission passes → company-scope dept mutates without flag probe.
+    await expect(
+      svc.updateDepartment(actor, 'c1', 'd-c', { name: 'Renamed Co' }),
+    ).resolves.toBeDefined();
+    expect(flagCalls).toBe(0);
   });
 });

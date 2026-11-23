@@ -71,25 +71,53 @@ const actorOf = (request: FastifyRequest): ActorContext => ({
   actorType: 'USER',
 });
 
+// Route-level scope for department creation follows the body's declared
+// scopeType — a project/site-scoped grant authorizes its own departments; a
+// company grant covers all via scope chains. The service re-asserts at the
+// resolved scope and additionally enforces the deptManage delegation switch.
+const atDeclaredScope = (request: FastifyRequest): ScopeTarget => {
+  const companyId = companyIdOf(request);
+  const body = request.body as { scopeType?: string; scopeId?: string };
+  switch (body.scopeType) {
+    case 'PROJECT':
+      return { companyId, scopeType: 'PROJECT', scopeId: body.scopeId ?? '' };
+    case 'SITE':
+      return { companyId, scopeType: 'SITE', scopeId: body.scopeId ?? '' };
+    default:
+      return { companyId, scopeType: 'COMPANY', scopeId: companyId };
+  }
+};
+
+// List queries authorize at the requested scope filter — a project/site
+// scoped grant lists its own departments; no filter means company-wide, which
+// stays company-scope only. The service re-asserts the same target.
+const atListScope = (request: FastifyRequest): ScopeTarget => {
+  const companyId = companyIdOf(request);
+  const q = request.query as { projectId?: string; siteId?: string };
+  if (q.siteId !== undefined) return { companyId, scopeType: 'SITE', scopeId: q.siteId };
+  if (q.projectId !== undefined) return { companyId, scopeType: 'PROJECT', scopeId: q.projectId };
+  return { companyId, scopeType: 'COMPANY', scopeId: companyId };
+};
+
 export function departmentRoutes(service: DepartmentService) {
   return async function routes(app: FastifyInstance) {
-    const auth = (key?: string) => ({
+    const auth = (key?: string, target: (r: FastifyRequest) => ScopeTarget = atCompany) => ({
       preHandler:
         key === undefined
           ? [app.authenticate, app.tenantCompanyGuard]
-          : [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, atCompany)],
+          : [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, target)],
     });
 
     // Writes: create is checked at the declared scope inside the service too;
     // update/status rely on the service's per-department scope check.
     app.post(
       '/departments',
-      { schema: { body: CreateDepartment }, ...auth('DEPARTMENT_CONFIGURE') },
+      { schema: { body: CreateDepartment }, ...auth('DEPARTMENT_CONFIGURE', atDeclaredScope) },
       async (req) => service.createDepartment(actorOf(req), companyIdOf(req), req.body as never),
     );
     app.get(
       '/departments',
-      { schema: { querystring: ListQuery }, ...auth('DEPARTMENT_READ') },
+      { schema: { querystring: ListQuery }, ...auth('DEPARTMENT_READ', atListScope) },
       async (req) => {
         const q = req.query as { status?: never; projectId?: string; siteId?: string };
         return service.listDepartments(actorOf(req), companyIdOf(req), q);

@@ -12,6 +12,13 @@ import {
 import { AccessDeniedError } from '../access-control/errors.js';
 import { passwordService } from '../identity/password.js';
 import type { MailService } from '../mail/service.js';
+import {
+  buildClaimUrl,
+  type ClaimDelivery,
+  type ClaimTokenPurposeValue,
+} from '../../common/claim-url.js';
+
+export type { ClaimDelivery } from '../../common/claim-url.js';
 
 const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
 export function normalizeClaimToken(raw: string): string {
@@ -28,6 +35,8 @@ const hashToken = (raw: string) => {
   return createHash('sha256').update(normalized).digest('hex');
 };
 
+export { resolveClaimOrigin, claimPathFor } from '../../common/claim-url.js';
+
 function assertValidId(id: string, name = 'employeeId'): void {
   if (!id || id === 'undefined' || id === 'null' || id.trim() === '') {
     throw new OrgValidationError(name, `Valid ${name} required`);
@@ -40,7 +49,50 @@ export class EmployeeAccessService {
     private readonly cache?: import('../auth/cache.js').UserProfileCache,
     private readonly mailService?: MailService,
     private readonly appBaseUrl = 'http://localhost:3000',
+    private readonly claimUrlOrigins: readonly string[] = [],
+    private readonly requireHttpsOrigin = false,
   ) {}
+
+  /** Build the trusted claim URL — null when no configured origin exists. */
+  private claimUrlFor(
+    purpose: ClaimTokenPurposeValue,
+    raw: string,
+    requestOrigin?: string,
+  ): string | null {
+    return buildClaimUrl(
+      purpose,
+      raw,
+      requestOrigin,
+      this.claimUrlOrigins,
+      this.appBaseUrl,
+      this.requireHttpsOrigin,
+    );
+  }
+
+  /** Post-commit invite email — honest delivery status, never throws. */
+  private async deliverInvite(
+    to: string | undefined,
+    employeeName: string,
+    companyName: string,
+    claimCode: string,
+    claimUrl: string | null,
+  ): Promise<ClaimDelivery> {
+    if (this.mailService === undefined || to === undefined || to === '') {
+      return 'NOT_ATTEMPTED';
+    }
+    try {
+      const res = await this.mailService.sendEmployeeInvitation({
+        to,
+        employeeName,
+        companyName,
+        claimCode,
+        ...(claimUrl !== null ? { claimUrl } : {}),
+      });
+      return res.success ? 'EMAIL_SENT' : 'EMAIL_FAILED';
+    } catch {
+      return 'EMAIL_FAILED';
+    }
+  }
 
   /** Invite a profile-only employee — suspended principal + one-time code. */
   async invite(
@@ -56,7 +108,9 @@ export class EmployeeAccessService {
     if (loginIdType !== 'EMAIL' || email.length < 3 || email.length > 320) {
       throw new OrgValidationError('loginId', 'valid EMAIL required');
     }
-    return this.prisma.$transaction(async (tx) => {
+    const raw = randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + CLAIM_TTL_MS);
+    const issued = await this.prisma.$transaction(async (tx) => {
       const emp = await tx.employee.findFirst({ where: { id: employeeId, companyId } });
       if (!emp) throw new OrgEntityNotFoundError('EMPLOYEE');
       if (emp.status !== 'ACTIVE')
@@ -80,10 +134,16 @@ export class EmployeeAccessService {
         data: { principalId: principal.id, version: { increment: 1 } },
       });
       if (count !== 1) throw new AppError(409, 'ALREADY_LINKED', 'employee already has an account');
-      const raw = randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + CLAIM_TTL_MS);
+      // Bound invite token: purpose + exact (company, employee, principal).
       await tx.claimToken.create({
-        data: { principalId: principal.id, tokenHash: hashToken(raw), expiresAt },
+        data: {
+          principalId: principal.id,
+          tokenHash: hashToken(raw),
+          expiresAt,
+          purpose: 'EMPLOYEE_INVITE',
+          companyId,
+          employeeId,
+        },
       });
       await tx.auditLog.create({
         data: auditEntry(actor, {
@@ -93,60 +153,70 @@ export class EmployeeAccessService {
           companyId,
         }) as never,
       });
-
-      const baseUrl = (frontendUrl ?? this.appBaseUrl).replace(/\/+$/, '');
-      const claimUrl = `${baseUrl}/verify-employee?token=${raw}`;
-
-      if (this.mailService) {
-        const companyName =
-          'company' in tx &&
-          typeof (tx as { company: { findUnique: (args: unknown) => Promise<{ name: string } | null> } })
-            .company.findUnique === 'function'
-            ? (
-                await (
-                  tx as { company: { findUnique: (args: unknown) => Promise<{ name: string } | null> } }
-                ).company.findUnique({
-                  where: { id: companyId },
-                  select: { name: true },
-                })
-              )?.name ?? 'Sarjan Construction'
-            : 'Sarjan Construction';
-        void this.mailService
-          .sendEmployeeInvitation({
-            to: email,
-            employeeName: emp.displayName,
-            companyName,
-            claimCode: raw,
-            claimUrl,
-          })
-          .catch(() => undefined);
-      }
-
-      return { claimCode: raw, claimUrl, expiresAt };
+      const company = await tx.company.findUnique({
+        where: { id: companyId },
+        select: { name: true },
+      });
+      return { employeeName: emp.displayName, companyName: company?.name ?? '' };
     });
+    const claimUrl = this.claimUrlFor('EMPLOYEE_INVITE', raw, frontendUrl);
+    // Email is sent AFTER the transaction commits — the response reports
+    // the real outcome; the one-time code is always returned for handoff.
+    const delivery = await this.deliverInvite(
+      email,
+      issued.employeeName,
+      issued.companyName,
+      raw,
+      claimUrl,
+    );
+    return { claimCode: raw, claimUrl, expiresAt, delivery };
   }
 
-  /** Reissue — revoke prior unused codes, mint a new one-time code. */
+  /** Reissue — close prior unconsumed INVITE codes for this
+   *  (principal, company), mint a new bound one-time code. A platform
+   *  onboard token on the same principal is never touched. Rejected when
+   *  the account was already claimed — a minted code could never activate. */
   async resend(actor: ActorContext, companyId: string, employeeId: string, frontendUrl?: string) {
     assertValidId(employeeId, 'employeeId');
-    return this.prisma.$transaction(async (tx) => {
+    const raw = randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + CLAIM_TTL_MS);
+    const issued = await this.prisma.$transaction(async (tx) => {
       const emp = await tx.employee.findFirst({
         where: { id: employeeId, companyId, principalId: { not: null } },
       });
       if (!emp?.principalId) throw new OrgEntityNotFoundError('EMPLOYEE');
+      if (emp.status !== 'ACTIVE')
+        throw new AppError(409, 'EMPLOYEE_INACTIVE', 'employee is not active');
       const principal = await tx.principal.findUnique({
         where: { id: emp.principalId },
       });
+      if (principal?.status === 'ACTIVE') {
+        throw new AppError(
+          409,
+          'ACCOUNT_ALREADY_CLAIMED',
+          'account already claimed — no pending invitation',
+        );
+      }
       const recipientEmail = (principal as { loginId?: string } | null)?.loginId;
 
       await tx.claimToken.updateMany({
-        where: { principalId: emp.principalId, consumedAt: null },
+        where: {
+          principalId: emp.principalId,
+          consumedAt: null,
+          purpose: 'EMPLOYEE_INVITE',
+          companyId,
+        },
         data: { consumedAt: new Date() },
       });
-      const raw = randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + CLAIM_TTL_MS);
       await tx.claimToken.create({
-        data: { principalId: emp.principalId, tokenHash: hashToken(raw), expiresAt },
+        data: {
+          principalId: emp.principalId,
+          tokenHash: hashToken(raw),
+          expiresAt,
+          purpose: 'EMPLOYEE_INVITE',
+          companyId,
+          employeeId,
+        },
       });
       await tx.auditLog.create({
         data: auditEntry(actor, {
@@ -156,37 +226,21 @@ export class EmployeeAccessService {
           companyId,
         }) as never,
       });
-
-      const baseUrl = (frontendUrl ?? this.appBaseUrl).replace(/\/+$/, '');
-      const claimUrl = `${baseUrl}/verify-employee?token=${raw}`;
-
-      if (this.mailService && recipientEmail) {
-        const companyName =
-          'company' in tx &&
-          typeof (tx as { company: { findUnique: (args: unknown) => Promise<{ name: string } | null> } })
-            .company.findUnique === 'function'
-            ? (
-                await (
-                  tx as { company: { findUnique: (args: unknown) => Promise<{ name: string } | null> } }
-                ).company.findUnique({
-                  where: { id: companyId },
-                  select: { name: true },
-                })
-              )?.name ?? 'Sarjan Construction'
-            : 'Sarjan Construction';
-        void this.mailService
-          .sendEmployeeInvitation({
-            to: recipientEmail,
-            employeeName: emp.displayName,
-            companyName,
-            claimCode: raw,
-            claimUrl,
-          })
-          .catch(() => undefined);
-      }
-
-      return { claimCode: raw, claimUrl, expiresAt };
+      const company = await tx.company.findUnique({
+        where: { id: companyId },
+        select: { name: true },
+      });
+      return { recipientEmail, employeeName: emp.displayName, companyName: company?.name ?? '' };
     });
+    const claimUrl = this.claimUrlFor('EMPLOYEE_INVITE', raw, frontendUrl);
+    const delivery = await this.deliverInvite(
+      issued.recipientEmail,
+      issued.employeeName,
+      issued.companyName,
+      raw,
+      claimUrl,
+    );
+    return { claimCode: raw, claimUrl, expiresAt, delivery };
   }
 
   async listAssignments(companyId: string, employeeId: string) {
@@ -254,10 +308,7 @@ export class EmployeeAccessService {
 
     return assignments.map((a) => {
       const headOffice =
-        a.headOffice ??
-        a.project?.headOffice ??
-        a.site?.project.headOffice ??
-        null;
+        a.headOffice ?? a.project?.headOffice ?? a.site?.project.headOffice ?? null;
       const headOfficeId = a.headOfficeId ?? headOffice?.id ?? null;
 
       const project = a.project ?? a.site?.project ?? null;

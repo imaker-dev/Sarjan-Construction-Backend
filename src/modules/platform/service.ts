@@ -12,6 +12,7 @@ import {
   VersionConflictError,
 } from '../organization/errors.js';
 import { AppError, UnauthorizedError } from '../../common/errors/app-error.js';
+import { buildClaimUrl } from '../../common/claim-url.js';
 import { assertTransition, COMPANY_TRANSITIONS } from '../organization/lifecycle.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import type { PlatformUnitOfWork } from './repository.js';
@@ -84,7 +85,7 @@ export interface CreateCompanyResult {
   companyCode: string;
   adminPrincipalId: string;
   claimCode: string; // raw — returned once, never stored or logged
-  claimUrl: string;
+  claimUrl: string | null; // null when no trusted origin is configured — manual handoff
   claimExpiresAt: Date;
 }
 
@@ -99,6 +100,7 @@ export class PlatformService {
     private readonly uow: PlatformUnitOfWork,
     private readonly appBaseUrl = 'http://localhost:3000',
     private readonly impersonationHandler?: ImpersonationHandler | undefined,
+    private readonly requireHttpsOrigin = false,
   ) {}
 
   /** Create a customer Company + pending first admin + claim code. One tx. */
@@ -202,6 +204,9 @@ export class PlatformService {
         principalId: admin.id,
         tokenHash: hashToken(raw),
         expiresAt,
+        purpose: 'COMPANY_ONBOARD',
+        companyId: company.id,
+        employeeId: null,
       });
       await repos.audit.record(
         auditEntry(actor, {
@@ -217,7 +222,16 @@ export class PlatformService {
           },
         }),
       );
-      const claimUrl = `${this.appBaseUrl.replace(/\/+$/, '')}/onboard?token=${raw}`;
+      // Platform-side mints have no request-supplied origin: only the
+      // configured APP_BASE_URL (https in production) can host claim links.
+      const claimUrl = buildClaimUrl(
+        'COMPANY_ONBOARD',
+        raw,
+        undefined,
+        [],
+        this.appBaseUrl,
+        this.requireHttpsOrigin,
+      );
       return {
         companyId: company.id,
         companyCode: code,
@@ -263,13 +277,33 @@ export class PlatformService {
     });
   }
 
-  /** Consume a claim code: set the admin's real password + activate. One tx.
-   *  The audit actor is the claimed principal themselves (a real USER). */
+  /** Consume a claim code: set the claimant's real password + activate.
+   *  One tx. Both purposes may claim — an EMPLOYEE_INVITE code additionally
+   *  requires its bound employee to exist, be ACTIVE, and be linked to the
+   *  token's principal. Checks run BEFORE the atomic consume so a binding
+   *  failure never burns a still-valid code. The audit actor is the
+   *  claimed principal themselves (a real USER). */
   async consumeClaim(rawToken: string, password: string) {
     if (!password || password.length === 0)
       throw new OrgValidationError('password', 'password is required');
     const tokenHash = hashToken(rawToken);
     return this.uow.run(async (repos) => {
+      const active = await repos.claimTokens.findActive(tokenHash, new Date());
+      if (active === null) {
+        throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
+      }
+      if (active.purpose === 'EMPLOYEE_INVITE') {
+        const bound =
+          active.employeeId === null
+            ? null
+            : await repos.employees.findBound(active.companyId, active.employeeId);
+        // The triple FK already guarantees principal+company match — the
+        // code check is defence-in-depth plus the business status rule.
+        // One opaque error for every binding failure — never leak which.
+        if (bound?.status !== 'ACTIVE' || bound.principalId !== active.principalId) {
+          throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
+        }
+      }
       const token = await repos.claimTokens.consume(tokenHash, new Date());
       if (token === null) {
         throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
@@ -291,6 +325,7 @@ export class PlatformService {
             action: 'ACCOUNT_CLAIM_COMPLETED',
             entityType: 'PRINCIPAL',
             entityId: token.principalId,
+            ...(token.companyId !== null ? { companyId: token.companyId } : {}),
             statusBefore: 'SUSPENDED',
             statusAfter: 'ACTIVE',
           },
@@ -320,6 +355,11 @@ export class PlatformService {
     return this.uow.run(async (repos) => {
       const active = await repos.claimTokens.findActive(tokenHash, new Date());
       if (!active) {
+        throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
+      }
+      // Only a company-onboard code may write company profile + head office.
+      // Checked BEFORE consume — a purpose mismatch never burns a valid token.
+      if (active.purpose !== 'COMPANY_ONBOARD') {
         throw new UnauthorizedError('CLAIM_INVALID', 'claim code is invalid, expired, or used');
       }
       const token = await repos.claimTokens.consume(tokenHash, new Date());
@@ -476,6 +516,9 @@ export class PlatformService {
         principalId: adminPrincipalId,
         tokenHash: hashToken(raw),
         expiresAt,
+        purpose: 'COMPANY_ONBOARD',
+        companyId,
+        employeeId: null,
       });
       await repos.audit.record(
         auditEntry(actor, {
@@ -489,7 +532,14 @@ export class PlatformService {
           },
         }),
       );
-      const claimUrl = `${this.appBaseUrl.replace(/\/+$/, '')}/onboard?token=${raw}`;
+      const claimUrl = buildClaimUrl(
+        'COMPANY_ONBOARD',
+        raw,
+        undefined,
+        [],
+        this.appBaseUrl,
+        this.requireHttpsOrigin,
+      );
       return {
         claimCode: raw,
         claimUrl,
@@ -629,6 +679,8 @@ export class PlatformService {
       name: string;
       description?: string;
       sensitive?: boolean;
+      appliesTo?: string[];
+      leadershipInheritable?: boolean;
     },
   ) {
     const key = input.key.trim().toUpperCase();
@@ -647,6 +699,25 @@ export class PlatformService {
       throw new OrgValidationError('name', '1–200 chars');
     }
     const description = (input.description ?? '').trim();
+    const scopes = ['COMPANY', 'HEAD_OFFICE', 'PROJECT', 'SITE'];
+    const appliesTo = input.appliesTo ?? ['COMPANY'];
+    if (
+      appliesTo.length === 0 ||
+      appliesTo.some((s) => !scopes.includes(s)) ||
+      new Set(appliesTo).size !== appliesTo.length
+    ) {
+      throw new OrgValidationError(
+        'appliesTo',
+        'non-empty subset of COMPANY|HEAD_OFFICE|PROJECT|SITE, no duplicates',
+      );
+    }
+    const leadershipInheritable = input.leadershipInheritable ?? false;
+    if (leadershipInheritable && input.sensitive === true) {
+      throw new OrgValidationError(
+        'leadershipInheritable',
+        'sensitive operations can never be leadership-inheritable',
+      );
+    }
 
     return this.uow.run(async (repos) => {
       const existing = await repos.operations.find(key);
@@ -663,6 +734,8 @@ export class PlatformService {
         name,
         description,
         sensitive: input.sensitive ?? false,
+        appliesTo,
+        leadershipInheritable,
       });
       await repos.audit.record(
         auditEntry(actor, {
@@ -674,6 +747,8 @@ export class PlatformService {
             key: { before: null, after: key },
             domain: { before: null, after: domain },
             name: { before: null, after: name },
+            appliesTo: { before: null, after: appliesTo },
+            leadershipInheritable: { before: null, after: leadershipInheritable },
           },
         }),
       );
@@ -719,18 +794,18 @@ export class PlatformService {
   /**
    * Super Admin Impersonation: login as tenant company owner with audit records.
    */
-  async impersonateCompany(
-    actor: ActorContext,
-    companyId: string,
-    meta: Record<string, unknown>,
-  ) {
+  async impersonateCompany(actor: ActorContext, companyId: string, meta: Record<string, unknown>) {
     return this.uow.run(async (repos) => {
       const company = await repos.companies.findById(companyId, companyId);
       if (!company || company.isPlatform) {
         throw new OrgEntityNotFoundError('COMPANY');
       }
       if (company.status === 'SUSPENDED' || company.status === 'ARCHIVED') {
-        throw new AppError(400, 'COMPANY_INACTIVE', 'Cannot impersonate suspended or archived company');
+        throw new AppError(
+          400,
+          'COMPANY_INACTIVE',
+          'Cannot impersonate suspended or archived company',
+        );
       }
 
       const principalId = repos.companies.findOwnerPrincipalId
@@ -738,11 +813,19 @@ export class PlatformService {
         : null;
 
       if (!principalId) {
-        throw new AppError(404, 'NO_TENANT_ADMIN_FOUND', 'Company has no active administrator user');
+        throw new AppError(
+          404,
+          'NO_TENANT_ADMIN_FOUND',
+          'Company has no active administrator user',
+        );
       }
 
       if (!this.impersonationHandler) {
-        throw new AppError(500, 'IMPERSONATION_NOT_CONFIGURED', 'Impersonation handler not configured');
+        throw new AppError(
+          500,
+          'IMPERSONATION_NOT_CONFIGURED',
+          'Impersonation handler not configured',
+        );
       }
 
       await repos.audit.record(

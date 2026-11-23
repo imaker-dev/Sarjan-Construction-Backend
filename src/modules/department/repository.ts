@@ -54,6 +54,17 @@ export interface DepartmentRepository {
     data: Record<string, unknown>,
     expectedVersion?: number,
   ): Promise<Department>;
+  /** Enable the reviewed leadership-inheritable operation set on a new
+   *  PROJECT/SITE department — PI/PD role coverage and member inheritance
+   *  both derive from these rows. Called inside the create transaction. */
+  seedDefaultOperations(
+    companyId: string,
+    departmentId: string,
+    scopeType: ScopeType,
+  ): Promise<number>;
+  /** Clear headEmployeeId only when the given employee currently holds it —
+   *  used when their membership in this department ends/transfers. */
+  clearHeadIf(companyId: string, id: string, employeeId: string): Promise<{ count: number }>;
 }
 
 export interface EmployeeRepository {
@@ -65,6 +76,16 @@ export interface EmployeeRepository {
 export interface DepartmentRepos {
   departments: DepartmentRepository;
   employees: EmployeeRepository;
+  /** Minimal membership probe for head-eligibility checks — scoped to one
+   *  department, never a general roster. */
+  memberships: {
+    hasActive(
+      companyId: string,
+      departmentId: string,
+      employeeId: string,
+      at: Date,
+    ): Promise<boolean>;
+  };
   companies: CompanyRepository;
   projects: ProjectRepository;
   sites: SiteRepository;
@@ -98,7 +119,11 @@ export function makeDepartmentRepos(tx: Tx): DepartmentRepos {
           where: {
             companyId,
             ...(filter?.status ? { status: filter.status } : {}),
-            ...(filter?.projectId ? { projectId: filter.projectId } : {}),
+            // A project filter covers the project's own departments plus
+            // departments scoped to its child sites.
+            ...(filter?.projectId
+              ? { OR: [{ projectId: filter.projectId }, { site: { projectId: filter.projectId } }] }
+              : {}),
             ...(filter?.siteId ? { siteId: filter.siteId } : {}),
           },
           include: {
@@ -122,6 +147,32 @@ export function makeDepartmentRepos(tx: Tx): DepartmentRepos {
           (args) => tx.department.updateMany(args),
           () => tx.department.findFirst({ where: { id, companyId } }),
         ),
+      clearHeadIf: (companyId, id, employeeId) =>
+        tx.department.updateMany({
+          where: { id, companyId, headEmployeeId: employeeId },
+          data: { headEmployeeId: null, version: { increment: 1 } },
+        }),
+      seedDefaultOperations: (companyId, departmentId, scopeType) =>
+        tx.$executeRaw`
+          INSERT INTO "DepartmentOperation" ("id", "companyId", "departmentId", "operationKey")
+          SELECT gen_random_uuid(), ${companyId}::uuid, ${departmentId}::uuid, "key"
+          FROM "OperationCatalogueEntry"
+          WHERE "sensitive" = FALSE
+            AND "leadershipInheritable" = TRUE
+            AND ${scopeType}::"ScopeType" = ANY("appliesTo")
+          ON CONFLICT ("companyId", "departmentId", "operationKey") DO NOTHING`,
+    },
+    memberships: {
+      hasActive: async (companyId, departmentId, employeeId, at) =>
+        (await tx.departmentMembership.count({
+          where: {
+            companyId,
+            departmentId,
+            employeeId,
+            startedAt: { lte: at },
+            OR: [{ endedAt: null }, { endedAt: { gt: at } }],
+          },
+        })) > 0,
     },
     employees: {
       findById: (companyId, id) => tx.employee.findFirst({ where: { id, companyId } }),

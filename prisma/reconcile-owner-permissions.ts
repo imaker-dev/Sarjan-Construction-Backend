@@ -9,7 +9,10 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
-import { reconcileHoAdminRoles, reconcileOwnerPermissions } from '../src/modules/setup/reconcile.js';
+import {
+  reconcileHoAdminRoles,
+  reconcileOwnerPermissions,
+} from '../src/modules/setup/reconcile.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (DATABASE_URL === undefined || DATABASE_URL.trim() === '') {
@@ -21,7 +24,9 @@ const pool = new pg.Pool({ connectionString: DATABASE_URL });
 const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 
 prisma
-  .$transaction((tx) => reconcileOwnerPermissions(tx).then(async (a) => a + (await reconcileHoAdminRoles(tx))))
+  .$transaction((tx) =>
+    reconcileOwnerPermissions(tx).then(async (a) => a + (await reconcileHoAdminRoles(tx))),
+  )
   .then((changed) => {
     console.log(`reconcile complete — ${changed} grant(s) added`);
   })

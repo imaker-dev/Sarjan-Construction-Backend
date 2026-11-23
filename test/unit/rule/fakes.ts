@@ -71,6 +71,8 @@ export function makeRuleRepos(store: RuleStore): RuleRepos {
       list: async () => [],
       create: async () => store.departments[0] as never,
       update: async () => store.departments[0] as never,
+      clearHeadIf: async () => ({ count: 0 }),
+      seedDefaultOperations: async () => 0,
     },
     operations: {
       findById: async (companyId, id) => {

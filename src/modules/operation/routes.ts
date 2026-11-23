@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { ActorContext } from '../organization/types.js';
+import type { ScopeTarget } from '../access-control/service.js';
 import type { OperationAssignmentService } from './assignment.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 
@@ -14,6 +15,11 @@ const StatusBody = Type.Object({
 
 const PatchStatusBody = Type.Object({
   status: Type.Optional(Type.Union([Type.Literal('ACTIVE'), Type.Literal('INACTIVE')])),
+});
+
+const EffectiveOpsQuery = Type.Object({
+  cursor: Type.Optional(Type.String({ maxLength: 200 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
 });
 
 function companyIdOf(request: FastifyRequest): string {
@@ -40,6 +46,19 @@ export function operationAssignmentRoutes(service: OperationAssignmentService) {
           scopeId: companyIdOf(r),
         })),
       ],
+    });
+    const scopedPerm = (key: string, scope: (r: FastifyRequest) => ScopeTarget) => ({
+      preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, scope)],
+    });
+    const atProject = (request: FastifyRequest): ScopeTarget => ({
+      companyId: companyIdOf(request),
+      scopeType: 'PROJECT',
+      scopeId: (request.params as { id?: string }).id ?? '',
+    });
+    const atSite = (request: FastifyRequest): ScopeTarget => ({
+      companyId: companyIdOf(request),
+      scopeType: 'SITE',
+      scopeId: (request.params as { id?: string }).id ?? '',
     });
 
     // Global operation catalogue — admin reads the master list.
@@ -87,7 +106,13 @@ export function operationAssignmentRoutes(service: OperationAssignmentService) {
       async (req) => {
         const { id, operationKey } = req.params as { id: string; operationKey: string };
         const body = (req.body ?? {}) as { status?: 'ACTIVE' | 'INACTIVE' };
-        return service.toggleDeptOperationStatus(actorOf(req), companyIdOf(req), id, operationKey, body.status);
+        return service.toggleDeptOperationStatus(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          operationKey,
+          body.status,
+        );
       },
     );
     app.patch(
@@ -96,7 +121,13 @@ export function operationAssignmentRoutes(service: OperationAssignmentService) {
       async (req) => {
         const { id, operationKey } = req.params as { id: string; operationKey: string };
         const body = (req.body ?? {}) as { status?: 'ACTIVE' | 'INACTIVE' };
-        return service.toggleDeptOperationStatus(actorOf(req), companyIdOf(req), id, operationKey, body.status);
+        return service.toggleDeptOperationStatus(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          operationKey,
+          body.status,
+        );
       },
     );
 
@@ -144,7 +175,13 @@ export function operationAssignmentRoutes(service: OperationAssignmentService) {
       async (req) => {
         const { id, operationKey } = req.params as { id: string; operationKey: string };
         const body = (req.body ?? {}) as { status?: 'ACTIVE' | 'INACTIVE' };
-        return service.toggleEmployeeOperationStatus(actorOf(req), companyIdOf(req), id, operationKey, body.status);
+        return service.toggleEmployeeOperationStatus(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          operationKey,
+          body.status,
+        );
       },
     );
     app.patch(
@@ -153,7 +190,41 @@ export function operationAssignmentRoutes(service: OperationAssignmentService) {
       async (req) => {
         const { id, operationKey } = req.params as { id: string; operationKey: string };
         const body = (req.body ?? {}) as { status?: 'ACTIVE' | 'INACTIVE' };
-        return service.toggleEmployeeOperationStatus(actorOf(req), companyIdOf(req), id, operationKey, body.status);
+        return service.toggleEmployeeOperationStatus(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          operationKey,
+          body.status,
+        );
+      },
+    );
+
+    // Effective-operation inspection — who can perform what inside a scope.
+    app.get(
+      '/org/projects/:id/effective-operations',
+      { schema: { querystring: EffectiveOpsQuery }, ...scopedPerm('ORG_PROJECT_READ', atProject) },
+      async (req) => {
+        const query = req.query as { cursor?: string; limit?: number };
+        return service.listEffectiveOperationsForScope(
+          actorOf(req),
+          companyIdOf(req),
+          { scopeType: 'PROJECT', scopeId: (req.params as { id: string }).id },
+          query,
+        );
+      },
+    );
+    app.get(
+      '/org/sites/:id/effective-operations',
+      { schema: { querystring: EffectiveOpsQuery }, ...scopedPerm('ORG_SITE_READ', atSite) },
+      async (req) => {
+        const query = req.query as { cursor?: string; limit?: number };
+        return service.listEffectiveOperationsForScope(
+          actorOf(req),
+          companyIdOf(req),
+          { scopeType: 'SITE', scopeId: (req.params as { id: string }).id },
+          query,
+        );
       },
     );
   };

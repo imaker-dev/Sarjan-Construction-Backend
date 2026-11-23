@@ -22,47 +22,57 @@ describe('RoleNotificationDispatcher', () => {
 
     fakePrisma = {
       roleAssignment: {
-        findMany: vi.fn().mockImplementation(async ({ where }: { where: { role?: { key?: { in?: string[] } } } }) => {
-          const keys = where.role?.key?.in ?? [];
-          if (keys.includes('PROJECT_MANAGER')) {
-            return [
-              {
-                principalId: 'p-pm-1',
-                principal: {
-                  id: 'p-pm-1',
-                  loginId: 'pm@example.com',
-                  employees: [{ displayName: 'Site PM', contactEmail: 'pm@example.com' }],
-                },
-              },
-            ];
-          }
-          if (keys.includes('HO_ADMIN')) {
-            return [
-              {
-                principalId: 'p-ho-1',
-                principal: {
-                  id: 'p-ho-1',
-                  loginId: 'ho@example.com',
-                  employees: [{ displayName: 'HO Admin', contactEmail: 'ho@example.com' }],
-                },
-              },
-            ];
-          }
-          return [];
-        }),
+        findMany: vi
+          .fn()
+          .mockImplementation(
+            async ({ where }: { where: { role?: { key?: { in?: string[] } } } }) => {
+              const keys = where.role?.key?.in ?? [];
+              if (keys.includes('PROJECT_MANAGER')) {
+                return [
+                  {
+                    principalId: 'p-pm-1',
+                    principal: {
+                      id: 'p-pm-1',
+                      loginId: 'pm@example.com',
+                      employees: [{ displayName: 'Site PM', contactEmail: 'pm@example.com' }],
+                    },
+                  },
+                ];
+              }
+              if (keys.includes('HO_ADMIN')) {
+                return [
+                  {
+                    principalId: 'p-ho-1',
+                    principal: {
+                      id: 'p-ho-1',
+                      loginId: 'ho@example.com',
+                      employees: [{ displayName: 'HO Admin', contactEmail: 'ho@example.com' }],
+                    },
+                  },
+                ];
+              }
+              return [];
+            },
+          ),
       },
       principal: {
         findUnique: vi.fn().mockImplementation(async ({ where }: { where: { id: string } }) => {
           return {
             id: where.id,
             loginId: `${where.id}@example.com`,
-            employees: [{ displayName: `User ${where.id}`, contactEmail: `${where.id}@example.com` }],
+            employees: [
+              { displayName: `User ${where.id}`, contactEmail: `${where.id}@example.com` },
+            ],
           };
         }),
       },
       notification: {
         create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
-          const row = { id: `notif-${String(createdNotifications.length + 1)}`, createdAt: new Date(), ...data };
+          const row = {
+            id: `notif-${String(createdNotifications.length + 1)}`,
+            createdAt: new Date(),
+            ...data,
+          };
           createdNotifications.push(row);
           return row;
         }),

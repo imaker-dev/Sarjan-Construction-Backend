@@ -69,13 +69,20 @@ function fakePrisma(store: FakeStore) {
         let count = 0;
         const w = where as Record<string, unknown>;
         for (const t of store.claimTokens) {
-          if (t.principalId === w.principalId && t.consumedAt === (w.consumedAt ?? null)) {
+          const match = ['principalId', 'consumedAt', 'purpose', 'companyId', 'employeeId'].every(
+            (k) => !(k in w) || t[k] === w[k],
+          );
+          if (match) {
             t.consumedAt = (data as { consumedAt: Date }).consumedAt;
             count += 1;
           }
         }
         return { count };
       },
+    },
+    company: {
+      findUnique: async ({ where }: Record<string, unknown>) =>
+        (where as { id: string }).id === COMPANY ? { name: 'Test Co' } : null,
     },
     role: {
       findFirst: async ({ where }: Record<string, unknown>) => {
@@ -297,14 +304,136 @@ describe('EmployeeAccessService.invite', () => {
       Error,
     );
   });
+
+  it('mints a purpose-bound EMPLOYEE_INVITE token tied to company + employee', async () => {
+    const s = store();
+    const svc = new EmployeeAccessService(fakePrisma(s), undefined, undefined, 'https://app.test');
+    await svc.invite(ACTOR, COMPANY, 'e-1', 'w@co.test');
+    const tok = s.claimTokens[0] as {
+      purpose?: string;
+      companyId?: string;
+      employeeId?: string;
+      principalId?: string;
+    };
+    expect(tok.purpose).toBe('EMPLOYEE_INVITE');
+    expect(tok.companyId).toBe(COMPANY);
+    expect(tok.employeeId).toBe('e-1');
+    expect(tok.principalId).toBe(first(s.principals).id);
+  });
+
+  it('ignores a hostile x-frontend-url and uses the configured base', async () => {
+    const s = store();
+    const svc = new EmployeeAccessService(fakePrisma(s), undefined, undefined, 'https://app.test', [
+      'https://app.test',
+    ]);
+    const res = await svc.invite(
+      ACTOR,
+      COMPANY,
+      'e-1',
+      'w@co.test',
+      'EMAIL',
+      'https://evil.example/phish',
+    );
+    expect(res.claimUrl).toBe(`https://app.test/verify-employee?token=${res.claimCode}`);
+    expect(String(res.claimUrl)).not.toContain('evil.example');
+  });
+
+  it('honours an exactly-allowlisted request origin', async () => {
+    const s = store();
+    const svc = new EmployeeAccessService(fakePrisma(s), undefined, undefined, 'https://app.test', [
+      'https://erp.test',
+    ]);
+    const res = await svc.invite(ACTOR, COMPANY, 'e-1', 'w@co.test', 'EMAIL', 'https://erp.test');
+    expect(res.claimUrl).toBe(`https://erp.test/verify-employee?token=${res.claimCode}`);
+  });
+
+  it('returns no URL when no trusted origin resolves (https required, http base)', async () => {
+    const s = store();
+    const svc = new EmployeeAccessService(
+      fakePrisma(s),
+      undefined,
+      undefined,
+      'http://insecure.test',
+      [],
+      true, // production-style HTTPS requirement
+    );
+    const res = await svc.invite(ACTOR, COMPANY, 'e-1', 'w@co.test');
+    expect(res.claimUrl).toBeNull(); // manual claim-code handoff only
+    expect(res.claimCode).toHaveLength(64);
+  });
+
+  it('reports honest delivery status — NOT_ATTEMPTED without mail, SENT/FAILED per outcome', async () => {
+    // No mail service wired → NOT_ATTEMPTED.
+    const s1 = store();
+    const noMail = new EmployeeAccessService(
+      fakePrisma(s1),
+      undefined,
+      undefined,
+      'https://a.test',
+    );
+    const r1 = await noMail.invite(ACTOR, COMPANY, 'e-1', 'w@co.test');
+    expect(r1.delivery).toBe('NOT_ATTEMPTED');
+
+    const mkMail = (success: boolean, throws = false) =>
+      ({
+        sendEmployeeInvitation: async (p: Record<string, unknown>) => {
+          if (throws) throw new Error('smtp down');
+          captured.push(p);
+          return { success };
+        },
+      }) as never;
+    const captured: Record<string, unknown>[] = [];
+
+    const s2 = store();
+    const okMail = new EmployeeAccessService(
+      fakePrisma(s2),
+      undefined,
+      mkMail(true),
+      'https://a.test',
+    );
+    const r2 = await okMail.invite(ACTOR, COMPANY, 'e-1', 'w@co.test');
+    expect(r2.delivery).toBe('EMAIL_SENT');
+    // The raw code reaches the mail channel once — never persisted in the DB.
+    expect(captured[0]?.claimCode).toBe(r2.claimCode);
+    expect(captured[0]?.claimUrl).toBe(`https://a.test/verify-employee?token=${r2.claimCode}`);
+
+    const s3 = store();
+    const failMail = new EmployeeAccessService(
+      fakePrisma(s3),
+      undefined,
+      mkMail(false),
+      'https://a.test',
+    );
+    expect((await failMail.invite(ACTOR, COMPANY, 'e-1', 'w@co.test')).delivery).toBe(
+      'EMAIL_FAILED',
+    );
+
+    const s4 = store();
+    const throwMail = new EmployeeAccessService(
+      fakePrisma(s4),
+      undefined,
+      mkMail(false, true),
+      'https://a.test',
+    );
+    expect((await throwMail.invite(ACTOR, COMPANY, 'e-1', 'w@co.test')).delivery).toBe(
+      'EMAIL_FAILED',
+    );
+  });
 });
 
 describe('EmployeeAccessService.resend', () => {
   it('revokes prior code, mints new one — at most one active', async () => {
     const s = store();
     first(s.employees).principalId = 'pri-9';
-    s.principals.push({ id: 'pri-9' });
-    s.claimTokens.push({ id: 't1', principalId: 'pri-9', tokenHash: 'h1', consumedAt: null });
+    s.principals.push({ id: 'pri-9', status: 'SUSPENDED', loginId: 'w@co.test' });
+    s.claimTokens.push({
+      id: 't1',
+      principalId: 'pri-9',
+      tokenHash: 'h1',
+      consumedAt: null,
+      purpose: 'EMPLOYEE_INVITE',
+      companyId: COMPANY,
+    });
     const svc = new EmployeeAccessService(fakePrisma(s));
     const res = await svc.resend(ACTOR, COMPANY, 'e-1');
     expect(res.claimCode).toHaveLength(64);
@@ -313,6 +442,57 @@ describe('EmployeeAccessService.resend', () => {
     );
     expect(active).toHaveLength(1);
     expect((s.claimTokens[0] as { consumedAt: Date | null }).consumedAt).not.toBeNull();
+  });
+
+  it('closes only EMPLOYEE_INVITE tokens for this company — other purposes survive', async () => {
+    const s = store();
+    first(s.employees).principalId = 'pri-9';
+    s.principals.push({ id: 'pri-9', status: 'SUSPENDED', loginId: 'w@co.test' });
+    s.claimTokens.push(
+      {
+        id: 't-inv',
+        principalId: 'pri-9',
+        tokenHash: 'h-inv',
+        consumedAt: null,
+        purpose: 'EMPLOYEE_INVITE',
+        companyId: COMPANY,
+      },
+      {
+        id: 't-onb',
+        principalId: 'pri-9',
+        tokenHash: 'h-onb',
+        consumedAt: null,
+        purpose: 'COMPANY_ONBOARD',
+        companyId: 'co-other',
+      },
+      {
+        id: 't-xco',
+        principalId: 'pri-9',
+        tokenHash: 'h-xco',
+        consumedAt: null,
+        purpose: 'EMPLOYEE_INVITE',
+        companyId: 'co-other',
+      },
+    );
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await svc.resend(ACTOR, COMPANY, 'e-1');
+    const byId = (id: string) =>
+      s.claimTokens.find((t) => t.id === id) as { consumedAt: Date | null };
+    expect(byId('t-inv').consumedAt).not.toBeNull(); // revoked — same scope
+    expect(byId('t-onb').consumedAt).toBeNull(); // onboard token untouched
+    expect(byId('t-xco').consumedAt).toBeNull(); // other company's invite untouched
+  });
+
+  it('rejects resend for an already-claimed (ACTIVE) account', async () => {
+    const s = store();
+    first(s.employees).principalId = 'pri-9';
+    s.principals.push({ id: 'pri-9', status: 'ACTIVE', loginId: 'w@co.test' });
+    const svc = new EmployeeAccessService(fakePrisma(s));
+    await expect(svc.resend(ACTOR, COMPANY, 'e-1')).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'ACCOUNT_ALREADY_CLAIMED',
+    });
+    expect(s.claimTokens).toHaveLength(0); // nothing minted
   });
 });
 

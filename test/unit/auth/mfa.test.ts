@@ -24,7 +24,9 @@ describe('MfaService', () => {
       }),
     } as unknown as Redis;
 
-    sendMailMock = vi.fn().mockResolvedValue({ accepted: ['admin@acme.com'], rejected: [], messageId: 'm1' });
+    sendMailMock = vi
+      .fn()
+      .mockResolvedValue({ accepted: ['admin@acme.com'], rejected: [], messageId: 'm1' });
     mockMailService = {
       sendMail: sendMailMock,
     } as unknown as MailService;

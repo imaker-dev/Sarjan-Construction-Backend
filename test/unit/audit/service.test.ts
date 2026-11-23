@@ -96,7 +96,9 @@ describe('AuditService', () => {
           return filtered;
         },
         findFirst: async ({ where }: { where: { id: string; companyId: string } }) => {
-          return auditLogs.find((r) => r.id === where.id && r.companyId === where.companyId) ?? null;
+          return (
+            auditLogs.find((r) => r.id === where.id && r.companyId === where.companyId) ?? null
+          );
         },
       },
       principal: {
@@ -131,7 +133,11 @@ describe('AuditService', () => {
     expect(auditLogs[0]?.actorId).toBe('principal-1');
 
     const id2 = await recordCompanyAuditLog(
-      { auditLog: { create: async ({ data }: { data: Record<string, unknown> }) => ({ id: 'log-2', ...data }) } } as never,
+      {
+        auditLog: {
+          create: async ({ data }: { data: Record<string, unknown> }) => ({ id: 'log-2', ...data }),
+        },
+      } as never,
       {
         companyId,
         actor,
@@ -177,7 +183,9 @@ describe('AuditService', () => {
       entityId: 'dept-1',
     });
 
-    const employeesOnly = await service.listCompanyLogs(actor, companyId, { entityType: 'EMPLOYEE' });
+    const employeesOnly = await service.listCompanyLogs(actor, companyId, {
+      entityType: 'EMPLOYEE',
+    });
     expect(employeesOnly.items).toHaveLength(1);
     expect(employeesOnly.items[0]?.entityType).toBe('EMPLOYEE');
   });

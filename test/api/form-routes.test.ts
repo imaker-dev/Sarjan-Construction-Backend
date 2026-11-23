@@ -44,7 +44,13 @@ async function makeApp(opts: { allow?: boolean } = {}) {
       calls.push(`updateForm:${cid}:${id}:${JSON.stringify(patch)}:ev=${ev}`);
       return { id, ...(patch as object), version: (ev ?? 1) + 1 };
     },
-    transitionFormStatus: async (_actor: unknown, cid: string, id: string, to: string, ev?: number) => {
+    transitionFormStatus: async (
+      _actor: unknown,
+      cid: string,
+      id: string,
+      to: string,
+      ev?: number,
+    ) => {
       calls.push(`transition:${cid}:${id}:${to}:ev=${ev}`);
       return { id, status: to, version: (ev ?? 1) + 1 };
     },

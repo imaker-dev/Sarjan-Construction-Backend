@@ -27,6 +27,7 @@ export interface AppConfig {
   NOTIFICATIONS_WORKER: 'auto' | 'on' | 'off';
   SWAGGER_UI: boolean;
   APP_BASE_URL: string;
+  CLAIM_URL_ORIGINS: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -90,6 +91,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // enabled; on by default in dev/test. Set SWAGGER_UI=false to force off.
     SWAGGER_UI: env.SWAGGER_UI !== undefined ? env.SWAGGER_UI === 'true' : nodeEnv !== 'production',
     APP_BASE_URL: str('APP_BASE_URL', env.FRONTEND_URL ?? 'http://localhost:3000'),
+    // Claim-link origin trust: request-supplied origins are honoured ONLY
+    // when they exactly match one of these configured origins (comma-
+    // separated). APP_BASE_URL is always the fallback; an empty list means
+    // "no request origin is ever trusted". In production only https://
+    // origins may appear in emailed claim links.
+    CLAIM_URL_ORIGINS: env.CLAIM_URL_ORIGINS ?? '',
   };
 
   // Document storage: optional in dev; when set it must be an absolute path

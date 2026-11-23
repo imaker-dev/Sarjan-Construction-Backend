@@ -190,10 +190,10 @@ export interface AttendanceRepos {
       id: string,
     ): Promise<
       | (SafetyTvtSession & {
-        attendees: (SafetyTvtAttendee & {
-          employee: Pick<Employee, 'id' | 'employeeCode' | 'displayName' | 'tradeCategory'>;
-        })[];
-      })
+          attendees: (SafetyTvtAttendee & {
+            employee: Pick<Employee, 'id' | 'employeeCode' | 'displayName' | 'tradeCategory'>;
+          })[];
+        })
       | null
     >;
     list(
@@ -234,8 +234,8 @@ export interface AttendanceRepos {
       id: string,
     ): Promise<
       | (Site & {
-        project: { timezone: string };
-      })
+          project: { timezone: string };
+        })
       | null
     >;
   };
@@ -248,6 +248,9 @@ export interface AttendanceRepos {
       employeeId: string,
       headOfficeId: string,
     ): Promise<boolean>;
+    /** W4: effective membership in a department scoped to THIS EXACT site —
+     *  project-only memberships do not authorize punching at child sites. */
+    hasActiveAtSite(companyId: string, employeeId: string, siteId: string): Promise<boolean>;
   };
   employees: {
     findByPrincipal(
@@ -269,14 +272,14 @@ export interface AttendanceRepos {
       id: string,
     ): Promise<
       | (DailySiteReport & {
-        labourSummaries: DailySiteReportLabour[];
-        auditLogs: DailyReportAuditLog[];
-        site: Pick<Site, 'id' | 'code' | 'name'>;
-        project: { id: string; code: string; name: string };
-        submittedBy?: { id: string; employeeCode: string; displayName: string } | null;
-        approvedBy?: { id: string; employeeCode: string; displayName: string } | null;
-        lockedBy?: { id: string; employeeCode: string; displayName: string } | null;
-      })
+          labourSummaries: DailySiteReportLabour[];
+          auditLogs: DailyReportAuditLog[];
+          site: Pick<Site, 'id' | 'code' | 'name'>;
+          project: { id: string; code: string; name: string };
+          submittedBy?: { id: string; employeeCode: string; displayName: string } | null;
+          approvedBy?: { id: string; employeeCode: string; displayName: string } | null;
+          lockedBy?: { id: string; employeeCode: string; displayName: string } | null;
+        })
       | null
     >;
     findBySiteAndDate(
@@ -285,8 +288,8 @@ export interface AttendanceRepos {
       businessDate: string,
     ): Promise<
       | (DailySiteReport & {
-        labourSummaries: DailySiteReportLabour[];
-      })
+          labourSummaries: DailySiteReportLabour[];
+        })
       | null
     >;
     list(
@@ -360,7 +363,9 @@ export interface AttendanceRepos {
       },
     ): Promise<DailyReportAuditLog>;
     getAuditLogs(companyId: string, reportId: string): Promise<DailyReportAuditLog[]>;
-    getActiveSitesForSettlement(companyId?: string): Promise<{ id: string; companyId: string; projectId: string }[]>;
+    getActiveSitesForSettlement(
+      companyId?: string,
+    ): Promise<{ id: string; companyId: string; projectId: string }[]>;
   };
   audit: AuditRepository;
 }
@@ -797,8 +802,7 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             }[];
           };
 
-          const primaryMembership =
-            emp.memberships.find((m) => m.isPrimary) ?? emp.memberships[0];
+          const primaryMembership = emp.memberships.find((m) => m.isPrimary) ?? emp.memberships[0];
           const dept = primaryMembership?.department
             ? {
                 id: primaryMembership.department.id,
@@ -962,54 +966,105 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             : {}),
         };
 
-        const [sessions, statusGroups, totalsAgg] = await Promise.all([
-          tx.attendanceSession.findMany({
-            where,
-            include: {
-              employee: {
-                select: {
-                  id: true,
-                  employeeCode: true,
-                  displayName: true,
-                  tradeCategory: true,
-                  designation: true,
-                  memberships: {
-                    where: { endedAt: null },
-                    select: {
-                      isPrimary: true,
-                      department: {
-                        select: { id: true, code: true, name: true, category: true },
+        const [sessions, statusGroups, totalsAgg, siteRoleAssignments, siteSessions] =
+          await Promise.all([
+            tx.attendanceSession.findMany({
+              where,
+              include: {
+                employee: {
+                  select: {
+                    id: true,
+                    employeeCode: true,
+                    displayName: true,
+                    tradeCategory: true,
+                    designation: true,
+                    memberships: {
+                      where: { endedAt: null },
+                      select: {
+                        isPrimary: true,
+                        department: {
+                          select: { id: true, code: true, name: true, category: true },
+                        },
                       },
                     },
                   },
                 },
+                site: {
+                  select: { id: true, code: true, name: true },
+                },
+                headOffice: {
+                  select: { id: true, code: true, name: true },
+                },
+                breaks: true,
               },
-              site: {
-                select: { id: true, code: true, name: true },
+              orderBy: { punchInAt: 'asc' },
+            }),
+            tx.attendanceSession.groupBy({
+              by: ['status'],
+              where,
+              _count: { _all: true },
+            }),
+            tx.attendanceSession.aggregate({
+              where,
+              _sum: {
+                presentUnits: true,
+                overtimePUnits: true,
+                totalPUnits: true,
+                overtimeHours: true,
               },
-              headOffice: {
-                select: { id: true, code: true, name: true },
-              },
-              breaks: true,
-            },
-            orderBy: { punchInAt: 'asc' },
-          }),
-          tx.attendanceSession.groupBy({
-            by: ['status'],
-            where,
-            _count: { _all: true },
-          }),
-          tx.attendanceSession.aggregate({
-            where,
-            _sum: {
-              presentUnits: true,
-              overtimePUnits: true,
-              totalPUnits: true,
-              overtimeHours: true,
-            },
-            _count: { _all: true },
-          }),
+              _count: { _all: true },
+            }),
+            siteId
+              ? tx.roleAssignment.findMany({
+                  where: { companyId, siteId, revokedAt: null },
+                  select: { principalId: true },
+                })
+              : Promise.resolve([]),
+            siteId
+              ? tx.attendanceSession.findMany({
+                  where: { companyId, siteId },
+                  select: { employeeId: true },
+                  distinct: ['employeeId'],
+                })
+              : Promise.resolve([]),
+          ]);
+
+        const businessDateObj = new Date(`${businessDate}T00:00:00.000Z`);
+
+        const sitePrincipalIds = siteRoleAssignments
+          .map((r) => r.principalId)
+          .filter((pid): pid is string => Boolean(pid));
+
+        const siteRoleEmployees =
+          sitePrincipalIds.length > 0
+            ? await tx.employee.findMany({
+                where: { companyId, principalId: { in: sitePrincipalIds } },
+                select: { id: true },
+              })
+            : [];
+
+        const siteWorkerIds = new Set<string>([
+          ...siteSessions.map((s) => s.employeeId),
+          ...siteRoleEmployees.map((e) => e.id),
         ]);
+
+        const leaves =
+          siteWorkerIds.size > 0
+            ? await tx.leaveRequest.findMany({
+                where: {
+                  companyId,
+                  employeeId: { in: Array.from(siteWorkerIds) },
+                  status: 'APPROVED',
+                  startDate: { lte: businessDateObj },
+                  endDate: { gte: businessDateObj },
+                },
+                include: {
+                  employee: {
+                    select: { id: true, employeeCode: true, displayName: true, designation: true },
+                  },
+                },
+              })
+            : [];
 
         const distinctEmployees = new Set(sessions.map((s) => s.employeeId));
         let completedSessions = 0;
@@ -1030,8 +1085,7 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
               department: { id: string; code: string; name: string; category: string };
             }[];
           };
-          const primaryMembership =
-            emp.memberships.find((m) => m.isPrimary) ?? emp.memberships[0];
+          const primaryMembership = emp.memberships.find((m) => m.isPrimary) ?? emp.memberships[0];
           if (primaryMembership?.department) {
             const d = primaryMembership.department;
             let dm = deptMap.get(d.id);
@@ -1075,7 +1129,9 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           totalTotalPUnits: Number(Number(totalsAgg._sum.totalPUnits ?? 0).toFixed(1)),
           totalOvertimeHours: Number(Number(totalsAgg._sum.overtimeHours ?? 0).toFixed(2)),
           ...(deptMap.size > 0 ? { departmentSummaries: Array.from(deptMap.values()) } : {}),
+          totalApprovedLeaves: leaves.length,
           sessions,
+          leaves,
         };
       },
     },
@@ -1133,6 +1189,15 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             department: { baseHeadOfficeId: headOfficeId, status: 'ACTIVE' },
           },
         })) > 0,
+      hasActiveAtSite: async (companyId, employeeId, siteId) =>
+        (await tx.departmentMembership.count({
+          where: {
+            companyId,
+            employeeId,
+            endedAt: null,
+            department: { siteId, status: 'ACTIVE' },
+          },
+        })) > 0,
     },
     employees: {
       findByPrincipal: (companyId, principalId) =>
@@ -1188,13 +1253,13 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             ...(data.remarks !== undefined ? { remarks: data.remarks } : {}),
             ...(data.attendeeEmployeeIds && data.attendeeEmployeeIds.length > 0
               ? {
-                attendees: {
-                  create: data.attendeeEmployeeIds.map((empId) => ({
-                    company: { connect: { id: companyId } },
-                    employee: { connect: { id_companyId: { id: empId, companyId } } },
-                  })),
-                },
-              }
+                  attendees: {
+                    create: data.attendeeEmployeeIds.map((empId) => ({
+                      company: { connect: { id: companyId } },
+                      employee: { connect: { id_companyId: { id: empId, companyId } } },
+                    })),
+                  },
+                }
               : {}),
           },
           include: {
@@ -1303,11 +1368,11 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           ...(filter.status ? { status: filter.status } : {}),
           ...(filter.fromDate || filter.toDate
             ? {
-              businessDate: {
-                ...(filter.fromDate ? { gte: filter.fromDate } : {}),
-                ...(filter.toDate ? { lte: filter.toDate } : {}),
-              },
-            }
+                businessDate: {
+                  ...(filter.fromDate ? { gte: filter.fromDate } : {}),
+                  ...(filter.toDate ? { lte: filter.toDate } : {}),
+                },
+              }
             : {}),
         };
 
@@ -1355,10 +1420,18 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
               catCSubconCount: data.catCSubconCount,
               catCSubconUnits: data.catCSubconUnits,
               ...(data.weather ? { weather: data.weather } : {}),
-              ...(data.weatherStoppageHours !== undefined ? { weatherStoppageHours: data.weatherStoppageHours } : {}),
-              ...(data.workProgressNotes !== undefined ? { workProgressNotes: data.workProgressNotes } : {}),
-              ...(data.siteObstaclesRemarks !== undefined ? { siteObstaclesRemarks: data.siteObstaclesRemarks } : {}),
-              ...(data.safetyIncidentReported !== undefined ? { safetyIncidentReported: data.safetyIncidentReported } : {}),
+              ...(data.weatherStoppageHours !== undefined
+                ? { weatherStoppageHours: data.weatherStoppageHours }
+                : {}),
+              ...(data.workProgressNotes !== undefined
+                ? { workProgressNotes: data.workProgressNotes }
+                : {}),
+              ...(data.siteObstaclesRemarks !== undefined
+                ? { siteObstaclesRemarks: data.siteObstaclesRemarks }
+                : {}),
+              ...(data.safetyIncidentReported !== undefined
+                ? { safetyIncidentReported: data.safetyIncidentReported }
+                : {}),
               ...(data.safetyNotes !== undefined ? { safetyNotes: data.safetyNotes } : {}),
               ...(data.status ? { status: data.status } : {}),
               version: { increment: 1 },
@@ -1483,7 +1556,7 @@ export interface AttendanceUnitOfWork {
 }
 
 export class PrismaAttendanceUnitOfWork implements AttendanceUnitOfWork {
-  constructor(private readonly prisma: PrismaClient) { }
+  constructor(private readonly prisma: PrismaClient) {}
 
   run<T>(fn: (repos: AttendanceRepos) => Promise<T>): Promise<T> {
     return this.prisma.$transaction((tx) => fn(makeAttendanceRepos(tx)));

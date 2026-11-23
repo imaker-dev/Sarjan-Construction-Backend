@@ -298,29 +298,37 @@ describe('Phase 1 — employee login + HO Admin (real PostgreSQL)', () => {
       data: { code: 'EA2', name: 'Legacy', isPlatform: false },
     });
     // SYSTEM principal must exist inside the tx — parallel teardown may delete
-    // it between runs, so ensure it atomically with the reconcile.
-    const first = await prisma.$transaction(async (tx) => {
-      await tx.principal.upsert({
-        where: { id: SYSTEM_PRINCIPAL_ID },
-        update: {},
-        create: { id: SYSTEM_PRINCIPAL_ID, type: 'SYSTEM', status: 'ACTIVE' },
-      });
-      return reconcileHoAdminRoles(tx);
-    });
+    // it between runs, so ensure it atomically with the reconcile. The whole
+    // template catalogue provisions in one tx — the 5s interactive default
+    // is too tight on a shared disposable DB.
+    const first = await prisma.$transaction(
+      async (tx) => {
+        await tx.principal.upsert({
+          where: { id: SYSTEM_PRINCIPAL_ID },
+          update: {},
+          create: { id: SYSTEM_PRINCIPAL_ID, type: 'SYSTEM', status: 'ACTIVE' },
+        });
+        return reconcileHoAdminRoles(tx);
+      },
+      { timeout: 30_000 },
+    );
     expect(first).toBeGreaterThan(0);
     const role = await prisma.role.findFirstOrThrow({
       where: { companyId: company.id, key: 'HO_ADMIN' },
     });
     const grants = await prisma.rolePermission.findMany({ where: { roleId: role.id } });
     expect(grants).toHaveLength(HO_ADMIN_PERMISSIONS.length);
-    const second = await prisma.$transaction(async (tx) => {
-      await tx.principal.upsert({
-        where: { id: SYSTEM_PRINCIPAL_ID },
-        update: {},
-        create: { id: SYSTEM_PRINCIPAL_ID, type: 'SYSTEM', status: 'ACTIVE' },
-      });
-      return reconcileHoAdminRoles(tx);
-    });
+    const second = await prisma.$transaction(
+      async (tx) => {
+        await tx.principal.upsert({
+          where: { id: SYSTEM_PRINCIPAL_ID },
+          update: {},
+          create: { id: SYSTEM_PRINCIPAL_ID, type: 'SYSTEM', status: 'ACTIVE' },
+        });
+        return reconcileHoAdminRoles(tx);
+      },
+      { timeout: 30_000 },
+    );
     expect(second).toBe(0);
   });
 });

@@ -42,6 +42,44 @@ export interface ListAuditLogsResponse {
   nextCursor: string | null;
 }
 
+export interface ScopedActivityQuery {
+  limit?: number | undefined;
+  cursor?: string | undefined;
+  entityType?: string | undefined;
+  action?: string | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
+}
+
+export interface ScopedActivityActor {
+  id: string;
+  type: string;
+  displayName: string | null;
+  employeeCode: string | null;
+}
+
+export interface ScopedActivityItem {
+  id: string;
+  eventKey: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  actorId: string;
+  actorType: string;
+  actor: ScopedActivityActor;
+  correlationId: string | null;
+  occurredAt: string;
+  statusBefore: string | null;
+  statusAfter: string | null;
+  changedFields: Record<string, { before: unknown; after: unknown }> | null;
+  scope: { projectId: string | null; siteId: string | null };
+}
+
+export interface ListScopedActivityResponse {
+  items: ScopedActivityItem[];
+  nextCursor: string | null;
+}
+
 export interface StoreCompanyLogInput {
   companyId: string;
   actor: ActorContext;

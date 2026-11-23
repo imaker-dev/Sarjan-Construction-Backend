@@ -18,8 +18,7 @@ export interface AuthStore {
 }
 
 export function emptyAuthStore(): AuthStore {
-  return { principals: [],
-    employees: [], sessions: [], refreshTokens: [], auditLog: [] };
+  return { principals: [], employees: [], sessions: [], refreshTokens: [], auditLog: [] };
 }
 
 let nextId = 0;
@@ -148,7 +147,7 @@ export function makeAuthRepos(store: AuthStore): AuthRepos {
 }
 
 export class FakeAuthUoW implements AuthUnitOfWork {
-  constructor(public readonly store: AuthStore) { }
+  constructor(public readonly store: AuthStore) {}
 
   async run<T>(fn: (repos: AuthRepos) => Promise<T>): Promise<T> {
     const snapshot = structuredClone(this.store);

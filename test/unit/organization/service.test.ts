@@ -20,6 +20,8 @@ import {
   PROJECT_TRANSITIONS,
 } from '../../../src/modules/organization/lifecycle.js';
 import type { ActorContext } from '../../../src/modules/organization/types.js';
+import type { ScopeTarget } from '../../../src/modules/access-control/service.js';
+import type { DelegationFlag } from '../../../src/modules/organization/delegation.js';
 import { emptyStore, FakeUnitOfWork, makeFakeRepos, type Store } from './fakes.js';
 
 const actor: ActorContext = { actorId: 'actor-1', actorType: 'SYSTEM', correlationId: 'corr-1' };
@@ -290,5 +292,117 @@ describe('repository safety surface', () => {
     }
     expect('update' in repos.audit).toBe(false);
     expect('delete' in repos.audit).toBe(false);
+  });
+});
+
+describe('delegated site administration (siteCreate / siteUpdate)', () => {
+  const svc = (opts: { companyWide?: boolean; siteCreate?: boolean; siteUpdate?: boolean }) => {
+    const calls: { key: string; target: ScopeTarget }[] = [];
+    const service = new OrganizationService(new FakeUnitOfWork(store), {
+      hasPermission: async () => opts.companyWide === true,
+      assertPermission: async (_p: string, key: string, target: ScopeTarget) => {
+        calls.push({ key, target });
+      },
+      delegationEnabled: async (_c: string, flag: DelegationFlag) =>
+        flag === 'siteCreate' ? opts.siteCreate === true : opts.siteUpdate === true,
+    });
+    return { service, calls };
+  };
+
+  const seedProject = async () => {
+    const s = svc({});
+    const company = await s.service.createCompany(actor, { code: 'ca', name: 'A' });
+    await s.service.createHeadOffice(actor, company.id, {
+      code: 'ho',
+      name: 'HO',
+      isPrimary: true,
+    });
+    store.departments.push(
+      {
+        companyId: company.id,
+        scopeType: 'COMPANY',
+        category: 'FINANCE',
+        id: `fin-${company.id}`,
+        status: 'ACTIVE',
+        version: 0,
+      },
+      {
+        companyId: company.id,
+        scopeType: 'COMPANY',
+        category: 'ADMINISTRATION',
+        id: `adm-${company.id}`,
+        status: 'ACTIVE',
+        version: 0,
+      },
+    );
+    const project = await s.service.createProject(actor, company.id, {
+      code: 'p1',
+      name: 'P',
+      timezone: 'UTC',
+    });
+    return { company, project };
+  };
+
+  it('siteCreate off → scoped create denied; no site row written', async () => {
+    const { company, project } = await seedProject();
+    const { service: s } = svc({ siteCreate: false });
+    await expect(
+      s.createSite(actor, company.id, project.id, { code: 's1', name: 'S' }),
+    ).rejects.toThrow('delegated site administration');
+    expect(store.sites).toHaveLength(0);
+  });
+
+  it('siteCreate on → scoped create allowed, permission asserted at project scope', async () => {
+    const { company, project } = await seedProject();
+    const { service: s, calls } = svc({ siteCreate: true });
+    const site = await s.createSite(actor, company.id, project.id, { code: 's1', name: 'S' });
+    expect(site.projectId).toBe(project.id);
+    expect(calls[0]).toMatchObject({
+      key: 'ORG_SITE_CREATE',
+      target: { scopeType: 'PROJECT', scopeId: project.id },
+    });
+  });
+
+  it('company-scope grant bypasses the flag entirely', async () => {
+    const { company, project } = await seedProject();
+    const { service: s, calls } = svc({ companyWide: true, siteCreate: false });
+    await expect(
+      s.createSite(actor, company.id, project.id, { code: 's1', name: 'S' }),
+    ).resolves.toBeDefined();
+    expect(calls).toHaveLength(0); // no scoped assert needed
+  });
+
+  it('siteUpdate off → scoped update denied; on → allowed at site scope', async () => {
+    const { company, project } = await seedProject();
+    const creator = svc({ companyWide: true });
+    const site = (await creator.service.createSite(actor, company.id, project.id, {
+      code: 's1',
+      name: 'S',
+    })) as { id: string };
+    const off = svc({ siteUpdate: false });
+    await expect(
+      off.service.updateSite(actor, company.id, site.id, { name: 'Renamed' }),
+    ).rejects.toThrow('delegated site administration');
+    const on = svc({ siteUpdate: true });
+    const calls = on.calls;
+    const updated = await on.service.updateSite(actor, company.id, site.id, {
+      name: 'Renamed',
+    });
+    expect(updated.name).toBe('Renamed');
+    expect(calls[0]).toMatchObject({
+      key: 'ORG_SITE_UPDATE',
+      target: { scopeType: 'SITE', scopeId: site.id },
+    });
+  });
+
+  it('cross-company project → not found regardless of flag', async () => {
+    const { company } = await seedProject();
+    const { service: s } = svc({ siteCreate: true });
+    await expect(
+      s.createSite(actor, company.id, '00000000-0000-4000-8000-0000000000ff', {
+        code: 'x',
+        name: 'x',
+      }),
+    ).rejects.toThrow(OrgEntityNotFoundError);
   });
 });

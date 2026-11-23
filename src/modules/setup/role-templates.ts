@@ -1,5 +1,10 @@
 // Approved assignable tenant role templates — whitelist for grant/revoke.
 export const HO_ADMIN_ROLE_KEY = 'HO_ADMIN';
+// NOTE: OPERATION_CONFIGURE / OPERATION_EMPLOYEE_ASSIGN are intentionally
+// absent — those routes authorize at COMPANY scope, which a HEAD_OFFICE-scoped
+// grant can never cover. Operation configuration remains company-admin
+// authority. OPERATION_READ stays: it is also enforced at department scope
+// for operation-definition reads, which an HO-scoped grant does cover.
 export const HO_ADMIN_PERMISSIONS: readonly string[] = [
   'ORG_HEAD_OFFICE_READ',
   'ORG_HEAD_OFFICE_UPDATE',
@@ -8,8 +13,6 @@ export const HO_ADMIN_PERMISSIONS: readonly string[] = [
   'DEPARTMENT_READ',
   'DEPARTMENT_CONFIGURE',
   'OPERATION_READ',
-  'OPERATION_CONFIGURE',
-  'OPERATION_EMPLOYEE_ASSIGN',
   'EMPLOYEE_READ',
   'COMPLIANCE_READ',
   'ATTENDANCE_RECORD',
@@ -131,6 +134,14 @@ export const PROJECT_DIRECTOR_PERMISSIONS: readonly string[] = [
   'ORG_SITE_READ',
   'DEPARTMENT_READ',
   'EMPLOYEE_READ',
+  // Scoped membership administration — effective only when the company
+  // enables the "placement" delegation switch. Never company-wide access.
+  'EMPLOYEE_MEMBER_MANAGE',
+  // Scoped workforce onboarding (profile only, no login) — effective only
+  // when the company enables the "employeeOnboard" delegation switch.
+  'EMPLOYEE_ONBOARD',
+  // Scoped read of member contact fields via the member-detail endpoint.
+  'EMPLOYEE_CONTACT_READ',
   'OPERATION_READ',
   'FORM_READ',
   'COMPLIANCE_READ',
@@ -146,8 +157,24 @@ export const PROJECT_DIRECTOR_PERMISSIONS: readonly string[] = [
 export const PROJECT_INCHARGE_PERMISSIONS: readonly string[] = [
   'ORG_PROJECT_READ',
   'ORG_SITE_READ',
+  // Delegated site administration — effective only when the company enables
+  // the matching delegation switch (CompanyDelegationPolicy, all off by
+  // default). Scoped at project; never sibling or company-wide access.
+  'ORG_SITE_CREATE',
+  'ORG_SITE_UPDATE',
   'DEPARTMENT_READ',
+  // Scoped project/site-department administration behind the deptManage
+  // delegation switch — company/HO departments stay company-admin territory.
+  'DEPARTMENT_CONFIGURE',
   'EMPLOYEE_READ',
+  // Scoped membership administration behind the "placement" delegation
+  // switch — project + child-site departments only.
+  'EMPLOYEE_MEMBER_MANAGE',
+  // Scoped workforce onboarding (profile only, no login) behind the
+  // "employeeOnboard" delegation switch — project + child-site depts only.
+  'EMPLOYEE_ONBOARD',
+  // Scoped read of member contact fields via the member-detail endpoint.
+  'EMPLOYEE_CONTACT_READ',
   'OPERATION_READ',
   'FORM_READ',
   'DOCUMENT_UPLOAD',
@@ -191,7 +218,6 @@ export const TENANT_ROLE_TEMPLATES: readonly TenantRoleTemplate[] = [
       'EMPLOYEE_READ',
       'EMPLOYEE_MANAGE',
       'OPERATION_READ',
-      'OPERATION_EMPLOYEE_ASSIGN',
       'FORM_READ',
       'COMPLIANCE_READ',
       'ATTENDANCE_RECORD',

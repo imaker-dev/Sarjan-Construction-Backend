@@ -88,11 +88,7 @@ export class AccessControlService {
     // Finance-role assignments additionally require current placement in an
     // ACTIVE FINANCE department — fail-closed when the last such membership
     // has ended or the department has left ACTIVE status.
-    return this.deps.access.hasActiveFinanceMembership(
-      principalId,
-      target.companyId,
-      this.now(),
-    );
+    return this.deps.access.hasActiveFinanceMembership(principalId, target.companyId, this.now());
   }
 
   async assertPermission(

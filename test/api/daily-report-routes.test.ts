@@ -31,7 +31,11 @@ afterAll(async () => {
 async function makeApp(opts: { allow?: boolean } = {}) {
   const allow = opts.allow ?? true;
   const mockAttendanceService = {
-    calculateDailyReport: async (_actor: unknown, _cid: string, input: Record<string, unknown>) => ({
+    calculateDailyReport: async (
+      _actor: unknown,
+      _cid: string,
+      input: Record<string, unknown>,
+    ) => ({
       id: REPORT_ID,
       companyId: CID,
       siteId: input.siteId,

@@ -24,11 +24,7 @@ export interface AccessRepository {
    * holds an effective membership in an ACTIVE FINANCE-category department
    * of this company. Same predicate as grant-time checks.
    */
-  hasActiveFinanceMembership(
-    principalId: string,
-    companyId: string,
-    at: Date,
-  ): Promise<boolean>;
+  hasActiveFinanceMembership(principalId: string, companyId: string, at: Date): Promise<boolean>;
   companyExists(companyId: string): Promise<boolean>;
   resolveSiteChain(companyId: string, siteId: string): Promise<ScopeChain | null>;
   resolveProjectChain(companyId: string, projectId: string): Promise<ScopeChain | null>;

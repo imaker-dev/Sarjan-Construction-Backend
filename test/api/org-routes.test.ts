@@ -39,10 +39,12 @@ describe('org + department routes require authentication', () => {
       { headOfficeId: uuid, code: 'P1', name: 'P1', timezone: 'Asia/Kolkata' },
     ],
     ['GET', '/api/v1/org/projects'],
+    ['GET', `/api/v1/org/projects/${uuid}/activity`],
     ['PATCH', `/api/v1/org/projects/${uuid}`, { name: 'X' }],
     ['POST', `/api/v1/org/projects/${uuid}/status`, { to: 'ARCHIVED' }],
     ['POST', '/api/v1/org/sites', { projectId: uuid, code: 'S1', name: 'S1' }],
     ['GET', '/api/v1/org/sites'],
+    ['GET', `/api/v1/org/sites/${uuid}/activity`],
     ['PATCH', `/api/v1/org/sites/${uuid}`, { name: 'X' }],
     ['POST', `/api/v1/org/sites/${uuid}/status`, { to: 'ARCHIVED' }],
     [

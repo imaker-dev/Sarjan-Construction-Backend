@@ -4,8 +4,12 @@ import type { MailService } from './service.js';
 
 const SendMailBody = Type.Object({
   to: Type.Union([Type.String({ format: 'email' }), Type.Array(Type.String({ format: 'email' }))]),
-  cc: Type.Optional(Type.Union([Type.String({ format: 'email' }), Type.Array(Type.String({ format: 'email' }))])),
-  bcc: Type.Optional(Type.Union([Type.String({ format: 'email' }), Type.Array(Type.String({ format: 'email' }))])),
+  cc: Type.Optional(
+    Type.Union([Type.String({ format: 'email' }), Type.Array(Type.String({ format: 'email' }))]),
+  ),
+  bcc: Type.Optional(
+    Type.Union([Type.String({ format: 'email' }), Type.Array(Type.String({ format: 'email' }))]),
+  ),
   subject: Type.String({ minLength: 1, maxLength: 250 }),
   text: Type.Optional(Type.String()),
   html: Type.Optional(Type.String()),

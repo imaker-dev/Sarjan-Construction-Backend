@@ -9,6 +9,10 @@ export interface ActiveClaimInfo {
   id: string;
   principalId: string;
   expiresAt: Date;
+  /** Bound operation — null only on legacy rows that predate purpose. */
+  purpose: 'COMPANY_ONBOARD' | 'EMPLOYEE_INVITE' | null;
+  /** Bound employee — non-null exactly when purpose is EMPLOYEE_INVITE. */
+  employeeId: string | null;
   adminLoginId: string;
   adminDisplayName: string;
   companyId: string;
@@ -40,6 +44,21 @@ export interface PlatformRepos {
   employees: {
     create(data: Record<string, unknown>): Promise<{ id: string }>;
     updateByPrincipalId(principalId: string, data: Record<string, unknown>): Promise<number>;
+    /** Bound-employee lookup for EMPLOYEE_INVITE claim validation. */
+    findBound(
+      companyId: string,
+      employeeId: string,
+    ): Promise<{
+      id: string;
+      status: string;
+      principalId: string | null;
+      displayName: string;
+    } | null>;
+    /** At most one employee per (principal, company) — deterministic. */
+    findByPrincipalCompany(
+      principalId: string,
+      companyId: string,
+    ): Promise<{ id: string; displayName: string } | null>;
   };
   roles: { create(data: Record<string, unknown>): Promise<{ id: string }> };
   permissions: {
@@ -50,7 +69,16 @@ export interface PlatformRepos {
   claimTokens: {
     create(data: Record<string, unknown>): Promise<{ id: string }>;
     /** Atomically consume an unexpired, unconsumed token. Returns the row once. */
-    consume(tokenHash: string, now: Date): Promise<{ id: string; principalId: string } | null>;
+    consume(
+      tokenHash: string,
+      now: Date,
+    ): Promise<{
+      id: string;
+      principalId: string;
+      purpose: 'COMPANY_ONBOARD' | 'EMPLOYEE_INVITE' | null;
+      companyId: string | null;
+      employeeId: string | null;
+    } | null>;
     /** Invalidate all unconsumed tokens for a principal (reissue). */
     revokeActive(principalId: string, at: Date): Promise<number>;
     findActive(tokenHash: string, now: Date): Promise<ActiveClaimInfo | null>;
@@ -64,6 +92,8 @@ export interface PlatformRepos {
       name: string;
       description: string;
       sensitive?: boolean;
+      appliesTo?: string[];
+      leadershipInheritable?: boolean;
     }): Promise<unknown>;
     delete(key: string): Promise<number>;
     isInUse(key: string): Promise<boolean>;
@@ -137,6 +167,25 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
       create: (data) => tx.employee.create({ data: data as never }),
       updateByPrincipalId: async (principalId, data) =>
         (await tx.employee.updateMany({ where: { principalId }, data: data as never })).count,
+      /** Bound-employee lookup for EMPLOYEE_INVITE claim validation. FOR
+       *  UPDATE serializes against a concurrent deactivation: a racing
+       *  UPDATE holds the row lock, we wait, then re-read the newest
+       *  committed row — so "employee still ACTIVE" is true at consume
+       *  time, not just at some earlier snapshot. */
+      findBound: async (companyId: string, employeeId: string) => {
+        const rows = await tx.$queryRaw<
+          { id: string; status: string; principalId: string | null; displayName: string }[]
+        >`SELECT id, status, "principalId", "displayName" FROM "Employee"
+           WHERE id = ${employeeId}::uuid AND "companyId" = ${companyId}::uuid
+           FOR UPDATE`;
+        return rows[0] ?? null;
+      },
+      /** At most one employee per (principal, company) — deterministic. */
+      findByPrincipalCompany: (principalId: string, companyId: string) =>
+        tx.employee.findFirst({
+          where: { principalId, companyId },
+          select: { id: true, displayName: true },
+        }),
     },
     roles: { create: (data) => tx.role.create({ data: data as never }) },
     permissions: {
@@ -183,7 +232,10 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
           data: { consumedAt: now },
         });
         if (updated.count !== 1) return null;
-        return tx.claimToken.findFirst({ where: { tokenHash } });
+        return tx.claimToken.findFirst({
+          where: { tokenHash },
+          select: { id: true, principalId: true, purpose: true, companyId: true, employeeId: true },
+        });
       },
       revokeActive: async (principalId, at) => {
         const res = await tx.claimToken.updateMany({
@@ -193,31 +245,37 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
         return res.count;
       },
       findActive: async (tokenHash, now) => {
+        // Company context comes from the token's explicit binding — never
+        // inferred from the principal's employee list (ambiguous for
+        // multi-company principals and fail-closed by design).
         const token = await tx.claimToken.findFirst({
           where: { tokenHash, consumedAt: null, expiresAt: { gt: now } },
           include: {
-            principal: {
-              include: {
-                employees: {
-                  include: {
-                    company: true,
-                  },
-                },
-              },
-            },
+            principal: { select: { loginId: true } },
+            company: { select: { id: true, code: true, name: true } },
+            employee: { select: { displayName: true } },
           },
         });
-        if (!token) return null;
-        const emp = token.principal.employees[0];
+        if (token === null) return null;
+        // Fail closed on an unbound live token — no company, no claim.
+        if (token.company === null) return null;
+        const adminEmployee =
+          token.employee ??
+          (await tx.employee.findFirst({
+            where: { principalId: token.principalId, companyId: token.company.id },
+            select: { displayName: true },
+          }));
         return {
           id: token.id,
           principalId: token.principalId,
           expiresAt: token.expiresAt,
+          purpose: token.purpose,
+          employeeId: token.employeeId,
           adminLoginId: token.principal.loginId ?? '',
-          adminDisplayName: emp?.displayName ?? '',
-          companyId: emp?.company.id ?? '',
-          companyCode: emp?.company.code ?? '',
-          companyName: emp?.company.name ?? '',
+          adminDisplayName: adminEmployee?.displayName ?? '',
+          companyId: token.company.id,
+          companyCode: token.company.code,
+          companyName: token.company.name,
         };
       },
     },
@@ -233,7 +291,12 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
         name: string;
         description: string;
         sensitive?: boolean;
-      }) => tx.operationCatalogueEntry.create({ data }),
+        appliesTo?: string[];
+        leadershipInheritable?: boolean;
+      }) =>
+        tx.operationCatalogueEntry.create({
+          data: data as Prisma.OperationCatalogueEntryCreateInput,
+        }),
       delete: async (key: string) => {
         const res = await tx.operationCatalogueEntry.deleteMany({ where: { key } });
         return res.count;
