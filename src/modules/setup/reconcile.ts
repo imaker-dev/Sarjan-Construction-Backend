@@ -16,6 +16,12 @@ export const RECONCILE_KEYS = [
   'ACCESS_ROLE_REVOKE',
   'COMPLIANCE_READ',
   'COMPLIANCE_MANAGE',
+  // Project/site document register — upload, read, link, review at the
+  // owning scope; tenant owner administers the whole document surface.
+  'DOCUMENT_UPLOAD',
+  'DOCUMENT_READ',
+  'DOCUMENT_LINK',
+  'DOCUMENT_REVIEW',
   'ATTENDANCE_RECORD',
   'ATTENDANCE_READ',
   'ATTENDANCE_MANAGE',
@@ -30,6 +36,9 @@ export const RECONCILE_KEYS = [
   'FORM_CONFIGURE',
   'FORM_PUBLISH',
   'AUDIT_LOG_VIEW',
+  // Sensitive site fields (access instructions / emergency details) — owner
+  // only by default; other roles must be granted it explicitly.
+  'ORG_SITE_SENSITIVE_READ',
   // Finance API keys — tenant owner administers the whole Finance surface,
   // including the sensitive/payroll tiers that stay off staff templates.
   // Shared with onboarding (TENANT_OWNER_PERMISSIONS) — one source of truth.

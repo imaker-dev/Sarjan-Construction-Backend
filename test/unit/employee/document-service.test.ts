@@ -102,23 +102,25 @@ describe('EmployeeDocumentService', () => {
       fileName: 'aadhaar.pdf',
     });
 
-    employeeFindFirstSpy.mockImplementation((args: { where?: { id?: string; principalId?: string } }) => {
-      if (args.where?.id === employeeId) {
-        return Promise.resolve({
-          id: employeeId,
-          companyId,
-          principalId: 'emp-user-principal',
-        });
-      }
-      if (args.where?.principalId === 'emp-user-principal') {
-        return Promise.resolve({
-          id: employeeId,
-          companyId,
-          principalId: 'emp-user-principal',
-        });
-      }
-      return Promise.resolve(null);
-    });
+    employeeFindFirstSpy.mockImplementation(
+      (args: { where?: { id?: string; principalId?: string } }) => {
+        if (args.where?.id === employeeId) {
+          return Promise.resolve({
+            id: employeeId,
+            companyId,
+            principalId: 'emp-user-principal',
+          });
+        }
+        if (args.where?.principalId === 'emp-user-principal') {
+          return Promise.resolve({
+            id: employeeId,
+            companyId,
+            principalId: 'emp-user-principal',
+          });
+        }
+        return Promise.resolve(null);
+      },
+    );
     documentFindFirstSpy.mockResolvedValue({
       id: 'doc-1',
       companyId,
