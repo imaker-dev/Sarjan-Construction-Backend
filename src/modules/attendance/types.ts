@@ -934,7 +934,8 @@ export const ListDailyReportsQuery = Type.Object({
 });
 
 export const CalculateDailyReportBody = Type.Object({
-  siteId: Type.String({ format: 'uuid' }),
+  siteId: Type.Optional(Type.String({ format: 'uuid' })),
+  headOfficeId: Type.Optional(Type.String({ format: 'uuid' })),
   businessDate: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
 });
 

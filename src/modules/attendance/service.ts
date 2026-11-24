@@ -2307,14 +2307,68 @@ export class AttendanceService {
     actor: ActorContext,
     companyId: string,
     input: CalculateDailyReportInput,
-  ): Promise<DailySiteReport & { labourSummaries: DailySiteReportLabour[] }> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_MANAGE,
-      siteTarget(companyId, input.siteId),
-    );
+  ): Promise<any> {
+    if (input.siteId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        siteTarget(companyId, input.siteId),
+      );
+    } else if (input.headOfficeId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        headOfficeTarget(companyId, input.headOfficeId),
+      );
+    } else {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        companyTarget(companyId),
+      );
+    }
 
     return this.uow.run(async (repos) => {
+      // 1. Office / Head Office settlement
+      if (input.headOfficeId) {
+        const headOffice = await repos.headOffices.findById(companyId, input.headOfficeId);
+        if (!headOffice) {
+          throw new AttendanceEntityNotFoundError('HeadOffice', input.headOfficeId);
+        }
+
+        const summary = await repos.sessions.getDailySummary(companyId, {
+          headOfficeId: input.headOfficeId,
+          businessDate: input.businessDate,
+        });
+
+        let autoClosedCount = 0;
+        for (const s of summary.sessions) {
+          if (s.status === 'IN_PROGRESS') {
+            await repos.sessions.update(companyId, s.id, {
+              status: 'AUTO_CLOSED',
+              isFlagged: true,
+              flagReason: 'MISSING_PUNCH_OUT',
+              punchOutRemarks: 'Auto-closed at daily settlement due to missing punch out',
+            });
+            autoClosedCount += 1;
+          }
+        }
+
+        return {
+          headOfficeId: input.headOfficeId,
+          headOfficeName: headOffice.name,
+          businessDate: input.businessDate,
+          autoClosedCount,
+          totalSessions: summary.sessions.length,
+          message: `Recalculated office attendance for ${headOffice.name} on ${input.businessDate}`,
+        };
+      }
+
+      // 2. Construction Site settlement
+      if (!input.siteId) {
+        throw new AttendanceValidationError('Either siteId or headOfficeId must be provided');
+      }
+
       const existing = await repos.dailyReports.findBySiteAndDate(
         companyId,
         input.siteId,

@@ -877,6 +877,9 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           }
         }
 
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const refDate = filter.date ?? (todayStr >= resolvedFrom && todayStr <= resolvedTo ? todayStr : resolvedTo);
+
         const workerSummaries = Array.from(workerMap.values()).map((w) => ({
           employeeId: w.employeeId,
           employeeCode: w.employeeCode,
@@ -892,7 +895,7 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           daysPresent: w.daysSet.size,
           leaveDays: w.leaveDays,
           weeklyProgress: calculateWeeklyWorkHoursProgress({
-            businessDate: resolvedTo,
+            businessDate: refDate,
             weeklySessions: w.sessionsList,
             targetWeeklyHours: 48.0,
           }),
