@@ -1,4 +1,4 @@
--- PI/PD field-operation catalogue extension (additive — no renames, no
+-- PI/PD field-operation catalogue extension (additive -- no renames, no
 -- flag changes on finance-sensitive rows).
 --
 -- Adds the project/site operation vocabulary the PI/PD specification
@@ -8,12 +8,12 @@
 -- materials/stores, and the site/project report & activity views.
 --
 -- Flag semantics (unchanged from 20261130000000_operation_scope_metadata):
---   appliesTo             — department scopes the op may be enabled on.
---   leadershipInheritable — PROJECT-scoped PD/PI inherit from enabled
+--   appliesTo             -- department scopes the op may be enabled on.
+--   leadershipInheritable -- PROJECT-scoped PD/PI inherit from enabled
 --                           departments under their assigned projects/sites.
---   sensitive             — never role-derived; explicit grant only.
+--   sensitive             -- never role-derived; explicit grant only.
 --
--- FINANCE_EMPLOYEE_SENSITIVE_READ is the only sensitive row added here —
+-- FINANCE_EMPLOYEE_SENSITIVE_READ is the only sensitive row added here --
 -- it is a finance-restricted view, excluded from PI/PD by design.
 
 INSERT INTO "OperationCatalogueEntry"("key","domain","name","description","sensitive") VALUES
@@ -155,7 +155,7 @@ INSERT INTO "OperationCatalogueEntry"("key","domain","name","description","sensi
 ('WORK_PLAN_UPDATE','WORK_EXECUTION','Work Plan Update','Work Plan Update at authorized project or site scope',FALSE),
 ('WORK_PLAN_VIEW','WORK_EXECUTION','Work Plan View','Work Plan View at authorized project or site scope',FALSE);
 
--- ── appliesTo: field operations are enableable on departments at any scope ──
+-- -- appliesTo: field operations are enableable on departments at any scope --
 -- (mirrors the field-domain rule; finance-restricted row stays company-level).
 
 UPDATE "OperationCatalogueEntry"
@@ -303,7 +303,7 @@ UPDATE "OperationCatalogueEntry"
 SET "appliesTo" = ARRAY['COMPANY','HEAD_OFFICE']::"ScopeType"[]
 WHERE "key" = 'FINANCE_EMPLOYEE_SENSITIVE_READ';
 
--- ── spec-listed existing keys widened to field scope + made inheritable ──
+-- -- spec-listed existing keys widened to field scope + made inheritable --
 -- These already exist under finance-side scope; the PI/PD operation map
 -- assigns them to project leadership, so they become field-enableable and
 -- leadership-inheritable (still non-sensitive).
@@ -319,7 +319,7 @@ WHERE "key" IN (
   'VENDOR_INVOICE_SUBMIT'
 );
 
--- ── leadershipInheritable: the reviewed PI/PD operation set ──
+-- -- leadershipInheritable: the reviewed PI/PD operation set --
 -- Every newly added key except FINANCE_EMPLOYEE_SENSITIVE_READ is a
 -- day-to-day project/site operation the spec assigns to PI/PD.
 
@@ -464,7 +464,7 @@ WHERE "key" IN (
   'WORK_PLAN_VIEW'
 );
 
--- ── backfill: enable the inheritable set on existing PROJECT/SITE depts ──
+-- -- backfill: enable the inheritable set on existing PROJECT/SITE depts --
 -- Departments created before this migration get the same default set that
 -- createDepartment now seeds on new PROJECT/SITE departments: every
 -- non-sensitive leadership-inheritable operation valid for the scope.

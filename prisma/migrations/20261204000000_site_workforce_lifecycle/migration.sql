@@ -1,13 +1,13 @@
 -- W4: site/project workforce suspension, exit, and reinstatement.
 --
 -- * DepartmentMembershipEndReason enum + end metadata on DepartmentMembership
---   (all nullable — legacy ended rows stay valid as "unspecified ending")
+--   (all nullable -- legacy ended rows stay valid as "unspecified ending")
 -- * supersededBy composite self-FK: a replacement membership must belong to
 --   the same employee and company as the ended row
 -- * SiteWorkforceExit append-only marker: permanent per-employee/scope exit
 --   record that blocks reinstatement of suspended rows (it does NOT block
---   fresh placement — it records the decision, not a hiring ban)
--- * memberSuspend / memberExit delegation flags (default OFF — a missing
+--   fresh placement -- it records the decision, not a hiring ban)
+-- * memberSuspend / memberExit delegation flags (default OFF -- a missing
 --   policy row means nothing is delegated)
 
 CREATE TYPE "DepartmentMembershipEndReason" AS ENUM
@@ -20,7 +20,7 @@ ALTER TABLE "DepartmentMembership"
   ADD COLUMN "supersededBy" UUID;
 
 -- suspendUntil is meaningful only on SUSPENDED rows. COALESCE makes the
--- predicate evaluate FALSE (not NULL) for legacy null-reason rows — a bare
+-- predicate evaluate FALSE (not NULL) for legacy null-reason rows -- a bare
 -- `endReason = 'SUSPENDED'` would evaluate NULL and pass the CHECK.
 ALTER TABLE "DepartmentMembership"
   ADD CONSTRAINT "DepartmentMembership_suspendUntil_suspended_ck"
@@ -61,7 +61,7 @@ CREATE TABLE "SiteWorkforceExit" (
     CHECK (num_nonnulls("siteId","projectId") = 1)
 );
 
--- One exit decision per employee per scope — repeat exits are conflicts.
+-- One exit decision per employee per scope -- repeat exits are conflicts.
 CREATE UNIQUE INDEX "SiteWorkforceExit_site_uq"
   ON "SiteWorkforceExit"("companyId","employeeId","siteId")
   WHERE "siteId" IS NOT NULL;
