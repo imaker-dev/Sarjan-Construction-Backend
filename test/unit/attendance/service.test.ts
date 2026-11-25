@@ -1672,4 +1672,84 @@ describe('Head-office punch anchoring', () => {
       }),
     ).rejects.toThrow();
   });
+
+  it('allows self-service head-office punch-in for scoped roles via assertAnyScopePermission', async () => {
+    const { mockRepos } = hoRepos();
+    const scopedAuthorizer = {
+      assertPermission: vi.fn().mockRejectedValue(new Error('Insufficient permission for this scope')),
+      assertAnyScopePermission: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new AttendanceService(createMockUow(mockRepos), scopedAuthorizer);
+    const session = await service.punchIn(actor, companyId, {
+      headOfficeId: 'ho-1',
+      latitude: 25.5941,
+      longitude: 85.1376,
+    });
+    expect(session.id).toBe('sess-ho');
+    expect(scopedAuthorizer.assertAnyScopePermission).toHaveBeenCalledWith(
+      actor.actorId,
+      'ATTENDANCE_RECORD',
+      companyId,
+    );
+    expect(scopedAuthorizer.assertPermission).not.toHaveBeenCalled();
+  });
+
+  it('allows PROJECT-scoped employee (e.g. Project Incharge) to punch in at a child site', async () => {
+    const hasActiveAtProject = vi.fn().mockResolvedValue(true);
+    const { mockRepos } = hoRepos({
+      sites: {
+        findById: vi.fn().mockResolvedValue({
+          id: 's1',
+          companyId,
+          projectId: 'p1',
+          status: 'ACTIVE',
+          geoLatitude: 25.5941 as unknown as never,
+          geoLongitude: 85.1376 as unknown as never,
+          geoFenceRadiusM: 150,
+          timezone: 'Asia/Kolkata',
+          project: { timezone: 'Asia/Kolkata' },
+        }),
+      } as unknown as AttendanceRepos['sites'],
+      memberships: {
+        hasActiveAtHeadOffice: vi.fn().mockResolvedValue(false),
+        hasActiveAtSite: vi.fn().mockResolvedValue(false),
+        hasActiveAtProject,
+      },
+    });
+    const scopedAuthorizer = {
+      assertPermission: vi.fn().mockResolvedValue(undefined),
+      assertAnyScopePermission: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new AttendanceService(createMockUow(mockRepos), scopedAuthorizer);
+    const session = await service.punchIn(actor, companyId, {
+      siteId: 's1',
+      latitude: 25.5941,
+      longitude: 85.1376,
+    });
+    expect(session.id).toBe('sess-ho');
+    expect(hasActiveAtProject).toHaveBeenCalledWith(companyId, sampleEmployee.id, 'p1');
+  });
+
+  it('still requires exact target ATTENDANCE_MANAGE for supervisor punches', async () => {
+    const { mockRepos } = hoRepos();
+    const scopedAuthorizer = {
+      assertPermission: vi.fn().mockRejectedValue(new Error('Insufficient permission for this scope')),
+      assertAnyScopePermission: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new AttendanceService(createMockUow(mockRepos), scopedAuthorizer);
+    await expect(
+      service.punchIn(actor, companyId, {
+        employeeId: 'other-emp',
+        headOfficeId: 'ho-1',
+        latitude: 25.5941,
+        longitude: 85.1376,
+      }),
+    ).rejects.toThrow('Insufficient permission for this scope');
+    expect(scopedAuthorizer.assertPermission).toHaveBeenCalledWith(
+      actor.actorId,
+      'ATTENDANCE_MANAGE',
+      { companyId, scopeType: 'HEAD_OFFICE', scopeId: 'ho-1' },
+    );
+    expect(scopedAuthorizer.assertAnyScopePermission).not.toHaveBeenCalled();
+  });
 });

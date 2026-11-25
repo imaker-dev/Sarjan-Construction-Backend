@@ -251,6 +251,8 @@ export interface AttendanceRepos {
     /** W4: effective membership in a department scoped to THIS EXACT site —
      *  project-only memberships do not authorize punching at child sites. */
     hasActiveAtSite(companyId: string, employeeId: string, siteId: string): Promise<boolean>;
+    /** Effective membership in a PROJECT-scoped department (e.g. Project Incharge / Director). */
+    hasActiveAtProject?(companyId: string, employeeId: string, projectId: string): Promise<boolean>;
   };
   employees: {
     findByPrincipal(
@@ -1199,6 +1201,15 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             employeeId,
             endedAt: null,
             department: { siteId, status: 'ACTIVE' },
+          },
+        })) > 0,
+      hasActiveAtProject: async (companyId, employeeId, projectId) =>
+        (await tx.departmentMembership.count({
+          where: {
+            companyId,
+            employeeId,
+            endedAt: null,
+            department: { scopeType: 'PROJECT', projectId, status: 'ACTIVE' },
           },
         })) > 0,
     },

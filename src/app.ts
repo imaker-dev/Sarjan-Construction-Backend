@@ -1603,6 +1603,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     new AttendanceService(new PrismaAttendanceUnitOfWork(app.prisma), {
       assertPermission: (pid: string, key: string, target: ScopeTarget) =>
         accessControl.assertPermission(pid, key, target),
+      assertAnyScopePermission: (pid: string, key: string, cid: string) =>
+        accessControl.assertAnyScopePermission(pid, key, cid),
     });
   await app.register(attendanceRoutes(attendanceService), { prefix: '/api/v1' });
   await app.register(attendanceWorkerPlugin, {
@@ -1628,6 +1630,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           {
             assertPermission: (pid: string, key: string, target: ScopeTarget) =>
               accessControl.assertPermission(pid, key, target),
+            assertAnyScopePermission: (pid: string, key: string, cid: string) =>
+              accessControl.assertAnyScopePermission(pid, key, cid),
           },
           roleDispatcher,
         ),

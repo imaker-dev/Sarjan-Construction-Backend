@@ -230,4 +230,47 @@ describe('AccessControlService.hasPermission', () => {
       await expect(svc.hasPermission('p1', 'ORG_SITE_READ', target)).resolves.toBe(false);
     });
   });
+
+  describe('hasAnyScopePermission', () => {
+    it('allows a PROJECT-scoped holder without a COMPANY grant', async () => {
+      const svc = serviceWith(
+        [
+          assignment({
+            scopeType: 'PROJECT',
+            projectId: 'proj-1',
+            role: {
+              key: 'PROJECT_INCHARGE',
+              permissions: [
+                { permission: { key: 'ATTENDANCE_READ' } },
+                { permission: { key: 'LEAVE_APPLY' } },
+              ],
+            },
+          }),
+        ],
+        siteChain,
+      );
+      await expect(svc.hasAnyScopePermission('p1', 'ATTENDANCE_READ', 'co-1')).resolves.toBe(true);
+      await expect(svc.hasAnyScopePermission('p1', 'LEAVE_APPLY', 'co-1')).resolves.toBe(true);
+      await expect(svc.hasAnyScopePermission('p1', 'ATTENDANCE_MANAGE', 'co-1')).resolves.toBe(false);
+    });
+
+    it('denies when principal has no matching permission at any scope', async () => {
+      const svc = serviceWith(
+        [
+          assignment({
+            scopeType: 'SITE',
+            siteId: 'site-1',
+            role: {
+              key: 'SITE_ENGINEER',
+              permissions: [{ permission: { key: 'ORG_SITE_READ' } }],
+            },
+          }),
+        ],
+        siteChain,
+      );
+      await expect(svc.assertAnyScopePermission('p1', 'ATTENDANCE_READ', 'co-1')).rejects.toThrow(
+        AccessDeniedError,
+      );
+    });
+  });
 });

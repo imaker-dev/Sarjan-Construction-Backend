@@ -92,6 +92,13 @@ export function leaveRoutes(service: LeaveService) {
     const perm = (key: string) => ({
       preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, atCompany)],
     });
+    const anyScopePerm = (key: string) => ({
+      preHandler: [
+        app.authenticate,
+        app.tenantCompanyGuard,
+        app.requireAnyScopePermission(key, companyIdOf),
+      ],
+    });
 
     // -------------------------------------------------------------------------
     // Leave type definitions (administrator-configured vocabulary)
@@ -113,7 +120,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/types',
-      { schema: { querystring: ListLeaveTypeDefsQuery }, ...perm(LEAVE_READ) },
+      { schema: { querystring: ListLeaveTypeDefsQuery }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         return service.listTypeDefs(
           actorOf(req),
@@ -170,7 +177,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/policies',
-      { schema: { querystring: ListLeavePoliciesQuery }, ...perm(LEAVE_READ) },
+      { schema: { querystring: ListLeavePoliciesQuery }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         return service.listPolicies(
           actorOf(req),
@@ -182,7 +189,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/policies/effective',
-      { schema: { querystring: EffectiveLeavePolicyQuery }, ...perm(LEAVE_READ) },
+      { schema: { querystring: EffectiveLeavePolicyQuery }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         return service.resolveEffectiveConfig(
           actorOf(req),
@@ -194,7 +201,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/policies/:id',
-      { schema: { params: PolicyParams }, ...perm(LEAVE_READ) },
+      { schema: { params: PolicyParams }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getPolicy(actorOf(req), companyIdOf(req), id);
@@ -236,7 +243,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/policies/:id/versions',
-      { schema: { params: PolicyParams }, ...perm(LEAVE_READ) },
+      { schema: { params: PolicyParams }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.listVersions(actorOf(req), companyIdOf(req), id);
@@ -291,7 +298,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/balances',
-      { schema: { querystring: ListLeaveBalancesQuery }, ...perm(LEAVE_READ) },
+      { schema: { querystring: ListLeaveBalancesQuery }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         return service.listBalances(
           actorOf(req),
@@ -308,7 +315,7 @@ export function leaveRoutes(service: LeaveService) {
           params: EmployeeBalanceParams,
           querystring: EmployeeBalanceQuery,
         },
-        ...perm(LEAVE_READ),
+        ...anyScopePerm(LEAVE_READ),
       },
       async (req) => {
         const { employeeId } = req.params as { employeeId: string };
@@ -330,7 +337,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.post(
       '/leave/requests',
-      { schema: { body: SubmitLeaveRequestBody }, ...perm(LEAVE_APPLY) },
+      { schema: { body: SubmitLeaveRequestBody }, ...anyScopePerm(LEAVE_APPLY) },
       async (req, reply) => {
         const request = await service.submitRequest(
           actorOf(req),
@@ -344,7 +351,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/requests',
-      { schema: { querystring: ListLeaveRequestsQuery }, ...perm(LEAVE_READ) },
+      { schema: { querystring: ListLeaveRequestsQuery }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         return service.listRequests(
           actorOf(req),
@@ -356,7 +363,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/requests/:id',
-      { schema: { params: RequestParams }, ...perm(LEAVE_READ) },
+      { schema: { params: RequestParams }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getRequestById(actorOf(req), companyIdOf(req), id);
@@ -370,7 +377,7 @@ export function leaveRoutes(service: LeaveService) {
           params: RequestParams,
           body: ReviewLeaveRequestBody,
         },
-        ...perm(LEAVE_APPROVE),
+        ...anyScopePerm(LEAVE_APPROVE),
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -390,7 +397,7 @@ export function leaveRoutes(service: LeaveService) {
           params: RequestParams,
           body: CancelLeaveRequestBody,
         },
-        ...perm(LEAVE_APPLY),
+        ...anyScopePerm(LEAVE_APPLY),
       },
       async (req) => {
         const { id } = req.params as { id: string };
