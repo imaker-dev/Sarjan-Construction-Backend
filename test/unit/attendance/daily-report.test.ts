@@ -169,7 +169,7 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       businessDate,
     });
 
-    expect(report.id).toBe('dsr-101');
+    expect('id' in report && report.id).toBe('dsr-101');
     expect(autoClosedSessionId).toBe('sess-open');
     expect(upsertedData).not.toBeNull();
     expect(upsertedData?.totalWorkersHeadcount).toBe(4);

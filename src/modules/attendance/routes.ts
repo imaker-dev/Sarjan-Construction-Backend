@@ -14,6 +14,7 @@ import {
   CalculateDailyReportBody,
   CreatePolicyBody,
   CreateTvtSessionBody,
+  DailyReportExportQuery,
   DailySummaryQuery,
   EndBreakBody,
   KioskBatchPunchInBody,
@@ -23,12 +24,14 @@ import {
   ListSessionsQuery,
   ListTvtSessionsQuery,
   LockDailyReportBody,
+  MusterRollExportQuery,
   MusterRollRangeQuery,
   PunchInBody,
   PunchOutBody,
   RegularizeSessionBody,
   RejectDailyReportBody,
   StartBreakBody,
+  TriggerReportExportBody,
   UpdateDailyReportBody,
   UpdateLabourSummaryBody,
   UpdatePolicyBody,
@@ -36,6 +39,7 @@ import {
   type CalculateDailyReportInput,
   type CreatePolicyInput,
   type CreateTvtSessionInput,
+  type DailyReportExportFilter,
   type DailySummaryFilter,
   type EndBreakInput,
   type KioskBatchPunchInInput,
@@ -45,12 +49,14 @@ import {
   type ListSessionsFilter,
   type ListTvtSessionsFilter,
   type LockDailyReportInput,
+  type MusterRollExportFilter,
   type MusterRollRangeFilter,
   type PunchInInput,
   type PunchOutInput,
   type RegularizeSessionInput,
   type RejectDailyReportInput,
   type StartBreakInput,
+  type TriggerReportExportInput,
   type UpdateDailyReportInput,
   type UpdateLabourSummaryInput,
 } from './types.js';
@@ -623,6 +629,60 @@ export function attendanceRoutes(service: AttendanceService) {
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getDailyReportAuditTrail(actorOf(req), companyIdOf(req), id);
+      },
+    );
+
+    // -----------------------------------------------------------------------
+    // Server-Side PDF & Excel Report Trigger / Download Routes
+    // -----------------------------------------------------------------------
+
+    app.post(
+      '/attendance/reports/export',
+      { schema: { body: TriggerReportExportBody }, ...perm(ATTENDANCE_READ) },
+      async (req, reply) => {
+        const body = req.body as TriggerReportExportInput;
+        const exported = await service.triggerAndExportReport(actorOf(req), companyIdOf(req), body);
+        reply.header('content-type', exported.contentType);
+        reply.header('content-disposition', `attachment; filename="${exported.fileName}"`);
+        return reply.send(exported.stream);
+      },
+    );
+
+    app.get(
+      '/attendance/daily-reports/:id/export',
+      {
+        schema: { params: DailyReportParams, querystring: DailyReportExportQuery },
+        ...perm(ATTENDANCE_READ),
+      },
+      async (req, reply) => {
+        const { id } = req.params as { id: string };
+        const { format } = req.query as DailyReportExportFilter;
+        const exported = await service.exportDailySiteReport(
+          actorOf(req),
+          companyIdOf(req),
+          id,
+          format,
+        );
+        reply.header('content-type', exported.contentType);
+        reply.header('content-disposition', `attachment; filename="${exported.fileName}"`);
+        return reply.send(exported.stream);
+      },
+    );
+
+    app.get(
+      '/attendance/muster-roll/export',
+      { schema: { querystring: MusterRollExportQuery }, ...perm(ATTENDANCE_READ) },
+      async (req, reply) => {
+        const { format, ...filter } = req.query as MusterRollExportFilter;
+        const exported = await service.exportMusterRollReport(
+          actorOf(req),
+          companyIdOf(req),
+          filter,
+          format,
+        );
+        reply.header('content-type', exported.contentType);
+        reply.header('content-disposition', `attachment; filename="${exported.fileName}"`);
+        return reply.send(exported.stream);
       },
     );
   };
