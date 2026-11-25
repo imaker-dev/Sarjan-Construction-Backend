@@ -267,7 +267,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/policies/effective',
-      { schema: { querystring: EffectivePolicyQuery }, ...scopedPerm(ATTENDANCE_READ, queryScope) },
+      { schema: { querystring: EffectivePolicyQuery }, ...perm(ATTENDANCE_READ, queryScope) },
       async (req) => {
         const query = req.query as { siteId?: string; employeeId?: string };
         return service.resolveEffectivePolicy(actorOf(req), companyIdOf(req), query);

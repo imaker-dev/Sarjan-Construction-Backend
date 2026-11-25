@@ -366,7 +366,7 @@ ALTER TABLE "WalletLedgerEntry" ADD CONSTRAINT "WalletLedgerEntry_reversalOfEntr
 ALTER TABLE "WalletLedgerEntry" ADD CONSTRAINT "WalletLedgerEntry_postedByPrincipalId_fkey" FOREIGN KEY ("postedByPrincipalId") REFERENCES "Principal"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- ============================================================================
--- Hand-written invariants (intentional Prisma migration drift — Prisma cannot
+-- Hand-written invariants (intentional Prisma migration drift -- Prisma cannot
 -- express CHECK constraints, triggers, or deferrable FKs; keep this section in
 -- sync with the schema comments).
 -- ============================================================================
@@ -417,9 +417,9 @@ ALTER TABLE "WalletLedgerEntry" ADD CONSTRAINT "WalletLedgerEntry_currency_len"
   CHECK (char_length("currency") = 3);
 
 -- Ledger source checks must match entry type ----------------------------------
--- CREDIT_FUNDING   → a transfer (+ its request) exists, nothing else.
--- DEBIT_EXPENSE    → an expense exists, nothing else.
--- REVERSAL_*       → reversalOfEntryId set; source ids are never reused —
+-- CREDIT_FUNDING   -> a transfer (+ its request) exists, nothing else.
+-- DEBIT_EXPENSE    -> an expense exists, nothing else.
+-- REVERSAL_*       -> reversalOfEntryId set; source ids are never reused --
 --                    fundingRequestId may be kept for provenance only.
 ALTER TABLE "WalletLedgerEntry" ADD CONSTRAINT "WalletLedgerEntry_source_matches_type"
   CHECK (
@@ -434,7 +434,7 @@ ALTER TABLE "WalletLedgerEntry" ADD CONSTRAINT "WalletLedgerEntry_source_matches
       AND "transferId" IS NULL AND "expenseId" IS NULL)
   );
 
--- WalletExpense → its provenance DEBIT_EXPENSE entry. Deferrable because this
+-- WalletExpense -> its provenance DEBIT_EXPENSE entry. Deferrable because this
 -- is one side of the (expenseId, ledgerEntryId) cycle; insert the expense and
 -- the entry inside one transaction and the check runs at commit.
 ALTER TABLE "WalletExpense" ADD CONSTRAINT "WalletExpense_ledgerEntryId_fkey"
@@ -531,7 +531,7 @@ CREATE TRIGGER "WalletLedgerEntry_sync_balance"
   FOR EACH ROW EXECUTE FUNCTION wallet_ledger_entry_sync_balance();
 
 -- DocumentLink: extend the exactly-one-target check to the wallet targets.
--- The existing check is expanded, not weakened — still exactly one target.
+-- The existing check is expanded, not weakened -- still exactly one target.
 ALTER TABLE "DocumentLink" DROP CONSTRAINT "DocumentLink_one_target";
 ALTER TABLE "DocumentLink" ADD CONSTRAINT "DocumentLink_one_target"
   CHECK (num_nonnulls(
@@ -539,7 +539,7 @@ ALTER TABLE "DocumentLink" ADD CONSTRAINT "DocumentLink_one_target"
     "walletFundingRequestId", "walletTransferId", "walletExpenseId"
   ) = 1);
 
--- One active link per (document, wallet target) — same semantics as the
+-- One active link per (document, wallet target) -- same semantics as the
 -- existing form/instance partial unique indexes.
 CREATE UNIQUE INDEX "DocumentLink_one_active_wallet_request_link"
   ON "DocumentLink"("companyId", "documentId", "walletFundingRequestId", COALESCE("fieldKey", ''))
