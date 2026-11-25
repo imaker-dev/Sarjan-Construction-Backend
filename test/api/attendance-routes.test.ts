@@ -203,6 +203,12 @@ async function makeApp(opts: { allow?: boolean } = {}) {
       totalPresentUnits: 10.0,
       workerSummaries: [],
     }),
+    // Route-gate scope resolution — site target exercises the scoped path.
+    resolveScope: async (companyId: string) => ({
+      companyId,
+      scopeType: 'SITE',
+      scopeId: SITE_ID,
+    }),
   } as unknown as AttendanceService;
 
   const authService = {

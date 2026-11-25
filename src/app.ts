@@ -76,6 +76,10 @@ import { PrismaApprovalUnitOfWork } from './modules/approval/repository.js';
 import { financeRoutes } from './modules/finance/routes.js';
 import { FinanceService } from './modules/finance/service.js';
 import { PrismaFinanceUnitOfWork } from './modules/finance/repository.js';
+import { walletRoutes } from './modules/wallet/routes.js';
+import { WalletService } from './modules/wallet/service.js';
+import { PrismaWalletUnitOfWork } from './modules/wallet/repository.js';
+import { walletFundingDecisionHook } from './modules/wallet/decision-hook.js';
 import { MailService } from './modules/mail/service.js';
 import { mailRoutes } from './modules/mail/routes.js';
 import { AuthService } from './modules/auth/service.js';
@@ -1102,6 +1106,7 @@ export interface BuildAppOptions {
     scheduleService?: ScheduleService;
     approvalService?: ApprovalService;
     financeService?: FinanceService;
+    walletService?: WalletService;
     employeeDocumentService?: EmployeeDocumentService;
     documentService?: DocumentService;
     organizationService?: OrganizationService;
@@ -1598,12 +1603,31 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     ),
     { prefix: '/api/v1' },
   );
+  const scheduleService =
+    services.scheduleService ??
+    new ScheduleService(
+      new PrismaScheduleUnitOfWork(app.prisma),
+      {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+        hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.hasPermission(pid, key, target),
+      },
+      {
+        delegationEnabled: (companyId: string, flag) =>
+          delegationService.isEnabled(companyId, flag),
+      },
+    );
   const attendanceService =
     services.attendanceService ??
-    new AttendanceService(new PrismaAttendanceUnitOfWork(app.prisma), {
-      assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-        accessControl.assertPermission(pid, key, target),
-    });
+    new AttendanceService(
+      new PrismaAttendanceUnitOfWork(app.prisma),
+      {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+      },
+      { scheduleResolver: scheduleService },
+    );
   await app.register(attendanceRoutes(attendanceService), { prefix: '/api/v1' });
   await app.register(attendanceWorkerPlugin, {
     worker: new AttendanceWorker(
@@ -1634,29 +1658,39 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     ),
     { prefix: '/api/v1' },
   );
-  await app.register(
-    scheduleRoutes(
-      services.scheduleService ??
-        new ScheduleService(new PrismaScheduleUnitOfWork(app.prisma), {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-        }),
-    ),
-    { prefix: '/api/v1' },
-  );
+  await app.register(scheduleRoutes(scheduleService), { prefix: '/api/v1' });
   await app.register(
     approvalRoutes(
       services.approvalService ??
-        new ApprovalService(new PrismaApprovalUnitOfWork(app.prisma), {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-          hasPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.hasPermission(pid, key, target),
-        }),
+        new ApprovalService(
+          new PrismaApprovalUnitOfWork(app.prisma),
+          {
+            assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.assertPermission(pid, key, target),
+            hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.hasPermission(pid, key, target),
+          },
+          undefined,
+          // Domain completion hooks — run inside the decision's unit of work.
+          [walletFundingDecisionHook()],
+        ),
     ),
     { prefix: '/api/v1' },
   );
   await app.register(financeRoutes(financeService), { prefix: '/api/v1' });
+  const walletService =
+    services.walletService ??
+    new WalletService(
+      new PrismaWalletUnitOfWork(app.prisma),
+      {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+        hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.hasPermission(pid, key, target),
+      },
+      (companyId, employeeId) => opAssignment.getEffectiveOperations(companyId, employeeId),
+    );
+  await app.register(walletRoutes(walletService), { prefix: '/api/v1' });
   await app.register(
     auditRoutes(
       services.auditService ??

@@ -22,6 +22,7 @@ export interface ApprovalDecisionRepository {
     actorPrincipalId?: string;
     actorType: string;
     reason?: string;
+    decisionPayload?: Prisma.InputJsonValue;
     idempotencyKey?: string;
     requestFingerprint?: string;
     eventKey: string;
@@ -39,6 +40,8 @@ export interface AssignmentRow extends RoleAssignment {
 }
 
 export interface ApprovalRepos extends WorkflowInstanceRepos {
+  /** Live transaction client — domain-completion hooks join this transaction. */
+  tx: Tx;
   approvalDecisions: ApprovalDecisionRepository;
   roleAssignments: {
     /** Active (unrevoked, in-window) assignments for the principal in-company. */
@@ -67,6 +70,7 @@ export interface ApprovalRepos extends WorkflowInstanceRepos {
 export function makeApprovalRepos(tx: Tx): ApprovalRepos {
   return {
     ...makeWorkflowInstanceRepos(tx),
+    tx,
     approvalDecisions: {
       create: async (data) => {
         try {

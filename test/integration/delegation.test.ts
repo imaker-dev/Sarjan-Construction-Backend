@@ -143,6 +143,7 @@ describe('delegation policy (erp_test)', () => {
       placement: false,
       memberSuspend: false,
       memberExit: false,
+      scheduleManage: false,
       version: 0,
     });
   });
@@ -172,6 +173,7 @@ describe('delegation policy (erp_test)', () => {
       placement: false,
       memberSuspend: false,
       memberExit: false,
+      scheduleManage: false,
       version: 0,
     });
     const audit = await prisma.auditLog.findFirst({

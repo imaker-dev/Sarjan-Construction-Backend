@@ -18,7 +18,8 @@ export type DelegationFlag =
   | 'placement'
   | 'employeeOnboard'
   | 'memberSuspend'
-  | 'memberExit';
+  | 'memberExit'
+  | 'scheduleManage';
 
 export const DELEGATION_FLAGS: readonly DelegationFlag[] = [
   'siteCreate',
@@ -28,6 +29,7 @@ export const DELEGATION_FLAGS: readonly DelegationFlag[] = [
   'employeeOnboard',
   'memberSuspend',
   'memberExit',
+  'scheduleManage',
 ];
 
 export interface DelegationPolicyDto {
@@ -40,6 +42,10 @@ export interface DelegationPolicyDto {
   memberSuspend: boolean;
   /** Scoped permanent exit of project/site workforce — separately delegated. */
   memberExit: boolean;
+  /** Scoped editing of project/site work schedules (shift times, break
+   *  windows, auto clock-out) — separate authority from attendance-record
+   *  management. */
+  scheduleManage: boolean;
   version: number;
 }
 
@@ -52,6 +58,7 @@ export interface UpdateDelegationPolicyInput {
   employeeOnboard?: boolean;
   memberSuspend?: boolean;
   memberExit?: boolean;
+  scheduleManage?: boolean;
 }
 
 interface Authorizer {
@@ -86,6 +93,7 @@ export class DelegationService {
         employeeOnboard: true,
         memberSuspend: true,
         memberExit: true,
+        scheduleManage: true,
       },
     });
     return row?.[flag] ?? false;
@@ -109,6 +117,7 @@ export class DelegationService {
           employeeOnboard: false,
           memberSuspend: false,
           memberExit: false,
+          scheduleManage: false,
           version: 0,
         }
       : {
@@ -119,6 +128,7 @@ export class DelegationService {
           employeeOnboard: row.employeeOnboard,
           memberSuspend: row.memberSuspend,
           memberExit: row.memberExit,
+          scheduleManage: row.scheduleManage,
           version: row.version,
         };
   }
@@ -149,6 +159,7 @@ export class DelegationService {
         employeeOnboard: input.employeeOnboard ?? existing?.employeeOnboard ?? false,
         memberSuspend: input.memberSuspend ?? existing?.memberSuspend ?? false,
         memberExit: input.memberExit ?? existing?.memberExit ?? false,
+        scheduleManage: input.scheduleManage ?? existing?.scheduleManage ?? false,
       };
       const changed = (Object.keys(next) as DelegationFlag[]).filter(
         (k) => next[k] !== (existing?.[k] ?? false),
@@ -199,6 +210,7 @@ export class DelegationService {
         employeeOnboard: row.employeeOnboard,
         memberSuspend: row.memberSuspend,
         memberExit: row.memberExit,
+        scheduleManage: row.scheduleManage,
         version: row.version,
       };
     });

@@ -10,12 +10,14 @@ import type {
   Prisma,
 } from '@prisma/client';
 import type { ScopeTarget } from '../access-control/service.js';
+import { SYSTEM_PRINCIPAL_ID } from '../setup/bootstrap.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import {
   ActiveSessionExistsError,
   AttendanceEntityNotFoundError,
   AttendanceValidationError,
   BreakAlreadyActiveError,
+  BreakOutsideWindowError,
   DailyReportAlreadyLockedError,
   DailyReportInvalidStateTransitionError,
   DailyReportNotFoundError,
@@ -32,15 +34,27 @@ import type {
   AttendanceUnitOfWork,
 } from './repository.js';
 import {
+  AUTO_CLOSED_BY_SCHEDULED_END,
+  AUTO_CLOSED_BY_SETTLEMENT,
   buildDailyActivitySummary,
   calculateActiveSessionTiming,
   calculateHaversineDistanceMeters,
   calculateWeeklyWorkHoursProgress,
   calculateWorkAndOvertime,
+  assertBreakModeConsistent,
+  calcPolicyFromSnapshot,
   DEFAULT_ATTENDANCE_POLICY,
+  dynamicBreakCapMins,
   getBusinessDate,
+  isEarlyOut,
+  isLateIn,
+  localMinutesOfDay,
   MAX_MUSTER_ROLL_DAYS,
   resolveDateRangeForPeriod,
+  resolveShiftWindow,
+  type ManualSessionInput,
+  type PolicySnapshot,
+  type ResolvedIntraday,
   type ActiveSessionWithTiming,
   type DailyActivitySummary,
   type WeeklyWorkHoursProgress,
@@ -75,6 +89,40 @@ export const ATTENDANCE_MANAGE = 'ATTENDANCE_MANAGE';
 interface Authorizer {
   assertPermission(principalId: string, permissionKey: string, target: ScopeTarget): Promise<void>;
 }
+
+/** Structural view of a resolved work-schedule revision — the intraday fields
+ *  a session snapshots at punch time. */
+interface ResolvedRevisionLike {
+  id: string;
+  timezone: string;
+  scheduledStartMins: number | null;
+  scheduledEndMins: number | null;
+  graceInMins: number | null;
+  graceOutMins: number | null;
+  breakWindowMode: 'FIXED_WINDOW' | 'DYNAMIC' | null;
+  breakWindowStartMins: number | null;
+  breakWindowEndMins: number | null;
+  breakDurationMins: number | null;
+  autoClockOutMode: 'DISABLED' | 'AT_SCHEDULED_END' | 'AFTER_GRACE' | null;
+  autoClockOutGraceMins: number | null;
+}
+
+/** Authorization-free schedule resolution for internal callers. The schedule
+ *  service enforces its own read scope for HTTP callers; punch flows enforce
+ *  their own permission model before calling this. */
+export interface ScheduleResolver {
+  resolveForEmployee(
+    companyId: string,
+    employeeId: string,
+    asOf?: Date,
+  ): Promise<{ revision: ResolvedRevisionLike } | null>;
+}
+
+export interface AttendanceServiceDeps {
+  scheduleResolver?: ScheduleResolver;
+}
+
+const SYSTEM_ACTOR: ActorContext = { actorId: 'SYSTEM', actorType: 'SYSTEM' };
 
 const auditEntry = (
   actor: ActorContext,
@@ -133,6 +181,7 @@ export class AttendanceService {
   constructor(
     private readonly uow: AttendanceUnitOfWork,
     private readonly authorizer: Authorizer,
+    private readonly deps?: AttendanceServiceDeps,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -518,6 +567,69 @@ export class AttendanceService {
         }
       }
 
+      // 7b. Resolve the governing work schedule and pin its intraday values
+      // on the session — later schedule/policy edits never reclassify this
+      // session's classification.
+      const resolvedRevision = this.deps?.scheduleResolver
+        ? ((await this.deps.scheduleResolver.resolveForEmployee(companyId, employeeId, now))
+            ?.revision ?? null)
+        : null;
+      const intraday: ResolvedIntraday | null =
+        resolvedRevision?.scheduledStartMins != null && resolvedRevision.scheduledEndMins != null
+          ? {
+              scheduledStartMins: resolvedRevision.scheduledStartMins,
+              scheduledEndMins: resolvedRevision.scheduledEndMins,
+              graceInMins: resolvedRevision.graceInMins ?? 0,
+              graceOutMins: resolvedRevision.graceOutMins ?? 0,
+              breakWindowMode: resolvedRevision.breakWindowMode,
+              breakWindowStartMins: resolvedRevision.breakWindowStartMins,
+              breakWindowEndMins: resolvedRevision.breakWindowEndMins,
+              breakDurationMins: resolvedRevision.breakDurationMins,
+              autoClockOutMode: resolvedRevision.autoClockOutMode,
+              autoClockOutGraceMins: resolvedRevision.autoClockOutGraceMins,
+            }
+          : null;
+      // Fail closed when the resolved schedule's break mode contradicts the
+      // resolved policy's own breakMode — never silently pick a winner.
+      assertBreakModeConsistent(policy.breakMode, intraday);
+      const window =
+        intraday !== null && resolvedRevision !== null
+          ? resolveShiftWindow(
+              now,
+              intraday.scheduledStartMins,
+              intraday.scheduledEndMins,
+              resolvedRevision.timezone,
+            )
+          : null;
+      const snapshot: PolicySnapshot = {
+        shiftDurationMins: policy.shiftDurationMins,
+        halfDayThresholdMins: policy.halfDayThresholdMins,
+        fullDayThresholdMins: policy.fullDayThresholdMins,
+        policyBreakMode: policy.breakMode,
+        fixedBreakMins: policy.fixedBreakMins,
+        minWorkForBreakMins: policy.minWorkForBreakMins,
+        maxDynamicBreakMins: policy.maxDynamicBreakMins,
+        overtimeMode: policy.overtimeMode,
+        minOvertimeMins: policy.minOvertimeMins,
+        otSlabMins: policy.otSlabMins,
+        pMultiplierSlabs: policy.pMultiplierSlabs ?? undefined,
+        dayStartHour: policy.dayStartHour,
+        dayStartMinute: policy.dayStartMinute,
+        timezone: resolvedRevision?.timezone ?? timezone,
+        intraday,
+        scheduleRevisionId: resolvedRevision?.id ?? null,
+      };
+
+      // Late-in flag against the resolved shift window + configured grace.
+      if (
+        window !== null &&
+        intraday !== null &&
+        isLateIn(now, window.scheduledStartAt, intraday.graceInMins)
+      ) {
+        isFlagged = true;
+        flagReason = flagReason ? `${flagReason}; Late punch in` : 'Late punch in';
+      }
+
       // 8. Create Session
       const session = await repos.sessions.create(companyId, {
         employee: { connect: { id: employeeId } },
@@ -536,6 +648,18 @@ export class AttendanceService {
         punchInSupervisorId: supervisorId ?? null,
         isFlagged,
         flagReason,
+        policySnapshot: snapshot as unknown as Prisma.InputJsonValue,
+        scheduledStartAt: window?.scheduledStartAt ?? null,
+        scheduledEndAt: window?.scheduledEndAt ?? null,
+        autoClockOutMode: intraday?.autoClockOutMode ?? null,
+        autoClockOutGraceMins: intraday?.autoClockOutGraceMins ?? null,
+        ...(resolvedRevision !== null
+          ? {
+              scheduleRevision: {
+                connect: { id_companyId: { id: resolvedRevision.id, companyId } },
+              },
+            }
+          : {}),
       });
 
       await repos.audit.record(
@@ -576,11 +700,24 @@ export class AttendanceService {
       }
 
       // 2. Find active session
-      const session = input.sessionId
+      let session = input.sessionId
         ? await repos.sessions.findById(companyId, input.sessionId)
         : await repos.sessions.findActive(companyId, employeeId);
 
-      if (session?.status !== 'IN_PROGRESS') {
+      // A punch-out arriving after a system auto-close must not overwrite the
+      // system-generated close — it records an audited late-out correction.
+      if (session === null && repos.sessions.findLatestAutoClosed !== undefined) {
+        session = await repos.sessions.findLatestAutoClosed(
+          companyId,
+          employeeId,
+          new Date(Date.now() - 24 * 3600 * 1000),
+        );
+      }
+      if (session === null) {
+        throw new NoActiveSessionError(employeeId);
+      }
+      const postAutoClose = session.status === 'AUTO_CLOSED' && session.autoClosedBy !== null;
+      if (session.status !== 'IN_PROGRESS' && !postAutoClose) {
         throw new NoActiveSessionError(employeeId);
       }
 
@@ -597,6 +734,39 @@ export class AttendanceService {
         await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_MANAGE, outTarget);
       } else {
         await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_RECORD, outTarget);
+      }
+
+      if (postAutoClose) {
+        // Keep the system-generated close + punchOutAt; the real out instant
+        // lands in audit metadata + remarks. Duration fields stay as computed
+        // by the close — a supervisor uses regularize to change them.
+        const lateReason = `PUNCH_OUT_AFTER_AUTO_CLOSE at ${new Date().toISOString()}`;
+        const flagReason = session.flagReason ? `${session.flagReason}; ${lateReason}` : lateReason;
+        const corrected = await repos.sessions.update(companyId, session.id, {
+          isFlagged: true,
+          flagReason,
+          punchOutRemarks: session.punchOutRemarks
+            ? `${session.punchOutRemarks} | ${lateReason}`
+            : lateReason,
+        });
+        await repos.audit.record(
+          auditEntry(actor, {
+            action: 'ATTENDANCE_PUNCH_OUT_AFTER_AUTO_CLOSE',
+            entityType: 'ATTENDANCE_SESSION',
+            entityId: session.id,
+            companyId,
+            statusBefore: session.status,
+            statusAfter: corrected.status,
+            metadata: {
+              employeeId: session.employeeId,
+              autoClosedBy: session.autoClosedBy,
+              systemPunchOutAt: session.punchOutAt?.toISOString() ?? null,
+              actualPunchOutAt: new Date().toISOString(),
+              remarks: input.remarks ?? null,
+            },
+          }),
+        );
+        return corrected;
       }
 
       const site =
@@ -648,21 +818,28 @@ export class AttendanceService {
         }
       }
 
-      // 5. Calculate Durations & Work/Overtime Units
-      const policy =
-        (await repos.policies.findById(companyId, session.policyId)) ??
-        createDefaultPolicyFallback(companyId);
+      // 5. Calculate Durations & Work/Overtime Units — when the session
+      // carries a punch-time snapshot the pinned policy + schedule values
+      // govern; legacy sessions without a snapshot read the live policy as
+      // before.
+      const snapshot = (session.policySnapshot as PolicySnapshot | null) ?? null;
+      const policy = snapshot
+        ? calcPolicyFromSnapshot(snapshot)
+        : ((await repos.policies.findById(companyId, session.policyId)) ??
+          createDefaultPolicyFallback(companyId));
 
       const grossDurationMins = Math.max(
         0,
         Math.round((now.getTime() - session.punchInAt.getTime()) / 60000),
       );
 
-      // Calculate dynamic breaks total
+      // Dynamic breaks total — bounded by the snapshot's per-day cap (the
+      // schedule's configured duration wins, then the legacy policy cap).
       let dynamicBreaksMins = 0;
       if (policy.breakMode === 'DYNAMIC') {
         const allBreaks = await repos.breaks.listForSession(companyId, session.id);
-        dynamicBreaksMins = allBreaks.reduce((acc, b) => acc + (b.durationMins || 0), 0);
+        const raw = allBreaks.reduce((acc, b) => acc + (b.durationMins || 0), 0);
+        dynamicBreaksMins = snapshot ? Math.min(raw, dynamicBreakCapMins(snapshot)) : raw;
       }
 
       const calc = calculateWorkAndOvertime({
@@ -670,6 +847,16 @@ export class AttendanceService {
         breakMinutes: dynamicBreaksMins,
         policy,
       });
+
+      // Early-out flag against the pinned scheduled end + its grace.
+      if (
+        snapshot?.intraday != null &&
+        session.scheduledEndAt != null &&
+        isEarlyOut(now, session.scheduledEndAt, snapshot.intraday.graceOutMins)
+      ) {
+        isFlagged = true;
+        flagReason = flagReason ? `${flagReason}; Early punch out` : 'Early punch out';
+      }
 
       // 6. Complete Session
       const updated = await repos.sessions.update(companyId, session.id, {
@@ -753,6 +940,24 @@ export class AttendanceService {
           ATTENDANCE_RECORD,
           sessionLocationTarget(companyId, session),
         );
+      }
+
+      // Pinned break window: DYNAMIC breaks may only start inside the
+      // configured local window (FIXED_WINDOW auto-deducts, so punches are
+      // recorded for audit without affecting the deduction).
+      const snapshot = (session.policySnapshot as PolicySnapshot | null) ?? null;
+      const breakWindow = snapshot?.intraday;
+      if (
+        snapshot !== null &&
+        breakWindow?.breakWindowMode === 'DYNAMIC' &&
+        breakWindow.breakWindowStartMins != null &&
+        breakWindow.breakWindowEndMins != null
+      ) {
+        const localMin = localMinutesOfDay(new Date(), snapshot.timezone);
+        const s = breakWindow.breakWindowStartMins;
+        const e = breakWindow.breakWindowEndMins;
+        const within = e > s ? localMin >= s && localMin < e : localMin >= s || localMin < e;
+        if (!within) throw new BreakOutsideWindowError();
       }
 
       const activeBreak = await repos.breaks.findActive(companyId, session.id);
@@ -1226,9 +1431,7 @@ export class AttendanceService {
         companyTarget(companyId),
       );
     }
-    return this.uow.run((repos) =>
-      repos.sessions.getDailySummary(companyId, filter),
-    );
+    return this.uow.run((repos) => repos.sessions.getDailySummary(companyId, filter));
   }
 
   // -------------------------------------------------------------------------
@@ -2324,16 +2527,34 @@ export class AttendanceService {
         throw new DailyReportAlreadyLockedError(existing.id);
       }
 
-      // Auto-close in-progress sessions at settlement
+      // Auto-close in-progress sessions at settlement — only once the
+      // session's business day has ended in the site timezone or its pinned
+      // scheduled end has arrived. A session punched in this morning must
+      // never be closed by a midday settlement run.
+      const settleSite = await repos.sites.findById(companyId, input.siteId);
+      const settleTz = settleSite?.project.timezone ?? 'Asia/Kolkata';
+      const settleNow = new Date();
+      const currentBusinessDate = getBusinessDate(settleNow, settleTz);
       const summary = await repos.sessions.getDailySummary(
         companyId,
         input.siteId,
         input.businessDate,
       );
       for (const s of summary.sessions) {
-        if (s.status === 'IN_PROGRESS') {
+        if (
+          s.status === 'IN_PROGRESS' &&
+          this.shouldCloseAtSettlement(
+            s.businessDate,
+            s.scheduledEndAt,
+            s.autoClockOutMode,
+            s.autoClockOutGraceMins,
+            currentBusinessDate,
+            settleNow,
+          )
+        ) {
           await repos.sessions.update(companyId, s.id, {
             status: 'AUTO_CLOSED',
+            autoClosedBy: AUTO_CLOSED_BY_SETTLEMENT,
             isFlagged: true,
             flagReason: 'MISSING_PUNCH_OUT',
             punchOutRemarks: 'Auto-closed at daily settlement due to missing punch out',
@@ -2693,15 +2914,59 @@ export class AttendanceService {
             site.id,
             businessDate,
           );
+          // Today's sessions close only once their pinned scheduled end has
+          // arrived — the 5-minute tick must not close a session punched in
+          // this morning. Unscheduled sessions wait for the 24h sweep.
           for (const s of summary.sessions) {
-            if (s.status === 'IN_PROGRESS') {
+            if (
+              s.status === 'IN_PROGRESS' &&
+              this.shouldCloseAtSettlement(
+                s.businessDate,
+                s.scheduledEndAt,
+                s.autoClockOutMode,
+                s.autoClockOutGraceMins,
+                businessDate,
+                now,
+              )
+            ) {
               await repos.sessions.update(site.companyId, s.id, {
                 status: 'AUTO_CLOSED',
+                autoClosedBy: AUTO_CLOSED_BY_SETTLEMENT,
                 isFlagged: true,
                 flagReason: 'MISSING_PUNCH_OUT',
                 punchOutRemarks: 'Auto-closed at daily settlement due to missing punch out',
               });
             }
+          }
+          // Strays from earlier business days: the day has ended, close them —
+          // unless a pinned scheduled end hasn't arrived yet (overnight shift
+          // still inside its window); those wait for the scheduled-close job.
+          const stale =
+            repos.sessions.findOpenBeforeBusinessDate !== undefined
+              ? await repos.sessions.findOpenBeforeBusinessDate(
+                  site.companyId,
+                  { siteId: site.id },
+                  businessDate,
+                )
+              : [];
+          for (const s of stale) {
+            if (
+              s.scheduledEndAt != null &&
+              AttendanceService.closeBoundaryAt(
+                s.scheduledEndAt,
+                s.autoClockOutMode,
+                s.autoClockOutGraceMins,
+              ).getTime() > now.getTime()
+            ) {
+              continue;
+            }
+            await repos.sessions.update(site.companyId, s.id, {
+              status: 'AUTO_CLOSED',
+              autoClosedBy: AUTO_CLOSED_BY_SETTLEMENT,
+              isFlagged: true,
+              flagReason: 'MISSING_PUNCH_OUT',
+              punchOutRemarks: 'Auto-closed at daily settlement due to missing punch out',
+            });
           }
 
           await this.internalRecalculateReport(
@@ -2709,7 +2974,7 @@ export class AttendanceService {
             site.companyId,
             site.id,
             businessDate,
-            'SYSTEM',
+            SYSTEM_PRINCIPAL_ID,
             'Scheduled end-of-day settlement',
           );
           settledCount += 1;
@@ -2719,6 +2984,471 @@ export class AttendanceService {
       }
 
       return { settledCount };
+    });
+  }
+
+  /** Instant at which an automated path may close a session with a pinned
+   *  scheduled end — `AFTER_GRACE` extends the boundary by its grace minutes.
+   *  Shared by the scheduled-end worker tick and EOD settlement. */
+  private static closeBoundaryAt(
+    scheduledEndAt: Date,
+    autoClockOutMode: string | null,
+    autoClockOutGraceMins: number | null,
+  ): Date {
+    const grace = autoClockOutMode === 'AFTER_GRACE' ? (autoClockOutGraceMins ?? 0) : 0;
+    return new Date(scheduledEndAt.getTime() + grace * 60000);
+  }
+
+  /** A settlement run may close a session only once it is actually due:
+   *  a pinned scheduled end is authoritative — an overnight shift whose end
+   *  lands after the business-date rollover must never be closed early by the
+   *  business-day fallback. Only sessions with no pinned end fall back to the
+   *  business-day rule; anything else waits for the 24h stale sweep. */
+  private shouldCloseAtSettlement(
+    sessionBusinessDate: string,
+    scheduledEndAt: Date | null | undefined,
+    autoClockOutMode: string | null,
+    autoClockOutGraceMins: number | null,
+    currentBusinessDate: string,
+    now: Date,
+  ): boolean {
+    if (scheduledEndAt != null) {
+      return (
+        AttendanceService.closeBoundaryAt(
+          scheduledEndAt,
+          autoClockOutMode,
+          autoClockOutGraceMins,
+        ).getTime() <= now.getTime()
+      );
+    }
+    return sessionBusinessDate < currentBusinessDate;
+  }
+
+  /**
+   * Scheduled-end auto clock-out — idempotent worker entrypoint. Closes
+   * IN_PROGRESS sessions whose pinned scheduled end (+ AFTER_GRACE grace) has
+   * arrived. The conditional `autoCloseSession` update only transitions rows
+   * still IN_PROGRESS, so repeated and concurrent runs can never double-close.
+   */
+  async closeSessionsAtScheduledEnd(companyId?: string): Promise<{ closed: number }> {
+    return this.uow.run(async (repos) => {
+      if (
+        repos.sessions.findDueForScheduledClose === undefined ||
+        repos.sessions.autoCloseSession === undefined
+      ) {
+        return { closed: 0 };
+      }
+      const now = new Date();
+      const due = await repos.sessions.findDueForScheduledClose(companyId, now);
+      let closed = 0;
+
+      for (const s of due) {
+        const scheduledEndAt = s.scheduledEndAt;
+        if (scheduledEndAt === null) continue;
+        const grace = s.autoClockOutMode === 'AFTER_GRACE' ? (s.autoClockOutGraceMins ?? 0) : 0;
+        const closeAt = AttendanceService.closeBoundaryAt(
+          scheduledEndAt,
+          s.autoClockOutMode,
+          s.autoClockOutGraceMins,
+        );
+        if (closeAt.getTime() > now.getTime()) continue;
+
+        // Close an open dynamic break at the same instant so break totals
+        // stay consistent with the session close.
+        const openBreak = s.breaks.find((b) => b.endedAt === null);
+        if (openBreak) {
+          const breakMins = Math.max(
+            1,
+            Math.round((closeAt.getTime() - openBreak.startedAt.getTime()) / 60000),
+          );
+          await repos.breaks.update(s.companyId, openBreak.id, {
+            endedAt: closeAt,
+            durationMins: breakMins,
+          });
+        }
+
+        const snapshot = (s.policySnapshot as PolicySnapshot | null) ?? null;
+        const policy = snapshot ? calcPolicyFromSnapshot(snapshot) : null;
+        const gross = Math.max(0, Math.round((closeAt.getTime() - s.punchInAt.getTime()) / 60000));
+        let dynamicBreaks = 0;
+        if (snapshot !== null && policy?.breakMode === 'DYNAMIC') {
+          const raw = s.breaks.reduce((acc, b) => acc + b.durationMins, 0);
+          dynamicBreaks = Math.min(raw, dynamicBreakCapMins(snapshot));
+        }
+        const calc = policy
+          ? calculateWorkAndOvertime({ grossMinutes: gross, breakMinutes: dynamicBreaks, policy })
+          : null;
+
+        const remark = `System auto clock-out at scheduled end${
+          grace > 0 ? ` + ${grace}m grace` : ''
+        } (${scheduledEndAt.toISOString()})`;
+        const reason = 'Auto-closed at scheduled shift end';
+        const updated = await repos.sessions.autoCloseSession(s.companyId, s.id, {
+          status: 'AUTO_CLOSED',
+          autoClosedBy: AUTO_CLOSED_BY_SCHEDULED_END,
+          punchOutAt: closeAt,
+          punchOutRemarks: remark,
+          grossDurationMins: gross,
+          ...(calc !== null
+            ? {
+                breakDurationMins: calc.breakDurationMins,
+                netDurationMins: calc.netDurationMins,
+                presentUnits: calc.presentUnits,
+                overtimePUnits: calc.overtimePUnits,
+                totalPUnits: calc.totalPUnits,
+                overtimeHours: calc.overtimeHours,
+              }
+            : {}),
+          isFlagged: true,
+          flagReason: s.flagReason ? `${s.flagReason}; ${reason}` : reason,
+        });
+        if (updated === null) continue; // another run already closed it
+        closed += 1;
+
+        await repos.audit.record(
+          auditEntry(SYSTEM_ACTOR, {
+            action: 'ATTENDANCE_AUTO_CLOCK_OUT',
+            entityType: 'ATTENDANCE_SESSION',
+            entityId: s.id,
+            companyId: s.companyId,
+            statusBefore: 'IN_PROGRESS',
+            statusAfter: 'AUTO_CLOSED',
+            metadata: {
+              employeeId: s.employeeId,
+              scheduledEndAt: scheduledEndAt.toISOString(),
+              closedAt: closeAt.toISOString(),
+              autoClockOutMode: s.autoClockOutMode,
+              graceAppliedMins: grace,
+            },
+          }),
+        );
+      }
+
+      return { closed };
+    });
+  }
+
+  /**
+   * Manual missed-session creation — server-labeled MANUAL_CORRECTION,
+   * scope-authorized, audited. The client never controls `source`.
+   * `clientSessionId` makes replays idempotent (returns the existing row).
+   */
+  async createManualSession(
+    actor: ActorContext,
+    companyId: string,
+    input: ManualSessionInput,
+  ): Promise<AttendanceSession> {
+    if ((input.siteId === undefined) === (input.headOfficeId === undefined)) {
+      throw new AttendanceValidationError('Provide exactly one of siteId or headOfficeId');
+    }
+    const siteId = input.siteId;
+    const headOfficeId = input.headOfficeId;
+    const punchTarget =
+      siteId !== undefined
+        ? siteTarget(companyId, siteId)
+        : headOfficeId !== undefined
+          ? headOfficeTarget(companyId, headOfficeId)
+          : (() => {
+              throw new AttendanceValidationError('anchor resolution failed after XOR check');
+            })();
+    await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_MANAGE, punchTarget);
+
+    return this.uow.run(async (repos) => {
+      if (input.clientSessionId !== undefined) {
+        const existing = await repos.sessions.findByClientSessionId(
+          companyId,
+          input.clientSessionId,
+        );
+        if (existing) return existing;
+      }
+
+      const emp = await repos.employees.findById(companyId, input.employeeId);
+      if (emp?.status !== 'ACTIVE') {
+        throw new AttendanceEntityNotFoundError('Active Employee', input.employeeId);
+      }
+
+      const site =
+        input.siteId !== undefined ? await repos.sites.findById(companyId, input.siteId) : null;
+      if (input.siteId !== undefined && site === null) {
+        throw new AttendanceEntityNotFoundError('Site', input.siteId);
+      }
+      if (site !== null) {
+        const atSite = await repos.memberships.hasActiveAtSite(
+          companyId,
+          input.employeeId,
+          site.id,
+        );
+        if (!atSite) {
+          throw new PunchNotAllowedError(
+            'Employee has no active membership in a department scoped to this site',
+          );
+        }
+      }
+      const headOffice =
+        input.headOfficeId !== undefined
+          ? await repos.headOffices.findById(companyId, input.headOfficeId)
+          : null;
+      if (input.headOfficeId !== undefined) {
+        if (headOffice?.status !== 'ACTIVE') {
+          throw new AttendanceEntityNotFoundError('Active Head Office', input.headOfficeId);
+        }
+        const atOffice = await repos.memberships.hasActiveAtHeadOffice(
+          companyId,
+          input.employeeId,
+          headOffice.id,
+        );
+        if (!atOffice) {
+          throw new PunchNotAllowedError(
+            'Employee has no active membership in a department based at this head office',
+          );
+        }
+      }
+
+      const punchInAt = new Date(input.punchInAt);
+      const punchOutAt = input.punchOutAt !== undefined ? new Date(input.punchOutAt) : null;
+      if (Number.isNaN(punchInAt.getTime()) || (punchOutAt && Number.isNaN(punchOutAt.getTime()))) {
+        throw new AttendanceValidationError('punchInAt/punchOutAt must be valid date-times');
+      }
+      if (punchOutAt !== null && punchOutAt.getTime() <= punchInAt.getTime()) {
+        throw new AttendanceValidationError('punchOutAt must be after punchInAt');
+      }
+      if (punchOutAt === null) {
+        const active = await repos.sessions.findActive(companyId, input.employeeId);
+        if (active) throw new ActiveSessionExistsError(active.id);
+      }
+
+      const policy =
+        (await repos.policies.findEffective(companyId, {
+          employeeId: input.employeeId,
+          ...(site !== null ? { siteId: site.id, projectId: site.projectId } : {}),
+        })) ?? createDefaultPolicyFallback(companyId);
+      let policyIdToPersist = policy.id;
+      if (policyIdToPersist === 'default-fallback') {
+        const compPolicy = repos.policies.ensureDefaultPolicy
+          ? await repos.policies.ensureDefaultPolicy(companyId)
+          : await repos.policies.create(companyId, {
+              name: 'Company Default Policy',
+              scope: 'COMPANY',
+            });
+        policyIdToPersist = compPolicy.id;
+      }
+
+      const timezone =
+        site !== null
+          ? (site.timezone ?? site.project.timezone)
+          : (headOffice?.timezone ?? 'Asia/Kolkata');
+      const businessDate = getBusinessDate(
+        punchInAt,
+        timezone,
+        policy.dayStartHour,
+        policy.dayStartMinute,
+      );
+
+      // Pin the resolved schedule + policy values at the punch-in instant so
+      // this correction classifies under the schedule effective at that time.
+      const resolvedRevision = this.deps?.scheduleResolver
+        ? ((
+            await this.deps.scheduleResolver.resolveForEmployee(
+              companyId,
+              input.employeeId,
+              punchInAt,
+            )
+          )?.revision ?? null)
+        : null;
+      const intraday: ResolvedIntraday | null =
+        resolvedRevision?.scheduledStartMins != null && resolvedRevision.scheduledEndMins != null
+          ? {
+              scheduledStartMins: resolvedRevision.scheduledStartMins,
+              scheduledEndMins: resolvedRevision.scheduledEndMins,
+              graceInMins: resolvedRevision.graceInMins ?? 0,
+              graceOutMins: resolvedRevision.graceOutMins ?? 0,
+              breakWindowMode: resolvedRevision.breakWindowMode,
+              breakWindowStartMins: resolvedRevision.breakWindowStartMins,
+              breakWindowEndMins: resolvedRevision.breakWindowEndMins,
+              breakDurationMins: resolvedRevision.breakDurationMins,
+              autoClockOutMode: resolvedRevision.autoClockOutMode,
+              autoClockOutGraceMins: resolvedRevision.autoClockOutGraceMins,
+            }
+          : null;
+      // Same fail-closed rule as punch-in: a contradictory break-mode pair
+      // must not be snapshotted into a manual correction either.
+      assertBreakModeConsistent(policy.breakMode, intraday);
+      const window =
+        intraday !== null && resolvedRevision !== null
+          ? resolveShiftWindow(
+              punchInAt,
+              intraday.scheduledStartMins,
+              intraday.scheduledEndMins,
+              resolvedRevision.timezone,
+            )
+          : null;
+      const snapshot: PolicySnapshot = {
+        shiftDurationMins: policy.shiftDurationMins,
+        halfDayThresholdMins: policy.halfDayThresholdMins,
+        fullDayThresholdMins: policy.fullDayThresholdMins,
+        policyBreakMode: policy.breakMode,
+        fixedBreakMins: policy.fixedBreakMins,
+        minWorkForBreakMins: policy.minWorkForBreakMins,
+        maxDynamicBreakMins: policy.maxDynamicBreakMins,
+        overtimeMode: policy.overtimeMode,
+        minOvertimeMins: policy.minOvertimeMins,
+        otSlabMins: policy.otSlabMins,
+        pMultiplierSlabs: policy.pMultiplierSlabs ?? undefined,
+        dayStartHour: policy.dayStartHour,
+        dayStartMinute: policy.dayStartMinute,
+        timezone: resolvedRevision?.timezone ?? timezone,
+        intraday,
+        scheduleRevisionId: resolvedRevision?.id ?? null,
+      };
+
+      let flagReason: string | null = 'MANUAL_CORRECTION';
+      if (
+        window !== null &&
+        intraday !== null &&
+        isLateIn(punchInAt, window.scheduledStartAt, intraday.graceInMins)
+      ) {
+        flagReason = `${flagReason}; Late punch in`;
+      }
+      if (
+        punchOutAt !== null &&
+        snapshot.intraday != null &&
+        window !== null &&
+        isEarlyOut(punchOutAt, window.scheduledEndAt, snapshot.intraday.graceOutMins)
+      ) {
+        flagReason = `${flagReason}; Early punch out`;
+      }
+
+      const gross = punchOutAt
+        ? Math.max(0, Math.round((punchOutAt.getTime() - punchInAt.getTime()) / 60000))
+        : null;
+      const calc =
+        gross !== null
+          ? calculateWorkAndOvertime({
+              grossMinutes: gross,
+              breakMinutes: 0,
+              policy: calcPolicyFromSnapshot(snapshot),
+            })
+          : null;
+
+      const session = await repos.sessions.create(companyId, {
+        employee: { connect: { id: input.employeeId } },
+        ...(site !== null ? { site: { connect: { id: site.id } } } : {}),
+        ...(headOffice !== null ? { headOffice: { connect: { id: headOffice.id } } } : {}),
+        policy: { connect: { id: policyIdToPersist } },
+        businessDate,
+        status: punchOutAt === null ? 'IN_PROGRESS' : 'COMPLETED',
+        source: 'MANUAL_CORRECTION',
+        punchInAt,
+        punchInRemarks: input.remarks,
+        punchOutAt: punchOutAt ?? null,
+        punchOutRemarks: punchOutAt !== null ? input.remarks : null,
+        grossDurationMins: gross ?? 0,
+        ...(calc !== null
+          ? {
+              breakDurationMins: calc.breakDurationMins,
+              netDurationMins: calc.netDurationMins,
+              presentUnits: calc.presentUnits,
+              overtimePUnits: calc.overtimePUnits,
+              totalPUnits: calc.totalPUnits,
+              overtimeHours: calc.overtimeHours,
+            }
+          : {}),
+        isFlagged: true,
+        flagReason,
+        clientSessionId: input.clientSessionId ?? null,
+        policySnapshot: snapshot as unknown as Prisma.InputJsonValue,
+        scheduledStartAt: window?.scheduledStartAt ?? null,
+        scheduledEndAt: window?.scheduledEndAt ?? null,
+        autoClockOutMode: intraday?.autoClockOutMode ?? null,
+        autoClockOutGraceMins: intraday?.autoClockOutGraceMins ?? null,
+        ...(resolvedRevision !== null
+          ? {
+              scheduleRevision: {
+                connect: { id_companyId: { id: resolvedRevision.id, companyId } },
+              },
+            }
+          : {}),
+      });
+
+      await repos.audit.record(
+        auditEntry(actor, {
+          action: 'ATTENDANCE_MANUAL_SESSION_CREATED',
+          entityType: 'ATTENDANCE_SESSION',
+          entityId: session.id,
+          companyId,
+          statusAfter: session.status,
+          metadata: {
+            employeeId: input.employeeId,
+            siteId: site?.id ?? null,
+            headOfficeId: headOffice?.id ?? null,
+            businessDate,
+            remarks: input.remarks,
+            source: 'MANUAL_CORRECTION',
+          },
+        }),
+      );
+
+      return session;
+    });
+  }
+
+  /**
+   * Authorization target for route-level scoped gates. `kind`+`id` resolve
+   * server-side; unresolvable entities fall back to COMPANY so the check
+   * fails closed (never leaks the entity's scope).
+   */
+  async resolveScope(
+    companyId: string,
+    kind: 'session' | 'dailyReport' | 'department' | 'employee' | 'tvt' | 'principal',
+    id: string,
+  ): Promise<ScopeTarget> {
+    return this.uow.run(async (repos) => {
+      const employeeAnchor = async (employeeId: string): Promise<ScopeTarget> => {
+        const memberships =
+          repos.memberships.findActiveByEmployee !== undefined
+            ? await repos.memberships.findActiveByEmployee(companyId, employeeId)
+            : [];
+        for (const m of memberships) {
+          if (m.department.siteId != null) return siteTarget(companyId, m.department.siteId);
+          if (m.department.baseHeadOfficeId != null)
+            return headOfficeTarget(companyId, m.department.baseHeadOfficeId);
+          if (m.department.projectId != null)
+            return { companyId, scopeType: 'PROJECT', scopeId: m.department.projectId };
+        }
+        return companyTarget(companyId);
+      };
+
+      switch (kind) {
+        case 'session': {
+          const s = await repos.sessions.findById(companyId, id);
+          return s ? sessionLocationTarget(companyId, s) : companyTarget(companyId);
+        }
+        case 'dailyReport': {
+          const r = await repos.dailyReports.findById(companyId, id);
+          return r ? siteTarget(companyId, r.siteId) : companyTarget(companyId);
+        }
+        case 'tvt': {
+          const t = await repos.tvt.findById(companyId, id);
+          return t ? siteTarget(companyId, t.siteId) : companyTarget(companyId);
+        }
+        case 'principal': {
+          // The caller's own employee anchor — self-punch endpoints that
+          // carry no location resolve scope through the caller's membership.
+          const emp = await repos.employees.findByPrincipal(companyId, id);
+          return emp ? employeeAnchor(emp.id) : companyTarget(companyId);
+        }
+        case 'department': {
+          const d = await repos.departments.findById(companyId, id);
+          if (d === null) return companyTarget(companyId);
+          if (d.siteId != null) return siteTarget(companyId, d.siteId);
+          if (d.projectId != null) return { companyId, scopeType: 'PROJECT', scopeId: d.projectId };
+          if (d.baseHeadOfficeId != null) return headOfficeTarget(companyId, d.baseHeadOfficeId);
+          return companyTarget(companyId);
+        }
+        case 'employee': {
+          return employeeAnchor(id);
+        }
+      }
     });
   }
 }

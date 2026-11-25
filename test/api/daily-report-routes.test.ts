@@ -150,6 +150,12 @@ async function makeApp(opts: { allow?: boolean } = {}) {
         createdAt: new Date().toISOString(),
       },
     ],
+    // Route-gate scope resolution — site target exercises the scoped path.
+    resolveScope: async (companyId: string) => ({
+      companyId,
+      scopeType: 'SITE',
+      scopeId: SITE_ID,
+    }),
   };
 
   const mockAccessControl = {

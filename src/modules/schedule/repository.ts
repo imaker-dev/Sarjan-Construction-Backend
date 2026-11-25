@@ -192,6 +192,7 @@ export interface ScheduleRepos {
       scopeType: string;
       projectId: string | null;
       siteId: string | null;
+      baseHeadOfficeId: string | null;
     } | null>;
   };
   projects: {
@@ -592,7 +593,14 @@ export function makeScheduleRepos(tx: Tx): ScheduleRepos {
     findById: (companyId: string, id: string) =>
       tx.department.findFirst({
         where: { id, companyId },
-        select: { id: true, status: true, scopeType: true, projectId: true, siteId: true },
+        select: {
+          id: true,
+          status: true,
+          scopeType: true,
+          projectId: true,
+          siteId: true,
+          baseHeadOfficeId: true,
+        },
       }),
   };
   const projects = {

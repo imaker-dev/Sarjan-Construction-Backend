@@ -127,6 +127,17 @@ async function makeApp(opts: { allow?: boolean } = {}) {
     listHolidays: async () => [
       { id: HOL_ID, date: '2026-01-26', name: 'Republic Day', categoryId: CAT_ID },
     ],
+    // Route-gate scope resolution — company target keeps the mock permissive.
+    resolveScopeTargetForSchedule: async (companyId: string) => ({
+      companyId,
+      scopeType: 'COMPANY',
+      scopeId: companyId,
+    }),
+    resolveScopeTargetForCriteria: async (companyId: string) => ({
+      companyId,
+      scopeType: 'COMPANY',
+      scopeId: companyId,
+    }),
   } as unknown as ScheduleService;
 
   const mockAuthService = {

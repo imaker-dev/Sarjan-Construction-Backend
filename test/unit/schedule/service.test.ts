@@ -39,7 +39,12 @@ const CAT = '00000000-0000-4000-8000-0000000000b1';
 const SCHED = '00000000-0000-4000-8000-000000000051';
 
 const actor: ActorContext = { actorId: 'u1', actorType: 'USER' };
-const authorizer = { assertPermission: vi.fn().mockResolvedValue(undefined) };
+// Company-wide schedule managers bypass the delegation flag entirely —
+// the tests' admin actor therefore holds a company-scope grant.
+const authorizer = {
+  assertPermission: vi.fn().mockResolvedValue(undefined),
+  hasPermission: vi.fn().mockResolvedValue(true),
+};
 
 const BASE_REVISION = {
   effectiveFrom: '2026-01-01',
@@ -143,6 +148,16 @@ const revisionRow = (over: Record<string, unknown> = {}) =>
     rotationOffOffsets: [],
     holidayCalendarId: null,
     holidayCalendar: null,
+    scheduledStartMins: null,
+    scheduledEndMins: null,
+    graceInMins: null,
+    graceOutMins: null,
+    breakWindowMode: null,
+    breakWindowStartMins: null,
+    breakWindowEndMins: null,
+    breakDurationMins: null,
+    autoClockOutMode: null,
+    autoClockOutGraceMins: null,
     status: 'ACTIVE',
     note: null,
     createdByPrincipalId: 'u1',
@@ -673,6 +688,7 @@ describe('ScheduleService.resolveEffective', () => {
       scopeType: 'SITE',
       projectId: PROJ,
       siteId: SITE,
+      baseHeadOfficeId: null,
     }));
     vi.mocked(repos.schedules.findAtScope).mockImplementation((async (
       _c: string,

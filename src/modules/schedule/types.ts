@@ -50,6 +50,56 @@ export const RotationSchema = Type.Object({
 });
 export type RotationInput = Static<typeof RotationSchema>;
 
+export const BreakWindowModeSchema = Type.Union(
+  [Type.Literal('FIXED_WINDOW'), Type.Literal('DYNAMIC')],
+  {
+    description:
+      'FIXED_WINDOW: scheduled break auto-deducted, no break punches needed. ' +
+      'DYNAMIC: employee-punched breaks bounded by window and breakDurationMins cap.',
+  },
+);
+export type BreakWindowMode = Static<typeof BreakWindowModeSchema>;
+
+export const AutoClockOutModeSchema = Type.Union(
+  [Type.Literal('DISABLED'), Type.Literal('AT_SCHEDULED_END'), Type.Literal('AFTER_GRACE')],
+  {
+    description:
+      'DISABLED: never auto-close. AT_SCHEDULED_END: auto punch-out exactly at ' +
+      'scheduled end. AFTER_GRACE: at scheduled end + autoClockOutGraceMins.',
+  },
+);
+export type AutoClockOutMode = Static<typeof AutoClockOutModeSchema>;
+
+/** Minutes since local midnight in the revision timezone (0..1439). */
+const LocalMinute = Type.Integer({
+  minimum: 0,
+  maximum: 1439,
+  description: 'Minutes since local midnight in revision.timezone',
+});
+
+/**
+ * Optional intraday shift timing on a schedule revision. All-or-nothing for
+ * the shift window: scheduledStartMins + scheduledEndMins must be set together
+ * and differ; end < start encodes an overnight shift. A revision with no
+ * `intraday` is a day-pattern only — the AttendancePolicy governs as before.
+ */
+export const IntradaySchema = Type.Object(
+  {
+    scheduledStartMins: LocalMinute,
+    scheduledEndMins: LocalMinute,
+    graceInMins: Type.Optional(Type.Integer({ minimum: 0, maximum: 240, default: 0 })),
+    graceOutMins: Type.Optional(Type.Integer({ minimum: 0, maximum: 240, default: 0 })),
+    breakWindowMode: Type.Optional(BreakWindowModeSchema),
+    breakWindowStartMins: Type.Optional(LocalMinute),
+    breakWindowEndMins: Type.Optional(LocalMinute),
+    breakDurationMins: Type.Optional(Type.Integer({ minimum: 1, maximum: 480 })),
+    autoClockOutMode: Type.Optional(AutoClockOutModeSchema),
+    autoClockOutGraceMins: Type.Optional(Type.Integer({ minimum: 0, maximum: 720 })),
+  },
+  { additionalProperties: false },
+);
+export type IntradayInput = Static<typeof IntradaySchema>;
+
 /**
  * Pattern fields that make up a schedule revision — the immutable,
  * administrator-configured working pattern.
@@ -60,6 +110,7 @@ export const RevisionPatternBody = Type.Object({
   offNthWeekdays: Type.Optional(Type.Array(NthWeekdayOffSchema, { maxItems: 7 })),
   rotation: Type.Optional(RotationSchema),
   holidayCalendarId: Type.Optional(Type.Union([Uuid, Type.Null()])),
+  intraday: Type.Optional(IntradaySchema),
 });
 export type RevisionPatternInput = Static<typeof RevisionPatternBody>;
 

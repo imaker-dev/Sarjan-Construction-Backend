@@ -23,6 +23,7 @@ import {
   ListSessionsQuery,
   ListTvtSessionsQuery,
   LockDailyReportBody,
+  ManualSessionBody,
   MusterRollRangeQuery,
   PunchInBody,
   PunchOutBody,
@@ -45,6 +46,7 @@ import {
   type ListSessionsFilter,
   type ListTvtSessionsFilter,
   type LockDailyReportInput,
+  type ManualSessionInput,
   type MusterRollRangeFilter,
   type PunchInInput,
   type PunchOutInput,
@@ -67,6 +69,18 @@ const atCompany = (r: FastifyRequest): ScopeTarget => {
   const companyId = companyIdOf(r);
   return { companyId, scopeType: 'COMPANY', scopeId: companyId };
 };
+
+const siteTarget = (companyId: string, siteId: string): ScopeTarget => ({
+  companyId,
+  scopeType: 'SITE',
+  scopeId: siteId,
+});
+
+const headOfficeTarget = (companyId: string, headOfficeId: string): ScopeTarget => ({
+  companyId,
+  scopeType: 'HEAD_OFFICE',
+  scopeId: headOfficeId,
+});
 
 const actorOf = (r: FastifyRequest): ActorContext => ({
   actorId: (r.principal as { actorId: string }).actorId,
@@ -101,9 +115,73 @@ const EffectivePolicyQuery = Type.Object({
 
 export function attendanceRoutes(service: AttendanceService) {
   return async function routes(app: FastifyInstance) {
-    const perm = (key: string) => ({
-      preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, atCompany)],
+    // Route gates resolve the permission target from server-loaded entities —
+    // never from caller-supplied employee/site combinations alone. PI/PD
+    // scoped grants pass only for their own project/site targets; anything
+    // unresolvable falls back to COMPANY and fails closed.
+    const perm = (
+      key: string,
+      resolveScope: (r: FastifyRequest) => ScopeTarget | Promise<ScopeTarget> = atCompany,
+    ) => ({
+      preHandler: [
+        app.authenticate,
+        app.tenantCompanyGuard,
+        app.requirePermission(key, resolveScope),
+      ],
     });
+
+    const bodyScope = (r: FastifyRequest): Promise<ScopeTarget> | ScopeTarget => {
+      const companyId = companyIdOf(r);
+      const b = (r.body ?? {}) as {
+        siteId?: string;
+        headOfficeId?: string;
+        departmentId?: string;
+        employeeId?: string;
+        sessionId?: string;
+      };
+      if (b.sessionId !== undefined) return service.resolveScope(companyId, 'session', b.sessionId);
+      if (b.siteId !== undefined) return siteTarget(companyId, b.siteId);
+      if (b.headOfficeId !== undefined) return headOfficeTarget(companyId, b.headOfficeId);
+      if (b.departmentId !== undefined)
+        return service.resolveScope(companyId, 'department', b.departmentId);
+      if (b.employeeId !== undefined)
+        return service.resolveScope(companyId, 'employee', b.employeeId);
+      return service.resolveScope(
+        companyId,
+        'principal',
+        (r.principal as { actorId: string }).actorId,
+      );
+    };
+
+    const queryScope = (r: FastifyRequest): Promise<ScopeTarget> | ScopeTarget => {
+      const companyId = companyIdOf(r);
+      const q = (r.query ?? {}) as {
+        siteId?: string;
+        headOfficeId?: string;
+        departmentId?: string;
+        employeeId?: string;
+      };
+      if (q.siteId !== undefined) return siteTarget(companyId, q.siteId);
+      if (q.headOfficeId !== undefined) return headOfficeTarget(companyId, q.headOfficeId);
+      if (q.departmentId !== undefined)
+        return service.resolveScope(companyId, 'department', q.departmentId);
+      if (q.employeeId !== undefined)
+        return service.resolveScope(companyId, 'employee', q.employeeId);
+      return atCompany(r);
+    };
+
+    const atSession = (r: FastifyRequest): Promise<ScopeTarget> =>
+      service.resolveScope(companyIdOf(r), 'session', (r.params as { id: string }).id);
+    const atReport = (r: FastifyRequest): Promise<ScopeTarget> =>
+      service.resolveScope(companyIdOf(r), 'dailyReport', (r.params as { id: string }).id);
+    const atTvt = (r: FastifyRequest): Promise<ScopeTarget> =>
+      service.resolveScope(companyIdOf(r), 'tvt', (r.params as { id: string }).id);
+    const atPrincipal = (r: FastifyRequest): Promise<ScopeTarget> =>
+      service.resolveScope(
+        companyIdOf(r),
+        'principal',
+        (r.principal as { actorId: string }).actorId,
+      );
 
     // -----------------------------------------------------------------------
     // Policy Routes
@@ -147,7 +225,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/policies/effective',
-      { schema: { querystring: EffectivePolicyQuery }, ...perm(ATTENDANCE_READ) },
+      { schema: { querystring: EffectivePolicyQuery }, ...perm(ATTENDANCE_READ, queryScope) },
       async (req) => {
         const query = req.query as { siteId?: string; employeeId?: string };
         return service.resolveEffectivePolicy(actorOf(req), companyIdOf(req), query);
@@ -195,7 +273,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/punch-in',
-      { schema: { body: PunchInBody }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { body: PunchInBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
       async (req, reply) => {
         const session = await service.punchIn(
           actorOf(req),
@@ -208,7 +286,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/punch-out',
-      { schema: { body: PunchOutBody }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { body: PunchOutBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
       async (req) => {
         return service.punchOut(actorOf(req), companyIdOf(req), req.body as PunchOutInput);
       },
@@ -220,7 +298,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/breaks/start',
-      { schema: { body: StartBreakBody }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { body: StartBreakBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
       async (req, reply) => {
         const brk = await service.startBreak(
           actorOf(req),
@@ -233,7 +311,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/breaks/end',
-      { schema: { body: EndBreakBody }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { body: EndBreakBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
       async (req) => {
         return service.endBreak(actorOf(req), companyIdOf(req), req.body as EndBreakInput);
       },
@@ -251,7 +329,12 @@ export function attendanceRoutes(service: AttendanceService) {
             employeeId: Type.Optional(Type.String({ format: 'uuid' })),
           }),
         },
-        ...perm(ATTENDANCE_READ),
+        ...perm(ATTENDANCE_READ, (r) => {
+          const q = r.query as { employeeId?: string };
+          return q.employeeId !== undefined
+            ? service.resolveScope(companyIdOf(r), 'employee', q.employeeId)
+            : atPrincipal(r);
+        }),
       },
       async (req) => {
         const query = req.query as { employeeId?: string };
@@ -313,7 +396,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/sessions',
-      { schema: { querystring: ListSessionsQuery }, ...perm(ATTENDANCE_READ) },
+      { schema: { querystring: ListSessionsQuery }, ...perm(ATTENDANCE_READ, queryScope) },
       async (req) => {
         return service.listSessions(
           actorOf(req),
@@ -323,9 +406,34 @@ export function attendanceRoutes(service: AttendanceService) {
       },
     );
 
+    // Manual missed-session correction — ATTENDANCE_MANAGE at the resolved
+    // site/head-office target. The server sets source='MANUAL_CORRECTION'
+    // and requires remarks; clientSessionId makes replays idempotent.
+    app.post(
+      '/attendance/sessions',
+      {
+        schema: {
+          body: ManualSessionBody,
+          description:
+            'Create a manual attendance-session correction (missed punch). ' +
+            'Requires ATTENDANCE_MANAGE at the resolved site/head-office target. ' +
+            'source is server-set to MANUAL_CORRECTION and must not be sent.',
+        },
+        ...perm(ATTENDANCE_MANAGE, bodyScope),
+      },
+      async (req, reply) => {
+        const session = await service.createManualSession(
+          actorOf(req),
+          companyIdOf(req),
+          req.body as ManualSessionInput,
+        );
+        return reply.code(201).send(session);
+      },
+    );
+
     app.get(
       '/attendance/sessions/:id',
-      { schema: { params: SessionParams }, ...perm(ATTENDANCE_READ) },
+      { schema: { params: SessionParams }, ...perm(ATTENDANCE_READ, atSession) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getSession(actorOf(req), companyIdOf(req), id);
@@ -339,7 +447,7 @@ export function attendanceRoutes(service: AttendanceService) {
           params: SessionParams,
           body: RegularizeSessionBody,
         },
-        ...perm(ATTENDANCE_MANAGE),
+        ...perm(ATTENDANCE_MANAGE, atSession),
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -354,7 +462,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/daily-summary',
-      { schema: { querystring: DailySummaryQuery }, ...perm(ATTENDANCE_READ) },
+      { schema: { querystring: DailySummaryQuery }, ...perm(ATTENDANCE_READ, queryScope) },
       async (req) => {
         return service.getDailySummary(
           actorOf(req),
@@ -370,7 +478,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/kiosk/batch-punch-in',
-      { schema: { body: KioskBatchPunchInBody }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { body: KioskBatchPunchInBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
       async (req) => {
         return service.kioskBatchPunchIn(
           actorOf(req),
@@ -382,7 +490,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/kiosk/batch-punch-out',
-      { schema: { body: KioskBatchPunchOutBody }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { body: KioskBatchPunchOutBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
       async (req) => {
         return service.kioskBatchPunchOut(
           actorOf(req),
@@ -394,7 +502,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/kiosk/sync',
-      { schema: { body: KioskOfflineSyncBody }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { body: KioskOfflineSyncBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
       async (req) => {
         return service.kioskOfflineSync(
           actorOf(req),
@@ -410,7 +518,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/tvt',
-      { schema: { body: CreateTvtSessionBody }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { body: CreateTvtSessionBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
       async (req, reply) => {
         const created = await service.createTvtSession(
           actorOf(req),
@@ -424,7 +532,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/tvt',
-      { schema: { querystring: ListTvtSessionsQuery }, ...perm(ATTENDANCE_READ) },
+      { schema: { querystring: ListTvtSessionsQuery }, ...perm(ATTENDANCE_READ, queryScope) },
       async (req) => {
         return service.listTvtSessions(
           actorOf(req),
@@ -436,7 +544,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/tvt/:id',
-      { schema: { params: TvtParams }, ...perm(ATTENDANCE_READ) },
+      { schema: { params: TvtParams }, ...perm(ATTENDANCE_READ, atTvt) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getTvtSession(actorOf(req), companyIdOf(req), id);
@@ -450,7 +558,7 @@ export function attendanceRoutes(service: AttendanceService) {
           params: TvtParams,
           body: AddTvtAttendeesBody,
         },
-        ...perm(ATTENDANCE_RECORD),
+        ...perm(ATTENDANCE_RECORD, atTvt),
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -469,7 +577,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/muster-roll',
-      { schema: { querystring: MusterRollRangeQuery }, ...perm(ATTENDANCE_READ) },
+      { schema: { querystring: MusterRollRangeQuery }, ...perm(ATTENDANCE_READ, queryScope) },
       async (req) => {
         return service.getMusterRollRange(
           actorOf(req),
@@ -485,7 +593,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/daily-reports/calculate',
-      { schema: { body: CalculateDailyReportBody }, ...perm(ATTENDANCE_MANAGE) },
+      { schema: { body: CalculateDailyReportBody }, ...perm(ATTENDANCE_MANAGE, bodyScope) },
       async (req, reply) => {
         const result = await service.calculateDailyReport(
           actorOf(req),
@@ -499,7 +607,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/daily-reports',
-      { schema: { querystring: ListDailyReportsQuery }, ...perm(ATTENDANCE_READ) },
+      { schema: { querystring: ListDailyReportsQuery }, ...perm(ATTENDANCE_READ, queryScope) },
       async (req) => {
         return service.getDailyReports(
           actorOf(req),
@@ -511,7 +619,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/daily-reports/:id',
-      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_READ) },
+      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_READ, atReport) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getDailyReportById(actorOf(req), companyIdOf(req), id);
@@ -525,7 +633,7 @@ export function attendanceRoutes(service: AttendanceService) {
           params: DailyReportParams,
           body: UpdateDailyReportBody,
         },
-        ...perm(ATTENDANCE_MANAGE),
+        ...perm(ATTENDANCE_MANAGE, atReport),
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -545,7 +653,7 @@ export function attendanceRoutes(service: AttendanceService) {
           params: DailyReportLabourSummaryParams,
           body: UpdateLabourSummaryBody,
         },
-        ...perm(ATTENDANCE_MANAGE),
+        ...perm(ATTENDANCE_MANAGE, atReport),
       },
       async (req) => {
         const { id, summaryId } = req.params as { id: string; summaryId: string };
@@ -561,7 +669,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/daily-reports/:id/submit',
-      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_RECORD) },
+      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_RECORD, atReport) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.submitDailyReport(actorOf(req), companyIdOf(req), id);
@@ -570,7 +678,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/daily-reports/:id/approve',
-      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_MANAGE) },
+      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_MANAGE, atReport) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.approveDailyReport(actorOf(req), companyIdOf(req), id);
@@ -584,7 +692,7 @@ export function attendanceRoutes(service: AttendanceService) {
           params: DailyReportParams,
           body: RejectDailyReportBody,
         },
-        ...perm(ATTENDANCE_MANAGE),
+        ...perm(ATTENDANCE_MANAGE, atReport),
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -604,7 +712,7 @@ export function attendanceRoutes(service: AttendanceService) {
           params: DailyReportParams,
           body: Type.Optional(LockDailyReportBody),
         },
-        ...perm(ATTENDANCE_MANAGE),
+        ...perm(ATTENDANCE_MANAGE, atReport),
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -619,7 +727,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/daily-reports/:id/audit-trail',
-      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_READ) },
+      { schema: { params: DailyReportParams }, ...perm(ATTENDANCE_READ, atReport) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getDailyReportAuditTrail(actorOf(req), companyIdOf(req), id);

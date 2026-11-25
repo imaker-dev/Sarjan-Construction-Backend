@@ -1,5 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox';
 import type { AttendanceBreak, AttendanceSession, BreakMode, OvertimeMode } from '@prisma/client';
+import { BreakModeConflictError } from './errors.js';
 
 // ---------------------------------------------------------------------------
 // Pure Domain Helper Functions & Default Configuration
@@ -253,7 +254,10 @@ export function calculateWeeklyWorkHoursProgress(params: {
   targetWeeklyHours?: number;
 }): WeeklyWorkHoursProgress {
   const targetWeeklyHours = params.targetWeeklyHours ?? 48.0;
-  const { from: weekStartDate, to: weekEndDate } = resolveDateRangeForPeriod('WEEKLY', params.businessDate);
+  const { from: weekStartDate, to: weekEndDate } = resolveDateRangeForPeriod(
+    'WEEKLY',
+    params.businessDate,
+  );
 
   let totalMins = 0;
   let priorDaysMins = 0;
@@ -310,8 +314,12 @@ export function calculateWeeklyWorkHoursProgress(params: {
   const completedWeeklyHours = Number((totalMins / 60).toFixed(2));
   const priorDaysCompletedWeeklyHours = Number((priorDaysMins / 60).toFixed(2));
   const todayCompletedHours = Number((todayMins / 60).toFixed(2));
-  const remainingWeeklyHours = Number(Math.max(0, targetWeeklyHours - completedWeeklyHours).toFixed(2));
-  const progressPercentage = Number(Math.min(100, (completedWeeklyHours / targetWeeklyHours) * 100).toFixed(1));
+  const remainingWeeklyHours = Number(
+    Math.max(0, targetWeeklyHours - completedWeeklyHours).toFixed(2),
+  );
+  const progressPercentage = Number(
+    Math.min(100, (completedWeeklyHours / targetWeeklyHours) * 100).toFixed(1),
+  );
   const isTargetCompleted = completedWeeklyHours >= targetWeeklyHours;
 
   const bDate = new Date(`${params.businessDate}T00:00:00.000Z`);
@@ -323,8 +331,8 @@ export function calculateWeeklyWorkHoursProgress(params: {
   const requiredHoursToCompleteTarget = isTargetCompleted
     ? 0
     : isLastWorkingDay
-    ? remainingWeeklyHours
-    : Number((remainingWeeklyHours / remainingWorkDaysInWeek).toFixed(2));
+      ? remainingWeeklyHours
+      : Number((remainingWeeklyHours / remainingWorkDaysInWeek).toFixed(2));
 
   let status: WeeklyWorkHoursProgress['status'] = 'ON_TRACK';
   if (isTargetCompleted) {
@@ -970,3 +978,204 @@ export type UpdateDailyReportInput = Static<typeof UpdateDailyReportBody>;
 export type UpdateLabourSummaryInput = Static<typeof UpdateLabourSummaryBody>;
 export type RejectDailyReportInput = Static<typeof RejectDailyReportBody>;
 export type LockDailyReportInput = Static<typeof LockDailyReportBody>;
+
+// ---------------------------------------------------------------------------
+// Intraday schedule snapshot — resolved at punch time
+// ---------------------------------------------------------------------------
+
+/** Intraday portion of a resolved WorkScheduleRevision (minutes since local
+ *  midnight in `timezone`). */
+export interface ResolvedIntraday {
+  scheduledStartMins: number;
+  scheduledEndMins: number;
+  graceInMins: number;
+  graceOutMins: number;
+  breakWindowMode: 'FIXED_WINDOW' | 'DYNAMIC' | null;
+  breakWindowStartMins: number | null;
+  breakWindowEndMins: number | null;
+  breakDurationMins: number | null;
+  autoClockOutMode: 'DISABLED' | 'AT_SCHEDULED_END' | 'AFTER_GRACE' | null;
+  autoClockOutGraceMins: number | null;
+}
+
+/** Calc-relevant AttendancePolicy + resolved intraday values, snapshotted on
+ *  the session at punch time so later edits never reclassify history. */
+export interface PolicySnapshot {
+  shiftDurationMins: number;
+  halfDayThresholdMins: number;
+  fullDayThresholdMins: number;
+  policyBreakMode: 'FIXED' | 'DYNAMIC';
+  fixedBreakMins: number;
+  minWorkForBreakMins: number;
+  maxDynamicBreakMins: number;
+  overtimeMode: 'HOURLY' | 'P_MULTIPLIER';
+  minOvertimeMins: number;
+  otSlabMins: number;
+  pMultiplierSlabs?: unknown;
+  dayStartHour: number;
+  dayStartMinute: number;
+  timezone: string;
+  intraday: ResolvedIntraday | null;
+  scheduleRevisionId: string | null;
+}
+
+/** Build the AttendancePolicyLike the calculator consumes. When the snapshot
+ *  carries a FIXED_WINDOW break, the schedule's duration/window rules own the
+ *  deduction; DYNAMIC keeps punch-recorded breaks; without intraday the
+ *  snapshotted policy fields govern exactly as before. */
+export function calcPolicyFromSnapshot(snap: PolicySnapshot): AttendancePolicyLike {
+  const mode = snap.intraday?.breakWindowMode;
+  return {
+    shiftDurationMins: snap.shiftDurationMins,
+    halfDayThresholdMins: snap.halfDayThresholdMins,
+    fullDayThresholdMins: snap.fullDayThresholdMins,
+    breakMode:
+      mode === 'FIXED_WINDOW' ? 'FIXED' : mode === 'DYNAMIC' ? 'DYNAMIC' : snap.policyBreakMode,
+    fixedBreakMins:
+      mode === 'FIXED_WINDOW' ? (snap.intraday?.breakDurationMins ?? 0) : snap.fixedBreakMins,
+    minWorkForBreakMins: snap.minWorkForBreakMins,
+    overtimeMode: snap.overtimeMode,
+    minOvertimeMins: snap.minOvertimeMins,
+    otSlabMins: snap.otSlabMins,
+    pMultiplierSlabs: snap.pMultiplierSlabs,
+  };
+}
+
+/** Explicit break-ownership mapping. The schedule revision owns the
+ *  fixed/dynamic declaration and its local-time window + duration whenever
+ *  `breakWindowMode` is set; the policy's own breakMode must then AGREE —
+ *  a disagreeing pair is contradictory and fails closed at snapshot time.
+ *  When `breakWindowMode` is null the policy alone governs (legacy). */
+export function assertBreakModeConsistent(
+  policyBreakMode: 'FIXED' | 'DYNAMIC',
+  intraday: ResolvedIntraday | null,
+): void {
+  if (intraday?.breakWindowMode == null) return;
+  const expected = intraday.breakWindowMode === 'FIXED_WINDOW' ? 'FIXED' : 'DYNAMIC';
+  if (policyBreakMode !== expected) {
+    throw new BreakModeConflictError(policyBreakMode, intraday.breakWindowMode);
+  }
+}
+
+/** Per-day cap on punch-recorded (dynamic) break minutes — the schedule's
+ *  configured duration wins when present, else the policy's legacy cap. */
+export function dynamicBreakCapMins(snap: PolicySnapshot): number {
+  if (snap.intraday?.breakWindowMode === 'DYNAMIC' && snap.intraday.breakDurationMins != null) {
+    return snap.intraday.breakDurationMins;
+  }
+  return snap.maxDynamicBreakMins;
+}
+
+/** Local 'YYYY-MM-DD' of an instant in an IANA timezone. */
+export function localDateStr(instant: Date, timezone: string): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return fmt.format(instant);
+}
+
+/** Local minutes-since-midnight of an instant in a timezone. */
+export function localMinutesOfDay(instant: Date, timezone: string): number {
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(instant);
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? '0') % 24;
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+  return h * 60 + m;
+}
+
+/**
+ * Convert `minutes` past local midnight on `dateStr` ('YYYY-MM-DD') into a UTC
+ * instant in `timezone`. Iterates the zone offset (≤3 passes) so DST offsets
+ * resolve without a tz database dependency.
+ */
+export function localMinutesToInstant(dateStr: string, minutes: number, timezone: string): Date {
+  const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
+  const mm = String(minutes % 60).padStart(2, '0');
+  const targetUtc = Date.parse(`${dateStr}T${hh}:${mm}:00.000Z`);
+  let guess = targetUtc;
+  for (let i = 0; i < 3; i += 1) {
+    const d = localDateStr(new Date(guess), timezone);
+    const m = localMinutesOfDay(new Date(guess), timezone);
+    const localAsUtc = Date.parse(`${d}T00:00:00.000Z`) + m * 60000;
+    const delta = targetUtc - localAsUtc;
+    if (delta === 0) break;
+    guess += delta;
+  }
+  return new Date(guess);
+}
+
+export interface ShiftWindow {
+  scheduledStartAt: Date;
+  scheduledEndAt: Date;
+}
+
+/**
+ * Resolve the shift window (UTC instants) covering an employee's punch at
+ * `now`. `end < start` local minutes encodes an overnight shift. Rule:
+ * - now >= today's start           → today's window
+ * - now inside yesterday's tail    → yesterday's window (overnight overlap)
+ * - otherwise (early-in)           → today's window
+ */
+export function resolveShiftWindow(
+  now: Date,
+  startMins: number,
+  endMins: number,
+  timezone: string,
+): ShiftWindow {
+  const span = (endMins - startMins + 1440) % 1440 || 1440;
+  const todayStr = localDateStr(now, timezone);
+  const todayStart = localMinutesToInstant(todayStr, startMins, timezone);
+  if (now.getTime() >= todayStart.getTime()) {
+    return {
+      scheduledStartAt: todayStart,
+      scheduledEndAt: new Date(todayStart.getTime() + span * 60000),
+    };
+  }
+  const y = new Date(Date.parse(`${todayStr}T00:00:00.000Z`) - 86400000);
+  const yesterdayStr = localDateStr(y, timezone);
+  const yStart = localMinutesToInstant(yesterdayStr, startMins, timezone);
+  const yEnd = new Date(yStart.getTime() + span * 60000);
+  if (now.getTime() < yEnd.getTime() && endMins < startMins) {
+    return { scheduledStartAt: yStart, scheduledEndAt: yEnd };
+  }
+  return {
+    scheduledStartAt: todayStart,
+    scheduledEndAt: new Date(todayStart.getTime() + span * 60000),
+  };
+}
+
+export const AUTO_CLOSED_BY_SCHEDULED_END = 'SCHEDULED_END';
+export const AUTO_CLOSED_BY_SETTLEMENT = 'EOD_SETTLEMENT';
+export const AUTO_CLOSED_BY_SWEEP = 'STALE_SWEEP';
+
+/** Late-in / early-out against the snapshotted scheduled instants + grace. */
+export function isLateIn(punchInAt: Date, scheduledStartAt: Date, graceInMins: number): boolean {
+  return punchInAt.getTime() > scheduledStartAt.getTime() + graceInMins * 60000;
+}
+export function isEarlyOut(punchOutAt: Date, scheduledEndAt: Date, graceOutMins: number): boolean {
+  return punchOutAt.getTime() < scheduledEndAt.getTime() - graceOutMins * 60000;
+}
+
+/** Manual missed-session creation — server labels source MANUAL_CORRECTION;
+ *  the client must not send `source`. */
+export const ManualSessionBody = Type.Object(
+  {
+    employeeId: Type.String({ format: 'uuid' }),
+    siteId: Type.Optional(Type.String({ format: 'uuid' })),
+    headOfficeId: Type.Optional(Type.String({ format: 'uuid' })),
+    punchInAt: Type.String({ format: 'date-time' }),
+    punchOutAt: Type.Optional(Type.String({ format: 'date-time' })),
+    remarks: Type.String({ minLength: 3, maxLength: 500 }),
+    clientSessionId: Type.Optional(Type.String({ format: 'uuid' })),
+  },
+  { additionalProperties: false },
+);
+export type ManualSessionInput = Static<typeof ManualSessionBody>;

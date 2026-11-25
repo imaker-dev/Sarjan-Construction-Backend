@@ -68,6 +68,13 @@ export class NoActiveBreakError extends AttendanceError {
   }
 }
 
+export class BreakOutsideWindowError extends AttendanceError {
+  constructor() {
+    super('Break punch rejected: outside the configured break window', 422, 'BREAK_OUTSIDE_WINDOW');
+    this.name = 'BreakOutsideWindowError';
+  }
+}
+
 export class PunchNotAllowedError extends AttendanceError {
   constructor(reason: string) {
     super(`Punch not permitted: ${reason}`, 403, 'PUNCH_NOT_ALLOWED');
@@ -97,6 +104,20 @@ export class InvalidDateRangeError extends AttendanceError {
   constructor(message: string) {
     super(message, 400, 'INVALID_DATE_RANGE');
     this.name = 'InvalidDateRangeError';
+  }
+}
+
+export class BreakModeConflictError extends AttendanceError {
+  constructor(policyBreakMode: string, scheduleBreakWindowMode: string) {
+    super(
+      `Contradictory break configuration: AttendancePolicy.breakMode='${policyBreakMode}' ` +
+        `conflicts with schedule breakWindowMode='${scheduleBreakWindowMode}'. ` +
+        `Align the policy and schedule (FIXED ↔ FIXED_WINDOW, DYNAMIC ↔ DYNAMIC) or ` +
+        `remove breakWindowMode from the revision`,
+      422,
+      'BREAK_MODE_CONFLICT',
+    );
+    this.name = 'BreakModeConflictError';
   }
 }
 

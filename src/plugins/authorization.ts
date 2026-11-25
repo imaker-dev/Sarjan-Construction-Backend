@@ -15,7 +15,7 @@ declare module 'fastify' {
   interface FastifyInstance {
     requirePermission: (
       permissionKey: string,
-      resolveScope: (request: FastifyRequest) => ScopeTarget,
+      resolveScope: (request: FastifyRequest) => ScopeTarget | Promise<ScopeTarget>,
     ) => (request: FastifyRequest) => Promise<void>;
     /** Rejects requests whose x-company-id targets the platform company. */
     tenantCompanyGuard: (request: FastifyRequest) => Promise<void>;
@@ -32,7 +32,7 @@ export default fp<AuthorizationPluginOptions>(
         if (!request.principal) {
           throw new UnauthorizedError();
         }
-        const target = resolveScope(request);
+        const target = await resolveScope(request);
         await opts.accessControl.assertPermission(request.principal.actorId, permissionKey, target);
       };
     });

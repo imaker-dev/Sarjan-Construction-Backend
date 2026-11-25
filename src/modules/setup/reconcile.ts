@@ -39,6 +39,9 @@ export const RECONCILE_KEYS = [
   // Sensitive site fields (access instructions / emergency details) — owner
   // only by default; other roles must be granted it explicitly.
   'ORG_SITE_SENSITIVE_READ',
+  // Site wallet — PI/PD surface; tenant owner administers it company-wide.
+  'SITE_WALLET_VIEW',
+  'SITE_WALLET_MANAGE',
   // Finance API keys — tenant owner administers the whole Finance surface,
   // including the sensitive/payroll tiers that stay off staff templates.
   // Shared with onboarding (TENANT_OWNER_PERMISSIONS) — one source of truth.

@@ -44,6 +44,9 @@ export const TENANT_OWNER_PERMISSIONS: readonly string[] = [
   'EMPLOYEE_INVITE',
   'COMPLIANCE_READ',
   'COMPLIANCE_MANAGE',
+  // Site wallet — tenant owner administers the PI wallet surface company-wide.
+  'SITE_WALLET_VIEW',
+  'SITE_WALLET_MANAGE',
   'DOCUMENT_UPLOAD',
   'DOCUMENT_READ',
   'DOCUMENT_LINK',

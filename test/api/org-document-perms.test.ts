@@ -25,9 +25,12 @@ beforeAll(async () => {
   app.decorate('tenantCompanyGuard', async () => undefined);
   app.decorate(
     'requirePermission',
-    (key: string, resolveScope: (r: FastifyRequest) => Captured['target']) =>
+    (
+      key: string,
+      resolveScope: (r: FastifyRequest) => Captured['target'] | Promise<Captured['target']>,
+    ) =>
       async (req: FastifyRequest) => {
-        captured.push({ key, target: resolveScope(req) });
+        captured.push({ key, target: await resolveScope(req) });
       },
   );
   await app.register(organizationRoutes(stubOrg), { prefix: '/api/v1' });

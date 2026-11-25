@@ -138,6 +138,17 @@ model Company {
   projectDocuments       ProjectDocument[]
   siteDocuments          SiteDocument[]
   projectApprovals       ProjectApproval[]
+  siteWallets            SiteWallet[]
+  walletFundingRequests  WalletFundingRequest[]
+  walletFundingAttempts  WalletFundingAttempt[]
+  walletTransfers        WalletTransfer[]
+  walletExpenses         WalletExpense[]
+  walletLedgerEntries    WalletLedgerEntry[]
+  walletAccountHeads     WalletAccountHead[]
+  walletVoucherCounter   WalletVoucherCounter?
+  walletCashVouchers     WalletCashVoucher[]
+  walletCashVoucherLines WalletCashVoucherLine[]
+  walletReversalRequests WalletReversalRequest[]
 }
 
 model HeadOffice {
@@ -310,20 +321,25 @@ model Site {
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
-  company            Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  project            Project             @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  landParcel         ProjectLandParcel?  @relation(fields: [landParcelId, companyId], references: [id, companyId], onDelete: Restrict)
-  roleAssignments    RoleAssignment[]
-  departments        Department[]
-  documents          Document[]
-  attendancePolicies AttendancePolicy[]
-  leavePolicies      LeavePolicy[]
-  attendanceSessions AttendanceSession[]
-  safetyTvtSessions  SafetyTvtSession[]
-  workSchedules      WorkSchedule[]
-  dailySiteReports   DailySiteReport[]
-  siteDocuments      SiteDocument[]
-  siteWorkforceExits SiteWorkforceExit[]
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  project                Project                 @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  landParcel             ProjectLandParcel?      @relation(fields: [landParcelId, companyId], references: [id, companyId], onDelete: Restrict)
+  roleAssignments        RoleAssignment[]
+  departments            Department[]
+  documents              Document[]
+  attendancePolicies     AttendancePolicy[]
+  leavePolicies          LeavePolicy[]
+  attendanceSessions     AttendanceSession[]
+  safetyTvtSessions      SafetyTvtSession[]
+  workSchedules          WorkSchedule[]
+  dailySiteReports       DailySiteReport[]
+  siteDocuments          SiteDocument[]
+  siteWorkforceExits     SiteWorkforceExit[]
+  siteWallet             SiteWallet?
+  walletFundingRequests  WalletFundingRequest[]
+  walletTransfers        WalletTransfer[]
+  walletCashVouchers     WalletCashVoucher[]
+  walletReversalRequests WalletReversalRequest[]
 
   // Site codes are unique within a project (approved decision).
   @@unique([projectId, code])
@@ -578,7 +594,7 @@ model Principal {
   employees                 Employee[]
   sessions                  AuthSession[]
   roleAssignments           RoleAssignment[]
-  granted                   RoleAssignment[]       @relation("GrantedBy")
+  granted                   RoleAssignment[]        @relation("GrantedBy")
   publishedOps              OperationVersion[]
   formVersions              FormVersion[]
   workflowVersions          WorkflowVersion[]
@@ -590,18 +606,29 @@ model Principal {
   formSubmissions           FormSubmission[]
   submissionRevisions       SubmissionRevision[]
   claimTokens               ClaimToken[]
-  uploadedDocuments         Document[]             @relation("DocumentUploader")
-  reviewedDocuments         Document[]             @relation("DocumentReviewer")
-  linkedDocuments           DocumentLink[]         @relation("DocumentLinker")
-  unlinkedDocuments         DocumentLink[]         @relation("DocumentUnlinker")
+  uploadedDocuments         Document[]              @relation("DocumentUploader")
+  reviewedDocuments         Document[]              @relation("DocumentReviewer")
+  linkedDocuments           DocumentLink[]          @relation("DocumentLinker")
+  unlinkedDocuments         DocumentLink[]          @relation("DocumentUnlinker")
   notifications             Notification[]
-  submittedBudgetRevisions  BudgetRevision[]       @relation("BudgetRevisionSubmitter")
-  decidedBudgetRevisions    BudgetRevision[]       @relation("BudgetRevisionDecider")
-  workforceExitsRecorded    SiteWorkforceExit[]    @relation("SiteWorkforceExitActor")
+  submittedBudgetRevisions  BudgetRevision[]        @relation("BudgetRevisionSubmitter")
+  decidedBudgetRevisions    BudgetRevision[]        @relation("BudgetRevisionDecider")
+  workforceExitsRecorded    SiteWorkforceExit[]     @relation("SiteWorkforceExitActor")
   budgetReviewDecisions     BudgetReviewDecision[]
-  verifiedEmployeeDocuments EmployeeDocument[]     @relation("EmployeeDocVerifier")
-  attachedProjectDocuments  ProjectDocument[]      @relation("ProjectDocAttacher")
-  attachedSiteDocuments     SiteDocument[]         @relation("SiteDocAttacher")
+  verifiedEmployeeDocuments EmployeeDocument[]      @relation("EmployeeDocVerifier")
+  attachedProjectDocuments  ProjectDocument[]       @relation("ProjectDocAttacher")
+  attachedSiteDocuments     SiteDocument[]          @relation("SiteDocAttacher")
+  walletFundingRequested    WalletFundingRequest[]  @relation("WalletFundingRequester")
+  walletFundingSubmitted    WalletFundingAttempt[]  @relation("WalletFundingSubmitter")
+  walletFundingDecided      WalletFundingAttempt[]  @relation("WalletFundingDecider")
+  walletTransfersRecorded   WalletTransfer[]        @relation("WalletTransferRecorder")
+  walletTransfersConfirmed  WalletTransfer[]        @relation("WalletTransferConfirmer")
+  walletExpensesCreated     WalletExpense[]         @relation("WalletExpenseCreator")
+  walletLedgerPosted        WalletLedgerEntry[]     @relation("WalletLedgerPoster")
+  walletVouchersPrepared    WalletCashVoucher[]     @relation("WalletVoucherPreparer")
+  walletVouchersChecked     WalletCashVoucher[]     @relation("WalletVoucherChecker")
+  walletReversalsRequested  WalletReversalRequest[] @relation("WalletReversalRequester")
+  walletReversalsDecided    WalletReversalRequest[] @relation("WalletReversalDecider")
 }
 
 // Company-scoped workforce record. Login linkage is optional — most labourers
@@ -627,24 +654,28 @@ model Employee {
   createdAt             DateTime                  @default(now()) @db.Timestamptz
   updatedAt             DateTime                  @updatedAt @db.Timestamptz
 
-  company            Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  principal          Principal?             @relation(fields: [principalId], references: [id], onDelete: Restrict)
-  headedDepartments  Department[]
-  memberships        DepartmentMembership[]
-  siteWorkforceExits SiteWorkforceExit[]
-  claimTokens        ClaimToken[]
-  employeeOperations EmployeeOperation[]
-  attendancePolicies AttendancePolicy[]
-  attendanceSessions AttendanceSession[]
-  leavePolicies      LeavePolicy[]
-  leaveBalances      LeaveBalance[]
-  leaveRequests      LeaveRequest[]
-  safetyTvtAttendees SafetyTvtAttendee[]
-  workSchedules      WorkSchedule[]
-  dsrSubmissions     DailySiteReport[]      @relation("DsrSubmittedBy")
-  dsrApprovals       DailySiteReport[]      @relation("DsrApprovedBy")
-  dsrLocks           DailySiteReport[]      @relation("DsrLockedBy")
-  documents          EmployeeDocument[]
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  principal              Principal?              @relation(fields: [principalId], references: [id], onDelete: Restrict)
+  headedDepartments      Department[]
+  memberships            DepartmentMembership[]
+  siteWorkforceExits     SiteWorkforceExit[]
+  claimTokens            ClaimToken[]
+  employeeOperations     EmployeeOperation[]
+  attendancePolicies     AttendancePolicy[]
+  attendanceSessions     AttendanceSession[]
+  leavePolicies          LeavePolicy[]
+  leaveBalances          LeaveBalance[]
+  leaveRequests          LeaveRequest[]
+  safetyTvtAttendees     SafetyTvtAttendee[]
+  workSchedules          WorkSchedule[]
+  dsrSubmissions         DailySiteReport[]       @relation("DsrSubmittedBy")
+  dsrApprovals           DailySiteReport[]       @relation("DsrApprovedBy")
+  dsrLocks               DailySiteReport[]       @relation("DsrLockedBy")
+  documents              EmployeeDocument[]
+  walletFundingRequests  WalletFundingRequest[]
+  walletVouchersPrepared WalletCashVoucher[]     @relation("WalletVoucherPreparerEmp")
+  walletVouchersChecked  WalletCashVoucher[]     @relation("WalletVoucherCheckerEmp")
+  walletReversalRequests WalletReversalRequest[] @relation("WalletReversalReqEmp")
 
   // Employee code is unique within a company.
   @@unique([companyId, employeeCode])
@@ -1325,15 +1356,16 @@ model WorkflowInstance {
   createdAt            DateTime      @default(now()) @db.Timestamptz
   updatedAt            DateTime      @updatedAt @db.Timestamptz
 
-  company          Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  workflow         Workflow             @relation(fields: [workflowId, companyId], references: [id, companyId], onDelete: Restrict)
-  workflowVersion  WorkflowVersion      @relation(fields: [workflowVersionId, workflowId, companyId], references: [id, workflowId, companyId], onDelete: Restrict)
-  operationVersion OperationVersion     @relation(fields: [operationVersionId, operationId, companyId], references: [id, operationId, companyId], onDelete: Restrict)
-  startedBy        Principal?           @relation(fields: [startedByPrincipalId], references: [id], onDelete: Restrict)
+  company          Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  workflow         Workflow               @relation(fields: [workflowId, companyId], references: [id, companyId], onDelete: Restrict)
+  workflowVersion  WorkflowVersion        @relation(fields: [workflowVersionId, workflowId, companyId], references: [id, workflowId, companyId], onDelete: Restrict)
+  operationVersion OperationVersion       @relation(fields: [operationVersionId, operationId, companyId], references: [id, operationId, companyId], onDelete: Restrict)
+  startedBy        Principal?             @relation(fields: [startedByPrincipalId], references: [id], onDelete: Restrict)
   transitions      WorkflowTransition[]
   approvalTasks    ApprovalTask[]
   formSubmissions  FormSubmission[]
   documentLinks    DocumentLink[]
+  fundingAttempts  WalletFundingAttempt[]
 
   // Referenced by WorkflowTransition's composite FK.
   @@unique([id, companyId])
@@ -1447,6 +1479,7 @@ model ApprovalDecision {
   reason             String?
   idempotencyKey     String?
   requestFingerprint String? // sha256 of the semantic command
+  decisionPayload    Json? // action-specific payload (e.g. approvedAmount) — part of history + fingerprint
   eventKey           String          @unique @db.Uuid
   decidedAt          DateTime        @default(now()) @db.Timestamptz
 
@@ -1577,20 +1610,21 @@ model Document {
   createdAt             DateTime       @default(now()) @db.Timestamptz
   updatedAt             DateTime       @updatedAt @db.Timestamptz
 
-  company           Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  uploadedBy        Principal?          @relation("DocumentUploader", fields: [uploadedByPrincipalId], references: [id], onDelete: Restrict)
-  reviewedBy        Principal?          @relation("DocumentReviewer", fields: [reviewedByPrincipalId], references: [id], onDelete: Restrict)
+  company              Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  uploadedBy           Principal?          @relation("DocumentUploader", fields: [uploadedByPrincipalId], references: [id], onDelete: Restrict)
+  reviewedBy           Principal?          @relation("DocumentReviewer", fields: [reviewedByPrincipalId], references: [id], onDelete: Restrict)
   // Composite FKs keep the scope target inside this company.
-  headOffice        HeadOffice?         @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
-  project           Project?            @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
-  site              Site?               @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
-  links             DocumentLink[]
-  complianceRecords ComplianceRecord[]
-  employeeDocuments EmployeeDocument[]
-  landParcels       ProjectLandParcel[]
-  projectDocuments  ProjectDocument[]
-  siteDocuments     SiteDocument[]
-  projectApprovals  ProjectApproval[]
+  headOffice           HeadOffice?         @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
+  project              Project?            @relation(fields: [projectId, companyId], references: [id, companyId], onDelete: Restrict)
+  site                 Site?               @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  links                DocumentLink[]
+  complianceRecords    ComplianceRecord[]
+  employeeDocuments    EmployeeDocument[]
+  signedWalletVouchers WalletCashVoucher[]
+  landParcels          ProjectLandParcel[]
+  projectDocuments     ProjectDocument[]
+  siteDocuments        SiteDocument[]
+  projectApprovals     ProjectApproval[]
 
   @@unique([id, companyId])
   @@unique([companyId, storageKey])
@@ -1603,32 +1637,47 @@ model Document {
 // Constrained polymorphism: entityType is derived, exactly one concrete FK
 // is set (migration check constraint), each composite-FK'd to company.
 model DocumentLink {
-  id                    String    @id @default(uuid()) @db.Uuid
-  companyId             String    @db.Uuid
-  documentId            String    @db.Uuid
-  entityType            String // FORM_SUBMISSION | WORKFLOW_INSTANCE
-  formSubmissionId      String?   @db.Uuid
-  workflowInstanceId    String?   @db.Uuid
-  fieldKey              String? // FILE/IMAGE field on the pinned FormVersion
-  linkedByPrincipalId   String?   @db.Uuid
-  linkedAt              DateTime  @default(now()) @db.Timestamptz
-  unlinkedAt            DateTime? @db.Timestamptz
-  unlinkedByPrincipalId String?   @db.Uuid
-  version               Int       @default(0)
-  createdAt             DateTime  @default(now()) @db.Timestamptz
-  updatedAt             DateTime  @updatedAt @db.Timestamptz
+  id                     String    @id @default(uuid()) @db.Uuid
+  companyId              String    @db.Uuid
+  documentId             String    @db.Uuid
+  entityType             String // FORM_SUBMISSION | WORKFLOW_INSTANCE | WALLET_FUNDING_REQUEST | WALLET_TRANSFER | WALLET_EXPENSE | WALLET_LEDGER_ENTRY | WALLET_VOUCHER
+  formSubmissionId       String?   @db.Uuid
+  workflowInstanceId     String?   @db.Uuid
+  walletFundingRequestId String?   @db.Uuid
+  walletTransferId       String?   @db.Uuid
+  walletExpenseId        String?   @db.Uuid
+  walletLedgerEntryId    String?   @db.Uuid
+  walletVoucherId        String?   @db.Uuid
+  fieldKey               String? // FILE/IMAGE field on the pinned FormVersion
+  linkedByPrincipalId    String?   @db.Uuid
+  linkedAt               DateTime  @default(now()) @db.Timestamptz
+  unlinkedAt             DateTime? @db.Timestamptz
+  unlinkedByPrincipalId  String?   @db.Uuid
+  version                Int       @default(0)
+  createdAt              DateTime  @default(now()) @db.Timestamptz
+  updatedAt              DateTime  @updatedAt @db.Timestamptz
 
-  company        Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  document       Document          @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
-  formSubmission FormSubmission?   @relation(fields: [formSubmissionId, companyId], references: [id, companyId], onDelete: Restrict)
-  instance       WorkflowInstance? @relation(fields: [workflowInstanceId, companyId], references: [id, companyId], onDelete: Restrict)
-  linkedBy       Principal?        @relation("DocumentLinker", fields: [linkedByPrincipalId], references: [id], onDelete: Restrict)
-  unlinkedBy     Principal?        @relation("DocumentUnlinker", fields: [unlinkedByPrincipalId], references: [id], onDelete: Restrict)
+  company              Company               @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  document             Document              @relation(fields: [documentId, companyId], references: [id, companyId], onDelete: Restrict)
+  formSubmission       FormSubmission?       @relation(fields: [formSubmissionId, companyId], references: [id, companyId], onDelete: Restrict)
+  instance             WorkflowInstance?     @relation(fields: [workflowInstanceId, companyId], references: [id, companyId], onDelete: Restrict)
+  walletFundingRequest WalletFundingRequest? @relation(fields: [walletFundingRequestId, companyId], references: [id, companyId], onDelete: Restrict)
+  walletTransfer       WalletTransfer?       @relation(fields: [walletTransferId, companyId], references: [id, companyId], onDelete: Restrict)
+  walletExpense        WalletExpense?        @relation(fields: [walletExpenseId, companyId], references: [id, companyId], onDelete: Restrict)
+  walletLedgerEntry    WalletLedgerEntry?    @relation(fields: [walletLedgerEntryId, companyId], references: [id, companyId], onDelete: Restrict)
+  walletVoucher        WalletCashVoucher?    @relation(fields: [walletVoucherId, companyId], references: [id, companyId], onDelete: Restrict)
+  linkedBy             Principal?            @relation("DocumentLinker", fields: [linkedByPrincipalId], references: [id], onDelete: Restrict)
+  unlinkedBy           Principal?            @relation("DocumentUnlinker", fields: [unlinkedByPrincipalId], references: [id], onDelete: Restrict)
 
   @@unique([id, companyId])
   @@index([companyId, documentId, unlinkedAt])
   @@index([companyId, formSubmissionId, unlinkedAt])
   @@index([companyId, workflowInstanceId, unlinkedAt])
+  @@index([companyId, walletFundingRequestId, unlinkedAt])
+  @@index([companyId, walletTransferId, unlinkedAt])
+  @@index([companyId, walletExpenseId, unlinkedAt])
+  @@index([companyId, walletLedgerEntryId, unlinkedAt])
+  @@index([companyId, walletVoucherId, unlinkedAt])
 }
 
 model EmployeeDocument {
@@ -1755,11 +1804,11 @@ model ClaimToken {
   principal Principal @relation(fields: [principalId], references: [id], onDelete: Restrict)
   // Bound tenant context — COMPANY_ONBOARD carries the company being
   // onboarded; EMPLOYEE_INVITE carries the employee's company.
-  company Company? @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  company   Company?  @relation(fields: [companyId], references: [id], onDelete: Restrict)
   // EMPLOYEE_INVITE only. The triple composite FK enforces company match
   // AND that the token's principalId is the employee's linked principal —
   // a same-company FK alone would let a token bind to someone else's row.
-  employee Employee? @relation(fields: [employeeId, companyId, principalId], references: [id, companyId, principalId], onDelete: Restrict)
+  employee  Employee? @relation(fields: [employeeId, companyId, principalId], references: [id, companyId, principalId], onDelete: Restrict)
 
   @@index([principalId, consumedAt])
   @@index([companyId, employeeId, consumedAt])
@@ -1843,27 +1892,27 @@ enum DepartmentMembershipEndReason {
 // Placement only — it NEVER grants API permission; role assignments do that.
 // A row is ACTIVE iff endedAt IS NULL (single source of truth, no status col).
 model DepartmentMembership {
-  id           String    @id @default(uuid()) @db.Uuid
-  companyId    String    @db.Uuid
-  employeeId   String    @db.Uuid
-  departmentId String    @db.Uuid
-  isPrimary    Boolean   @default(false)
-  startedAt    DateTime  @default(now()) @db.Timestamptz
-  endedAt      DateTime? @db.Timestamptz
+  id           String                         @id @default(uuid()) @db.Uuid
+  companyId    String                         @db.Uuid
+  employeeId   String                         @db.Uuid
+  departmentId String                         @db.Uuid
+  isPrimary    Boolean                        @default(false)
+  startedAt    DateTime                       @default(now()) @db.Timestamptz
+  endedAt      DateTime?                      @db.Timestamptz
   // Lifecycle end metadata — set once when the row ends, never rewritten.
   endReason    DepartmentMembershipEndReason?
   endNote      String? // audit-grade context; never in feed/notifications
-  suspendUntil DateTime? @db.Date // structured expected-return date (SUSPENDED only)
+  suspendUntil DateTime?                      @db.Date // structured expected-return date (SUSPENDED only)
   // Links an ended row to the new membership that reinstated it. Composite
   // FK keeps the replacement inside the same company AND employee.
-  supersededBy String? @db.Uuid
-  version      Int     @default(0)
-  createdAt    DateTime @default(now()) @db.Timestamptz
-  updatedAt    DateTime @updatedAt @db.Timestamptz
+  supersededBy String?                        @db.Uuid
+  version      Int                            @default(0)
+  createdAt    DateTime                       @default(now()) @db.Timestamptz
+  updatedAt    DateTime                       @updatedAt @db.Timestamptz
 
-  company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  employee   Employee   @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
-  department Department @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  company                Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  employee               Employee               @relation(fields: [employeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  department             Department             @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
   supersededByMembership DepartmentMembership?  @relation("MembershipSupersession", fields: [companyId, employeeId, supersededBy], references: [companyId, employeeId, id], onDelete: Restrict)
   supersedes             DepartmentMembership[] @relation("MembershipSupersession")
 
@@ -1882,13 +1931,13 @@ model DepartmentMembership {
 // covering marker exists. Exactly one of siteId/projectId is set (CHECK).
 // Does NOT block fresh placement — it records the decision, not a ban.
 model SiteWorkforceExit {
-  id                  String    @id @default(uuid()) @db.Uuid
-  companyId           String    @db.Uuid
-  employeeId          String    @db.Uuid
-  siteId              String?   @db.Uuid
-  projectId           String?   @db.Uuid
-  exitedAt            DateTime  @default(now()) @db.Timestamptz
-  exitedByPrincipalId String?   @db.Uuid
+  id                  String   @id @default(uuid()) @db.Uuid
+  companyId           String   @db.Uuid
+  employeeId          String   @db.Uuid
+  siteId              String?  @db.Uuid
+  projectId           String?  @db.Uuid
+  exitedAt            DateTime @default(now()) @db.Timestamptz
+  exitedByPrincipalId String?  @db.Uuid
   note                String?
 
   company  Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
@@ -2002,6 +2051,26 @@ enum AttendancePolicyScope {
   PROJECT
   SITE
   EMPLOYEE
+}
+
+// Intraday break configuration on a work-schedule revision. FIXED_WINDOW =
+// scheduled break deducted automatically (no break punches); DYNAMIC =
+// employee-punched breaks bounded by the configured window/duration limits.
+// NULL breakWindowMode on a revision means day-pattern only — the legacy
+// AttendancePolicy breakMode continues to govern.
+enum BreakWindowMode {
+  FIXED_WINDOW
+  DYNAMIC
+}
+
+// Scheduled clock-out enforcement on a work-schedule revision.
+// DISABLED = never auto-close; AT_SCHEDULED_END = close exactly at the
+// scheduled end instant; AFTER_GRACE = close at scheduled end plus
+// autoClockOutGraceMins. NULL = no scheduled-end enforcement.
+enum AutoClockOutMode {
+  DISABLED
+  AT_SCHEDULED_END
+  AFTER_GRACE
 }
 
 model AttendancePolicy {
@@ -2121,6 +2190,21 @@ model AttendanceSession {
   syncBatchId     String? @db.Uuid
   isSyncedOffline Boolean @default(false)
 
+  // Immutable punch-time snapshot — resolved at session creation so later
+  // schedule/policy edits never reclassify this session. NULL on rows that
+  // predate intraday schedules or where no schedule revision resolved.
+  // policySnapshot carries the calc-relevant AttendancePolicy + resolved
+  // intraday values as JSON (see attendance service buildPolicySnapshot).
+  scheduleRevisionId    String?   @db.Uuid
+  policySnapshot        Json?
+  scheduledStartAt      DateTime? @db.Timestamptz
+  scheduledEndAt        DateTime? @db.Timestamptz
+  autoClockOutMode      AutoClockOutMode?
+  autoClockOutGraceMins Int?
+  // Who auto-closed the session: SCHEDULED_END | EOD_SETTLEMENT | STALE_SWEEP.
+  // NULL = closed by an explicit punch-out or regularization.
+  autoClosedBy String? @db.VarChar(24)
+
   version   Int      @default(0)
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
@@ -2130,6 +2214,7 @@ model AttendanceSession {
   site       Site?             @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
   headOffice HeadOffice?       @relation(fields: [headOfficeId, companyId], references: [id, companyId], onDelete: Restrict)
   policy     AttendancePolicy  @relation(fields: [policyId, companyId], references: [id, companyId], onDelete: Restrict)
+  scheduleRevision WorkScheduleRevision? @relation(fields: [scheduleRevisionId, companyId], references: [id, companyId], onDelete: Restrict)
   breaks     AttendanceBreak[]
 
   @@unique([id, companyId])
@@ -2707,6 +2792,26 @@ model WorkScheduleRevision {
   rotationWorkingOffsets Int[]
   rotationOffOffsets     Int[]
   holidayCalendarId      String?       @db.Uuid
+  // Intraday shift timing — minutes since local midnight in `timezone`.
+  // scheduledEndMins < scheduledStartMins encodes an overnight shift.
+  // All nullable: a revision without them is a day-pattern only and the
+  // legacy AttendancePolicy thresholds govern exactly as before.
+  scheduledStartMins   Int?
+  scheduledEndMins     Int?
+  graceInMins          Int?
+  graceOutMins         Int?
+  // Break behavior. FIXED_WINDOW requires breakWindowStartMins/EndMins +
+  // breakDurationMins; the duration is deducted without break punches.
+  // DYNAMIC keeps punch-recorded breaks bounded by the optional window and
+  // breakDurationMins as the per-day maximum deduction.
+  breakWindowMode      BreakWindowMode?
+  breakWindowStartMins Int?
+  breakWindowEndMins   Int?
+  breakDurationMins    Int?
+  // Scheduled clock-out. AFTER_GRACE requires autoClockOutGraceMins > 0;
+  // AT_SCHEDULED_END forbids it (grace must not delay the close).
+  autoClockOutMode      AutoClockOutMode?
+  autoClockOutGraceMins Int?
   // CANCELLED revisions are retained for audit but never applied.
   status                 OrgNodeStatus @default(ACTIVE)
   note                   String?
@@ -2716,7 +2821,9 @@ model WorkScheduleRevision {
   company         Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
   schedule        WorkSchedule     @relation(fields: [scheduleId, companyId], references: [id, companyId], onDelete: Restrict)
   holidayCalendar HolidayCalendar? @relation(fields: [holidayCalendarId, companyId], references: [id, companyId], onDelete: Restrict)
+  sessions        AttendanceSession[]
 
+  @@unique([id, companyId])
   @@unique([scheduleId, revision])
   @@index([scheduleId, effectiveFrom, revision])
   @@index([companyId, holidayCalendarId])
@@ -2984,9 +3091,501 @@ model CompanyDelegationPolicy {
   // Scoped holders may permanently exit workforce at their assigned
   // projects/sites — a stronger, separately delegated authority.
   memberExit      Boolean  @default(false)
+  // Scoped holders may create/revise SITE- or PROJECT-scoped work schedules
+  // (intraday shift times, break windows, auto clock-out). Schedule-policy
+  // editing is a separate authority from attendance-record management and
+  // stays company/Finance unless this flag is on.
+  scheduleManage  Boolean  @default(false)
   version         Int      @default(0)
   createdAt       DateTime @default(now()) @db.Timestamptz
   updatedAt       DateTime @updatedAt @db.Timestamptz
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+}
+
+// ---------------------------------------------------------------------------
+// Site Wallet & Finance Funding — schema + invariants only (Slice 1).
+// One imprest-style wallet per site. Balance changes ONLY through append-only
+// ledger entries posted atomically with their source row (transfer/expense/
+// reversal). Approval never moves money; a transfer's confirmed amount is the
+// only credit path. Money columns are exact Decimal(18,2); currency is fixed
+// per wallet and never converted.
+// ---------------------------------------------------------------------------
+
+enum SiteWalletStatus {
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+// Request-level envelope state. SUBMITTED covers the whole review period —
+// there is deliberately no separate IN_REVIEW state.
+enum WalletFundingRequestStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  RETURNED
+  PARTIALLY_FUNDED
+  FUNDED
+  CLOSED_SHORT
+  CANCELLED
+}
+
+enum WalletFundingAttemptStatus {
+  SUBMITTED
+  APPROVED
+  REJECTED
+  RETURNED
+  CANCELLED
+}
+
+enum WalletTransferStatus {
+  RECORDED
+  CONFIRMED
+  DISPUTED
+  CLOSED
+  REVERSED
+}
+
+enum WalletExpenseStatus {
+  POSTED
+  REVERSED
+}
+
+enum WalletEvidenceState {
+  NONE
+  ATTACHED
+}
+
+// Sign lives on the type, not the amount: CREDIT_* rows add to the wallet
+// balance, DEBIT_* rows subtract. REVERSAL_DEBIT undoes a funding credit;
+// REVERSAL_CREDIT undoes an expense debit.
+enum WalletLedgerType {
+  CREDIT_FUNDING
+  DEBIT_EXPENSE
+  REVERSAL_DEBIT
+  REVERSAL_CREDIT
+}
+
+model SiteWallet {
+  id        String           @id @default(uuid()) @db.Uuid
+  companyId String           @db.Uuid
+  siteId    String           @db.Uuid
+  currency  String           @db.VarChar(3) // fixed at creation — never mutated, never converted
+  balance   Decimal          @default(0) @db.Decimal(18, 2) // CHECK >= 0 in migration
+  status    SiteWalletStatus @default(ACTIVE)
+  version   Int              @default(0)
+  createdAt DateTime         @default(now()) @db.Timestamptz
+  updatedAt DateTime         @updatedAt @db.Timestamptz
+
+  company          Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  site             Site                    @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  fundingRequests  WalletFundingRequest[]
+  transfers        WalletTransfer[]
+  expenses         WalletExpense[]
+  cashVouchers     WalletCashVoucher[]
+  reversalRequests WalletReversalRequest[]
+  ledgerEntries    WalletLedgerEntry[]
+
+  // One wallet per site — (siteId, companyId) unique satisfies the 1:1
+  // relation; a second row can never pair a site with another company
+  // because the (siteId, companyId) → Site composite FK binds the pairing.
+  @@unique([siteId, companyId])
+  // Referenced by composite FKs elsewhere.
+  @@unique([id, companyId])
+  // Binds dependents' siteId to this wallet's site: FK (walletId, companyId,
+  // siteId) → (id, companyId, siteId) makes cross-site references impossible.
+  @@unique([id, companyId, siteId])
+  @@index([companyId, status])
+}
+
+// Durable funding envelope — PI asks Finance for a site-wallet top-up.
+// Approval state history lives in immutable attempts; funding progress lives
+// here so reporting never has to re-derive it.
+model WalletFundingRequest {
+  id                     String                     @id @default(uuid()) @db.Uuid
+  companyId              String                     @db.Uuid
+  walletId               String                     @db.Uuid
+  siteId                 String                     @db.Uuid // bound to wallet.site via composite FK below
+  requestedByPrincipalId String                     @db.Uuid
+  requestedByEmployeeId  String                     @db.Uuid
+  status                 WalletFundingRequestStatus @default(DRAFT)
+  // Editable draft fields — snapshotted into an immutable
+  // WalletFundingAttempt at each submit; null once the request is terminal.
+  draftAmount            Decimal?                   @db.Decimal(18, 2)
+  draftPurpose           String?                    @db.VarChar(500)
+  draftNeededByDate      DateTime?                  @db.Date
+  approvedAmount         Decimal?                   @db.Decimal(18, 2) // set by the latest APPROVED attempt
+  confirmedAmount        Decimal                    @default(0) @db.Decimal(18, 2) // Σ confirmed receipts; CHECK <= approvedAmount
+  // Pointer to the current attempt only — full history is on
+  // WalletFundingAttempt; no workflowInstanceId is stored or overwritten here.
+  currentAttemptId       String?                    @db.Uuid
+  closedShortReason      String?
+  idempotencyKey         String                     @db.VarChar(80) // required — create replays by key
+  version                Int                        @default(0)
+  createdAt              DateTime                   @default(now()) @db.Timestamptz
+  updatedAt              DateTime                   @updatedAt @db.Timestamptz
+
+  company             Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  // (walletId, companyId, siteId) → SiteWallet pins request.siteId to the
+  // wallet's own site — a request can never point at another site's wallet.
+  wallet              SiteWallet             @relation(fields: [walletId, companyId, siteId], references: [id, companyId, siteId], onDelete: Restrict)
+  site                Site                   @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  requestedBy         Principal              @relation("WalletFundingRequester", fields: [requestedByPrincipalId], references: [id], onDelete: Restrict)
+  requestedByEmployee Employee               @relation(fields: [requestedByEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  attempts            WalletFundingAttempt[]
+  transfers           WalletTransfer[]
+  ledgerEntries       WalletLedgerEntry[]
+  documentLinks       DocumentLink[]
+
+  // Retry-safe create: one row per (requester, idempotencyKey).
+  @@unique([companyId, requestedByPrincipalId, idempotencyKey])
+  // Referenced by composite FKs elsewhere.
+  @@unique([id, companyId])
+  // Binds transfers' siteId to this request's site.
+  @@unique([id, companyId, siteId])
+  // Binds ledger-entry provenance to this request's wallet.
+  @@unique([id, walletId, companyId])
+  @@index([companyId, siteId, status, id])
+  @@index([companyId, status, id])
+}
+
+// One immutable row per submission attempt. A RETURN lets the PI edit the
+// envelope and resubmit — the new attempt gets its own workflow instance and
+// the full decision history is preserved forever.
+model WalletFundingAttempt {
+  id                     String                     @id @default(uuid()) @db.Uuid
+  companyId              String                     @db.Uuid
+  requestId              String                     @db.Uuid
+  attemptNo              Int
+  amount                 Decimal                    @db.Decimal(18, 2) // CHECK > 0
+  currency               String                     @db.VarChar(3)
+  purpose                String                     @db.VarChar(500)
+  neededByDate           DateTime?                  @db.Date
+  // Exactly one workflow instance per attempt — never reused, never
+  // overwritten (unique below).
+  workflowInstanceId     String                     @db.Uuid
+  approvalTaskId         String?                    @db.Uuid
+  status                 WalletFundingAttemptStatus @default(SUBMITTED)
+  approvedAmount         Decimal?                   @db.Decimal(18, 2)
+  decidedByPrincipalId   String?                    @db.Uuid
+  decidedAt              DateTime?                  @db.Timestamptz
+  decisionReason         String?
+  submittedByPrincipalId String                     @db.Uuid
+  idempotencyKey         String                     @db.VarChar(80) // required — submit replays by key
+  submittedAt            DateTime                   @default(now()) @db.Timestamptz
+  createdAt              DateTime                   @default(now()) @db.Timestamptz
+  updatedAt              DateTime                   @updatedAt @db.Timestamptz
+
+  company     Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  request     WalletFundingRequest @relation(fields: [requestId, companyId], references: [id, companyId], onDelete: Restrict)
+  instance    WorkflowInstance     @relation(fields: [workflowInstanceId, companyId], references: [id, companyId], onDelete: Restrict)
+  submittedBy Principal            @relation("WalletFundingSubmitter", fields: [submittedByPrincipalId], references: [id], onDelete: Restrict)
+  decidedBy   Principal?           @relation("WalletFundingDecider", fields: [decidedByPrincipalId], references: [id], onDelete: Restrict)
+  transfers   WalletTransfer[]
+
+  @@unique([requestId, attemptNo])
+  @@unique([workflowInstanceId])
+  // Retry-safe submit: one attempt row per (request, idempotencyKey).
+  @@unique([companyId, requestId, idempotencyKey])
+  // Referenced by composite FKs elsewhere.
+  @@unique([id, companyId])
+  // Binds transfers' requestId to this attempt's request.
+  @@unique([id, companyId, requestId])
+  @@index([companyId, requestId])
+  @@index([companyId, status, id])
+}
+
+// Finance's record of money actually transferred against an approved
+// attempt. Transferred ≠ credited — only PI-confirmed receipts post credits.
+model WalletTransfer {
+  id                     String               @id @default(uuid()) @db.Uuid
+  companyId              String               @db.Uuid
+  requestId              String               @db.Uuid
+  attemptId              String               @db.Uuid
+  walletId               String               @db.Uuid
+  siteId                 String               @db.Uuid // bound to wallet.site AND request.site via composite FKs
+  amount                 Decimal              @db.Decimal(18, 2) // CHECK > 0
+  currency               String               @db.VarChar(3)
+  reference              String               @db.VarChar(120) // UTR / voucher / cheque ref — required
+  transferredAt          DateTime             @db.Timestamptz
+  recordedByPrincipalId  String               @db.Uuid
+  confirmedAmount        Decimal              @default(0) @db.Decimal(18, 2) // CHECK <= amount
+  confirmedByPrincipalId String?              @db.Uuid
+  confirmedAt            DateTime?            @db.Timestamptz
+  discrepancyAmount      Decimal?             @db.Decimal(18, 2) // amount − confirmedAmount when disputed
+  discrepancyNote        String? // audit only — never in notifications
+  disputeResolution      String? // Finance resolution note — audit only
+  status                 WalletTransferStatus @default(RECORDED)
+  idempotencyKey         String               @db.VarChar(80) // required
+  version                Int                  @default(0)
+  createdAt              DateTime             @default(now()) @db.Timestamptz
+  updatedAt              DateTime             @updatedAt @db.Timestamptz
+
+  company       Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  site          Site                 @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  // Three-tuple bindings — site/request/attempt/wallet can never disagree:
+  wallet        SiteWallet           @relation(fields: [walletId, companyId, siteId], references: [id, companyId, siteId], onDelete: Restrict)
+  request       WalletFundingRequest @relation(fields: [requestId, companyId, siteId], references: [id, companyId, siteId], onDelete: Restrict)
+  attempt       WalletFundingAttempt @relation(fields: [attemptId, companyId, requestId], references: [id, companyId, requestId], onDelete: Restrict)
+  recordedBy    Principal            @relation("WalletTransferRecorder", fields: [recordedByPrincipalId], references: [id], onDelete: Restrict)
+  confirmedBy   Principal?           @relation("WalletTransferConfirmer", fields: [confirmedByPrincipalId], references: [id], onDelete: Restrict)
+  ledgerEntries WalletLedgerEntry[]
+  documentLinks DocumentLink[]
+
+  // The same transfer reference cannot be recorded twice on one request.
+  @@unique([companyId, requestId, reference])
+  // Retry-safe record: one row per (recorder, idempotencyKey).
+  @@unique([companyId, recordedByPrincipalId, idempotencyKey])
+  // Referenced by composite FKs elsewhere.
+  @@unique([id, companyId])
+  // Binds ledger CREDIT_FUNDING entries to this transfer's wallet.
+  @@unique([id, walletId, companyId])
+  @@index([companyId, walletId, status, id])
+  @@index([companyId, requestId])
+}
+
+// Site expense — an immediate wallet debit in v1 (imprest model; PI is the
+// accountable spender). Corrections are reversal entries, never edits.
+model WalletExpense {
+  id                   String              @id @default(uuid()) @db.Uuid
+  companyId            String              @db.Uuid
+  walletId             String              @db.Uuid
+  amount               Decimal             @db.Decimal(18, 2) // CHECK > 0
+  currency             String              @db.VarChar(3)
+  expenseDate          DateTime            @db.Date
+  category             String              @db.VarChar(40)
+  description          String              @db.VarChar(500)
+  payee                String?             @db.VarChar(200)
+  reference            String?             @db.VarChar(120)
+  status               WalletExpenseStatus @default(POSTED)
+  evidenceState        WalletEvidenceState @default(NONE)
+  // Provenance pointer to the DEBIT_EXPENSE ledger row. Plain column, not a
+  // relation — the DB-level link direction is WalletLedgerEntry.expenseId →
+  // this row, and a circular FK pair adds no integrity here.
+  ledgerEntryId        String              @db.Uuid
+  createdByPrincipalId String              @db.Uuid
+  idempotencyKey       String              @db.VarChar(80) // required
+  createdAt            DateTime            @default(now()) @db.Timestamptz
+
+  company       Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  wallet        SiteWallet          @relation(fields: [walletId, companyId], references: [id, companyId], onDelete: Restrict)
+  createdBy     Principal           @relation("WalletExpenseCreator", fields: [createdByPrincipalId], references: [id], onDelete: Restrict)
+  ledgerEntries WalletLedgerEntry[]
+  documentLinks DocumentLink[]
+  cashVoucher   WalletCashVoucher?
+
+  // Retry-safe create: one expense per (creator, idempotencyKey).
+  @@unique([companyId, createdByPrincipalId, idempotencyKey])
+  // Referenced by composite FKs elsewhere.
+  @@unique([id, companyId])
+  // Binds ledger DEBIT_EXPENSE entries to this expense's wallet.
+  @@unique([id, walletId, companyId])
+  @@index([companyId, walletId, expenseDate, id])
+}
+
+// Append-only money movement. Rows are never updated or deleted (immutable
+// trigger in migration); corrections are new REVERSAL_* rows pointing back.
+// balanceAfter is computed under the wallet row lock — invariant:
+// wallet.balance == balanceAfter of the latest entry.
+model WalletLedgerEntry {
+  id                  String           @id @default(uuid()) @db.Uuid
+  // Strict append order — "latest entry" and balanceAfter chaining are
+  // defined on seq, not on clock time.
+  seq                 BigInt           @default(autoincrement())
+  companyId           String           @db.Uuid
+  walletId            String           @db.Uuid
+  type                WalletLedgerType
+  amount              Decimal          @db.Decimal(18, 2) // always positive — sign carried by type; CHECK > 0
+  currency            String           @db.VarChar(3)
+  balanceAfter        Decimal          @db.Decimal(18, 2) // CHECK >= 0
+  fundingRequestId    String?          @db.Uuid // provenance on CREDIT_FUNDING
+  transferId          String?          @db.Uuid // set only on CREDIT_FUNDING
+  expenseId           String?          @db.Uuid // set only on DEBIT_EXPENSE
+  reversalOfEntryId   String?          @db.Uuid // set only on REVERSAL_* — same wallet/company via composite FK
+  reason              String? // reversal reason — audit only
+  postedByPrincipalId String           @db.Uuid
+  idempotencyKey      String           @db.VarChar(80) // required
+  postedAt            DateTime         @default(now()) @db.Timestamptz
+  // No updatedAt — entries are immutable.
+
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  wallet                 SiteWallet              @relation(fields: [walletId, companyId], references: [id, companyId], onDelete: Restrict)
+  // Three-tuple bindings pin each source record to THIS wallet — a credit can
+  // never cite a transfer recorded against a different wallet, likewise for
+  // expenses and funding-request provenance.
+  fundingRequest         WalletFundingRequest?   @relation(fields: [fundingRequestId, walletId, companyId], references: [id, walletId, companyId], onDelete: Restrict)
+  transfer               WalletTransfer?         @relation(fields: [transferId, walletId, companyId], references: [id, walletId, companyId], onDelete: Restrict)
+  expense                WalletExpense?          @relation(fields: [expenseId, walletId, companyId], references: [id, walletId, companyId], onDelete: Restrict)
+  // (reversalOfEntryId, walletId, companyId) → self pins the reversed entry
+  // to the SAME wallet and company — cross-wallet reversals are impossible.
+  reversalOf             WalletLedgerEntry?      @relation("WalletLedgerReversal", fields: [reversalOfEntryId, walletId, companyId], references: [id, walletId, companyId], onDelete: Restrict)
+  reversedBy             WalletLedgerEntry[]     @relation("WalletLedgerReversal")
+  reversalRequests       WalletReversalRequest[] @relation("WalletReversalTarget")
+  reversalRequestResults WalletReversalRequest[] @relation("WalletReversalResult")
+  documentLinks          DocumentLink[]
+  postedBy               Principal               @relation("WalletLedgerPoster", fields: [postedByPrincipalId], references: [id], onDelete: Restrict)
+
+  // Referenced by composite FKs elsewhere.
+  @@unique([id, companyId])
+  @@unique([id, walletId, companyId])
+  // v1 rule: at most one reversal per entry — NULLs are distinct in Postgres,
+  // so a plain unique index gives "one reversal, many non-reversals".
+  @@unique([reversalOfEntryId])
+  // Retry-safe post: one entry per (wallet, idempotencyKey).
+  @@unique([companyId, walletId, idempotencyKey])
+  @@index([companyId, walletId, postedAt, id])
+  @@index([companyId, fundingRequestId])
+  // "Latest entry on wallet" lookups used by the balance-chain trigger.
+  @@index([walletId, seq])
+}
+
+// ---------------------------------------------------------------------------
+// Site Wallet — Slice 2 runtime models (account heads, vouchers, reversals).
+// ---------------------------------------------------------------------------
+
+enum WalletAccountHeadStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum WalletReversalRequestStatus {
+  REQUESTED
+  EXECUTED
+  REJECTED
+}
+
+// Company-managed account catalogue for cash-voucher lines — never seeded
+// with fictional heads; Finance configures codes/names per company.
+model WalletAccountHead {
+  id        String                  @id @default(uuid()) @db.Uuid
+  companyId String                  @db.Uuid
+  code      String                  @db.VarChar(20) // client-owned code, unique per company
+  name      String                  @db.VarChar(120)
+  status    WalletAccountHeadStatus @default(ACTIVE)
+  version   Int                     @default(0)
+  createdAt DateTime                @default(now()) @db.Timestamptz
+  updatedAt DateTime                @updatedAt @db.Timestamptz
+
+  company Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  lines   WalletCashVoucherLine[]
+
+  @@unique([companyId, code])
+  // Referenced by voucher-line composite FKs.
+  @@unique([id, companyId])
+  @@index([companyId, status, id])
+}
+
+// One row per company — atomic voucher-number allocation. nextVoucherNo is
+// incremented under INSERT ... ON CONFLICT inside the voucher transaction,
+// so numbering is unique and gapless even under concurrent PIs.
+model WalletVoucherCounter {
+  companyId     String @id @db.Uuid
+  nextVoucherNo BigInt @default(1)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+}
+
+// Sarjan cash voucher — printable evidence of an outgoing wallet expense.
+// 1:1 with the expense it documents; the posted ledger entry stays
+// authoritative — voucher ops never touch WalletLedgerEntry.
+model WalletCashVoucher {
+  id                    String    @id @default(uuid()) @db.Uuid
+  companyId             String    @db.Uuid
+  voucherNo             BigInt // company-scoped, unique, never reused
+  expenseId             String    @db.Uuid
+  walletId              String    @db.Uuid
+  siteId                String    @db.Uuid
+  date                  DateTime  @db.Date
+  paidTo                String?   @db.VarChar(200) // receiver name — NOT a signature
+  narration             String?   @db.VarChar(500) // audit only — never in notifications
+  currency              String    @db.VarChar(3) // must equal expense.currency (INR)
+  preparedByPrincipalId String    @db.Uuid // authenticated PI — server-set
+  preparedByEmployeeId  String    @db.Uuid
+  checkedByPrincipalId  String?   @db.Uuid // only set by a real authorization act
+  checkedByEmployeeId   String?   @db.Uuid
+  signedDocumentId      String?   @db.Uuid // uploaded receiver-signed copy
+  signedAt              DateTime? @db.Timestamptz
+  version               Int       @default(0)
+  createdAt             DateTime  @default(now()) @db.Timestamptz
+  updatedAt             DateTime  @updatedAt @db.Timestamptz
+
+  company            Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  expense            WalletExpense           @relation(fields: [expenseId, companyId], references: [id, companyId], onDelete: Restrict)
+  wallet             SiteWallet              @relation(fields: [walletId, companyId], references: [id, companyId], onDelete: Restrict)
+  site               Site                    @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  preparedBy         Principal               @relation("WalletVoucherPreparer", fields: [preparedByPrincipalId], references: [id], onDelete: Restrict)
+  preparedByEmployee Employee                @relation("WalletVoucherPreparerEmp", fields: [preparedByEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  checkedBy          Principal?              @relation("WalletVoucherChecker", fields: [checkedByPrincipalId], references: [id], onDelete: Restrict)
+  checkedByEmployee  Employee?               @relation("WalletVoucherCheckerEmp", fields: [checkedByEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  signedDocument     Document?               @relation(fields: [signedDocumentId, companyId], references: [id, companyId], onDelete: Restrict)
+  lines              WalletCashVoucherLine[]
+  documentLinks      DocumentLink[]
+
+  // Voucher numbers are company-scoped, unique, never reused.
+  @@unique([companyId, voucherNo])
+  // One voucher per expense in v1.
+  @@unique([expenseId, companyId])
+  // Referenced by line/document composite FKs.
+  @@unique([id, companyId])
+  @@index([companyId, siteId, id])
+}
+
+// Detail row of the printed form — account code/head are SNAPSHOTS of the
+// catalog at post time so later account-head edits never rewrite history.
+model WalletCashVoucherLine {
+  id              String  @id @default(uuid()) @db.Uuid
+  companyId       String  @db.Uuid
+  voucherId       String  @db.Uuid
+  lineNo          Int
+  accountHeadId   String  @db.Uuid
+  accountCode     String  @db.VarChar(20) // snapshot
+  accountHeadName String  @db.VarChar(120) // snapshot
+  amount          Decimal @db.Decimal(18, 2) // CHECK > 0; Σ lines == voucher expense amount
+
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  voucher     WalletCashVoucher @relation(fields: [voucherId, companyId], references: [id, companyId], onDelete: Restrict)
+  accountHead WalletAccountHead @relation(fields: [accountHeadId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([voucherId, lineNo])
+  @@unique([id, companyId])
+}
+
+// PI asks Finance to reverse a posted ledger entry. Finance executes the
+// full reversal (or rejects with a reason). At most one open request per
+// ledger entry — enforced by a partial unique index in the migration.
+model WalletReversalRequest {
+  id                     String                      @id @default(uuid()) @db.Uuid
+  companyId              String                      @db.Uuid
+  walletId               String                      @db.Uuid
+  siteId                 String                      @db.Uuid
+  ledgerEntryId          String                      @db.Uuid // entry to reverse
+  reason                 String                      @db.VarChar(500)
+  status                 WalletReversalRequestStatus @default(REQUESTED)
+  requestedByPrincipalId String                      @db.Uuid
+  requestedByEmployeeId  String                      @db.Uuid
+  decidedByPrincipalId   String?                     @db.Uuid
+  decidedAt              DateTime?                   @db.Timestamptz
+  decisionReason         String?                     @db.VarChar(500)
+  reversalEntryId        String?                     @db.Uuid // resulting REVERSAL_* entry
+  idempotencyKey         String                      @db.VarChar(80)
+  version                Int                         @default(0)
+  createdAt              DateTime                    @default(now()) @db.Timestamptz
+  updatedAt              DateTime                    @updatedAt @db.Timestamptz
+
+  company             Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  wallet              SiteWallet         @relation(fields: [walletId, companyId], references: [id, companyId], onDelete: Restrict)
+  site                Site               @relation(fields: [siteId, companyId], references: [id, companyId], onDelete: Restrict)
+  ledgerEntry         WalletLedgerEntry  @relation("WalletReversalTarget", fields: [ledgerEntryId, companyId], references: [id, companyId], onDelete: Restrict)
+  reversalEntry       WalletLedgerEntry? @relation("WalletReversalResult", fields: [reversalEntryId, companyId], references: [id, companyId], onDelete: Restrict)
+  requestedBy         Principal          @relation("WalletReversalRequester", fields: [requestedByPrincipalId], references: [id], onDelete: Restrict)
+  requestedByEmployee Employee           @relation("WalletReversalReqEmp", fields: [requestedByEmployeeId, companyId], references: [id, companyId], onDelete: Restrict)
+  decidedBy           Principal?         @relation("WalletReversalDecider", fields: [decidedByPrincipalId], references: [id], onDelete: Restrict)
+
+  @@unique([id, companyId])
+  // Retry-safe: one reversal request per (requester, idempotencyKey).
+  @@unique([companyId, requestedByPrincipalId, idempotencyKey])
+  @@index([companyId, status, id])
+  @@index([companyId, walletId, status])
 }

@@ -132,6 +132,10 @@ export const FINANCE_STAFF_API_PERMISSIONS: readonly string[] = [
 export const PROJECT_DIRECTOR_PERMISSIONS: readonly string[] = [
   'ORG_PROJECT_READ',
   'ORG_SITE_READ',
+  // Site wallet — PD gets oversight reads only by default: balance, ledger,
+  // requests, transfers, vouchers. No confirm/debit/reversal keys.
+  'SITE_WALLET_VIEW',
+  'NOTIFICATION_READ',
   'DEPARTMENT_READ',
   'EMPLOYEE_READ',
   // Scoped membership administration — effective only when the company
@@ -185,9 +189,21 @@ export const PROJECT_INCHARGE_PERMISSIONS: readonly string[] = [
   'ATTENDANCE_READ',
   'ATTENDANCE_MANAGE',
   'WORK_SCHEDULE_READ',
+  // Scoped schedule editing additionally requires the company delegation
+  // flag `scheduleManage` (default OFF) — the permission alone grants nothing.
+  'WORK_SCHEDULE_MANAGE',
   'LEAVE_APPLY',
   'LEAVE_READ',
   'LEAVE_APPROVE',
+  // Site wallet — PI creates/submits funding requests, confirms receipts,
+  // posts expenses/vouchers, attaches evidence, requests reversals. Scoped
+  // to assigned sites; the operation grant supplies the second gate.
+  'SITE_WALLET_VIEW',
+  'SITE_WALLET_MANAGE',
+  // Funding submission pins a workflow instance — the wallet service performs
+  // its own authorization first, then starts the instance on the PI's behalf.
+  'WORKFLOW_INSTANCE_START',
+  'NOTIFICATION_READ',
 ];
 
 export interface TenantRoleTemplate {
