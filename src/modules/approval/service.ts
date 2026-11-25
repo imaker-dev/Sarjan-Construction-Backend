@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ApprovalTask } from '@prisma/client';
+import type { ApprovalTask, Prisma } from '@prisma/client';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import {
   OrgEntityNotFoundError,
@@ -25,6 +25,7 @@ import type {
   ApprovalTaskPage,
   DecideTaskInput,
   DecideTaskResult,
+  DecisionCompletionHook,
 } from './types.js';
 
 export const WORKFLOW_APPROVAL_READ = 'WORKFLOW_APPROVAL_READ';
@@ -57,6 +58,7 @@ export class ApprovalService {
     private readonly uow: ApprovalUnitOfWork,
     private readonly authorizer: ApprovalAuthorizer,
     private readonly now: () => Date = () => new Date(),
+    private readonly completionHooks: readonly DecisionCompletionHook[] = [],
   ) {}
 
   /**
@@ -81,11 +83,21 @@ export class ApprovalService {
     if (input.idempotencyKey === '') {
       throw new OrgValidationError('idempotencyKey', 'must be non-empty');
     }
+    const payload: unknown = input.decisionPayload;
+    if (
+      payload !== undefined &&
+      (typeof payload !== 'object' || payload === null || Array.isArray(payload))
+    ) {
+      throw new OrgValidationError('decisionPayload', 'must be an object');
+    }
     const fingerprint =
       input.idempotencyKey !== undefined
         ? commandFingerprint({
             action: input.action,
             ...(input.reason !== undefined ? { reason: input.reason } : {}),
+            ...(input.decisionPayload !== undefined
+              ? { decisionPayload: input.decisionPayload }
+              : {}),
           })
         : undefined;
 
@@ -165,6 +177,9 @@ export class ApprovalService {
         ...(actor.actorType === 'USER' ? { actorPrincipalId: actor.actorId } : {}),
         actorType: actor.actorType,
         ...(input.reason !== undefined ? { reason: input.reason.trim() } : {}),
+        ...(input.decisionPayload !== undefined
+          ? { decisionPayload: input.decisionPayload as Prisma.InputJsonValue }
+          : {}),
         ...(input.idempotencyKey !== undefined && fingerprint !== undefined
           ? { idempotencyKey: input.idempotencyKey, requestFingerprint: fingerprint }
           : {}),
@@ -234,6 +249,25 @@ export class ApprovalService {
           instance.startedByPrincipalId !== null ? [instance.startedByPrincipalId] : [],
         summary: { action: input.action, outcome, stageKey: task.stageKey },
       });
+      // Domain completion — same transaction: a throwing hook rolls back the
+      // decision, transition, task close, audit, and outbox together. Runs
+      // after the generic writes so domain audit/outbox rows land last.
+      if (this.completionHooks.length > 0) {
+        const operation = await repos.operations.findById(companyId, applied.instance.operationId);
+        const hook = this.completionHooks.find((h) => h.operationKey === operation?.key);
+        if (hook !== undefined) {
+          await hook.run({
+            repos,
+            tx: repos.tx,
+            actor,
+            companyId,
+            instance: applied.instance,
+            task: closed,
+            decision,
+            input,
+          });
+        }
+      }
       return {
         instance: applied.instance,
         task: closed,

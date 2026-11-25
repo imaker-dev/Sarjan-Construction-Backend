@@ -82,6 +82,9 @@ export function fakeAssignment(over: Partial<AssignmentRow> = {}): AssignmentRow
 export function makeApprovalTestRepos(store: ApprovalStore): ApprovalRepos {
   return {
     ...makeInstRepos(store),
+    // Domain-completion hooks aren't exercised by approval unit tests — the
+    // fake has no live transaction client.
+    tx: {} as ApprovalRepos['tx'],
     approvalDecisions: {
       create: async (data) => {
         if (
@@ -102,6 +105,7 @@ export function makeApprovalTestRepos(store: ApprovalStore): ApprovalRepos {
           actorPrincipalId: data.actorPrincipalId ?? null,
           actorType: data.actorType,
           reason: data.reason ?? null,
+          decisionPayload: (data.decisionPayload ?? null) as ApprovalDecision['decisionPayload'],
           idempotencyKey: data.idempotencyKey ?? null,
           requestFingerprint: data.requestFingerprint ?? null,
           eventKey: data.eventKey,

@@ -20,6 +20,7 @@ const PatchDelegations = Type.Object(
     employeeOnboard: Type.Optional(Type.Boolean()),
     memberSuspend: Type.Optional(Type.Boolean()),
     memberExit: Type.Optional(Type.Boolean()),
+    scheduleManage: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -50,6 +51,7 @@ const ALLOWED_PATCH_KEYS = new Set([
   'employeeOnboard',
   'memberSuspend',
   'memberExit',
+  'scheduleManage',
 ]);
 
 // The app's ajv config strips unknown properties during validation instead
@@ -95,6 +97,7 @@ export function delegationRoutes(service: DelegationService) {
             employeeOnboard?: boolean;
             memberSuspend?: boolean;
             memberExit?: boolean;
+            scheduleManage?: boolean;
           },
         ),
     );

@@ -14,6 +14,10 @@ interface PolicyRow {
   siteUpdate: boolean;
   deptManage: boolean;
   placement: boolean;
+  employeeOnboard: boolean;
+  memberSuspend: boolean;
+  memberExit: boolean;
+  scheduleManage: boolean;
   version: number;
 }
 
@@ -36,20 +40,13 @@ const fakePrisma = {
       data,
     }: {
       where: { companyId: string; version: number };
-      data: {
-        siteCreate: boolean;
-        siteUpdate: boolean;
-        deptManage: boolean;
-        placement: boolean;
-        version: { increment: number };
-      };
+      data: Record<string, unknown> & { version: { increment: number } };
     }) => {
       const row = rows.find((r) => r.companyId === where.companyId);
       if (row?.version !== where.version) return { count: 0 };
-      row.siteCreate = data.siteCreate;
-      row.siteUpdate = data.siteUpdate;
-      row.deptManage = data.deptManage;
-      row.placement = data.placement;
+      for (const [k, v] of Object.entries(data)) {
+        if (k !== 'version') (row as unknown as Record<string, unknown>)[k] = v;
+      }
       row.version += data.version.increment;
       return { count: 1 };
     },
@@ -91,6 +88,7 @@ describe('DelegationService', () => {
       placement: false,
       memberSuspend: false,
       memberExit: false,
+      scheduleManage: false,
       version: 0,
     });
     expect(await service.isEnabled(companyId, 'siteCreate')).toBe(false);
@@ -110,6 +108,7 @@ describe('DelegationService', () => {
       placement: false,
       memberSuspend: false,
       memberExit: false,
+      scheduleManage: false,
       version: 0,
     });
     expect(auditRows).toHaveLength(1);
@@ -133,6 +132,7 @@ describe('DelegationService', () => {
       placement: false,
       memberSuspend: false,
       memberExit: false,
+      scheduleManage: false,
       version: 1,
     });
     expect(await service.isEnabled(companyId, 'deptManage')).toBe(true);

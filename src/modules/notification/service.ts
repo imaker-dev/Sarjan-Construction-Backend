@@ -84,6 +84,23 @@ const TITLES: Record<string, (s: Record<string, string>) => string> = {
   APPROVAL_TASK_DECIDED: (s) => `Approval ${s.outcome ?? 'decided'}`,
   DOCUMENT_APPROVED: () => 'Document approved',
   DOCUMENT_REJECTED: () => 'Document rejected',
+  SITE_WALLET_CREATED: () => 'Site wallet created',
+  WALLET_FUNDING_SUBMITTED: (s) => `Funding request submitted (attempt ${s.attemptNo ?? '?'})`,
+  WALLET_FUNDING_APPROVED: () => 'Funding request approved',
+  WALLET_FUNDING_REJECTED: () => 'Funding request rejected',
+  WALLET_FUNDING_RETURNED: () => 'Funding request returned for correction',
+  WALLET_FUNDING_CANCELLED: () => 'Funding request cancelled',
+  WALLET_TRANSFER_RECORDED: () => 'Wallet transfer recorded',
+  WALLET_RECEIPT_CONFIRMED: () => 'Wallet receipt confirmed',
+  WALLET_RECEIPT_DISPUTED: () => 'Wallet receipt discrepancy',
+  WALLET_DISPUTE_RESOLVED: () => 'Wallet dispute resolved',
+  WALLET_REQUEST_CLOSED_SHORT: () => 'Funding request closed short',
+  WALLET_EXPENSE_POSTED: () => 'Wallet expense posted',
+  WALLET_VOUCHER_CREATED: () => 'Cash voucher generated',
+  WALLET_VOUCHER_SIGNED: () => 'Signed voucher attached',
+  WALLET_DOCUMENT_LINKED: () => 'Wallet evidence linked',
+  WALLET_REVERSAL_REQUESTED: () => 'Reversal requested',
+  WALLET_ENTRY_REVERSED: () => 'Ledger entry reversed',
 };
 
 function titleFor(eventType: string, summary: Record<string, string>): string {

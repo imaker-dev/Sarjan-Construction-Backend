@@ -60,6 +60,8 @@ describe('AttendanceService - Daily Site Report (DSR) & End-of-Day Settlement En
       {
         id: 'sess-open',
         status: 'IN_PROGRESS' as const,
+        businessDate, // a past business day → settlement may close it
+        scheduledEndAt: null,
         employee: {
           id: 'e1',
           employeeCode: 'EMP-01',

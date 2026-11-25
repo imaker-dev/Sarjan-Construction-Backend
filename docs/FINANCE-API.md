@@ -370,13 +370,15 @@ explicitly per employee.
 
 Punching is identical for every employee — Finance roles change nothing.
 Requires `ATTENDANCE_RECORD` (self) at the site; a geofenced site + active
-policy resolve the business date.
+policy resolve the business date. Permission ladder: `ATTENDANCE_RECORD` =
+self-punch/breaks/kiosk batch · `ATTENDANCE_READ` = view anyone's sessions,
+summaries, muster roll · `ATTENDANCE_MANAGE` = policies, punch for others,
+privileged `source` values, regularize, daily reports.
+
+### 9a. Punch in — mobile self or head-office anchor
 
 ```http
 GET /api/v1/auth/me                                   # shows attendance.hasActiveSession
-```
-
-```http
 POST /api/v1/attendance/punch-in                      # ATTENDANCE_RECORD at site
 { "siteId": "site-uuid", "latitude": 25.5942, "longitude": 85.1377 }
 ```
@@ -403,10 +405,18 @@ POST /api/v1/attendance/punch-in                      # head-office anchor
 }
 ```
 
+### 9b. Breaks (only when policy `breakMode: "DYNAMIC"`)
+
 ```http
-POST /api/v1/attendance/breaks/start   { "remarks": "lunch" }
-POST /api/v1/attendance/breaks/end     {}
-POST /api/v1/attendance/punch-out      { "siteId": "site-uuid", "latitude": 25.5940, "longitude": 85.1375 }
+POST /api/v1/attendance/breaks/start   { "remarks": "lunch" }   → 201 { "id": "brk-uuid" }
+POST /api/v1/attendance/breaks/end     {}                        → 200 { "durationMins": 45 }
+```
+
+### 9c. Punch out
+
+```http
+POST /api/v1/attendance/punch-out
+{ "siteId": "site-uuid", "latitude": 25.5940, "longitude": 85.1375 }
 ```
 
 ```json
@@ -425,13 +435,42 @@ POST /api/v1/attendance/punch-out      { "siteId": "site-uuid", "latitude": 25.5
 > rejected — regularization is `ATTENDANCE_MANAGE` via
 > `POST /attendance/sessions/:id/regularize`. Full flow: `docs/ATTENDANCE-API.md`.
 
-## Step 10 — Attendance policy (the "settings" layer)
-
-One company-wide policy is typical; project/site/employee-scoped policies
-override it (`scope: COMPANY|PROJECT|SITE|EMPLOYEE`).
+### 9d. Kiosk & offline paths — `ATTENDANCE_RECORD` at the site
 
 ```http
-POST /api/v1/attendance/policies                      # ATTENDANCE_MANAGE
+POST /api/v1/attendance/kiosk/batch-punch-in        # site kiosk device
+{ "siteId": "site-uuid",
+  "punches": [ { "employeeId": "emp-1", "punchedAt": "2026-11-21T08:05:00Z" },
+               { "employeeId": "emp-2", "punchedAt": "2026-11-21T08:05:12Z" } ] }
+POST /api/v1/attendance/kiosk/batch-punch-out       # same shape
+POST /api/v1/attendance/kiosk/sync                  # offline batch replay
+{ "siteId": "site-uuid", "deviceId": "kiosk-01",
+  "events": [ { "type": "PUNCH_IN",  "employeeId": "emp-1",
+                "punchedAt": "2026-11-21T08:05:00Z", "clientEventId": "dev-evt-1" } ] }
+```
+
+`clientEventId` dedupes replays — a kiosk that re-syncs after reconnect never
+double-punches.
+
+### 9e. Session reads — `ATTENDANCE_READ`
+
+```http
+GET /api/v1/attendance/sessions/active?employeeId=emp-uuid     # punched in now?
+GET /api/v1/attendance/sessions?siteId=…&businessDate=2026-11-21&status=COMPLETED&limit=50
+GET /api/v1/attendance/sessions/{id}
+```
+
+## Step 10 — Attendance policy (the "settings" layer)
+
+`scope: COMPANY | PROJECT | SITE | EMPLOYEE` — most specific wins, same
+resolution chain as leave policies. This is how HO and sites get different
+rules: a `SITE`-scoped policy can enforce a strict geofence + TVT gate while
+the `COMPANY` (HO) policy allows mobile punch with a wider radius.
+
+### 10a. Create — `ATTENDANCE_MANAGE`
+
+```http
+POST /api/v1/attendance/policies
 {
   "name": "Default Attendance Policy",
   "scope": "COMPANY",
@@ -455,13 +494,79 @@ POST /api/v1/attendance/policies                      # ATTENDANCE_MANAGE
 201 { "id": "policy-uuid", "scope": "COMPANY", "status": "ACTIVE", "version": 0 }
 ```
 
+**Site override example** — same body, `"scope": "SITE", "siteId": "<uuid>",
+"geofenceStrict": true, "requireTvtGate": true, "tvtGateAction": "BLOCK"`.
+
+### 10b. Read & update
+
 ```http
-GET   /api/v1/attendance/policies/effective?employeeId=emp-mgr-uuid   # resolved policy
-PATCH /api/v1/attendance/policies/policy-uuid                         # same fields, partial
-GET   /api/v1/attendance/sessions?siteId=…&businessDate=2026-11-21    # ATTENDANCE_READ
-GET   /api/v1/attendance/daily-summary?siteId=…&businessDate=2026-11-21
-GET   /api/v1/attendance/muster-roll?siteId=…&from=2026-11-01&to=2026-11-30
+GET   /api/v1/attendance/policies                                    # list
+GET   /api/v1/attendance/policies/{id}
+GET   /api/v1/attendance/policies/effective?employeeId=emp-mgr-uuid  # resolved for this employee
+PATCH /api/v1/attendance/policies/{id}                               # same fields, partial + expectedVersion
 ```
+
+### 10c. TVT (safety toolbox talk) — gate before punch when `requireTvtGate: true`
+
+```http
+POST /api/v1/attendance/tvt                          # ATTENDANCE_RECORD
+{ "siteId": "site-uuid", "businessDate": "2026-11-21",
+  "topic": "Working at height", "conductedBy": "R. Sharma" }
+POST /api/v1/attendance/tvt/{id}/attendees
+{ "employeeIds": ["emp-1", "emp-2"] }
+GET  /api/v1/attendance/tvt?siteId=…&businessDate=…  /  GET /api/v1/attendance/tvt/{id}
+```
+
+`tvtGateAction: "FLAG"` → punch without attendance is flagged, not blocked;
+`"BLOCK"` → `409 TVT_ATTENDANCE_REQUIRED`.
+
+### 10d. Corrections, summaries, payroll export — `ATTENDANCE_MANAGE` / `ATTENDANCE_READ`
+
+```http
+POST /api/v1/attendance/sessions/{id}/regularize      # MANAGE — fix flagged sessions
+{ "punchOutAt": "2026-11-21T17:30:00Z", "reason": "Device died at punch-out" }
+GET  /api/v1/attendance/daily-summary?siteId=…&businessDate=2026-11-21   # READ
+GET  /api/v1/attendance/muster-roll?siteId=…&from=2026-11-01&to=2026-11-30  # READ — payroll settlement
+```
+
+Muster-roll returns per-employee `presentUnits`, `pUnits`, `overtimeHours`
+totals for the range — the payroll input Finance consumes.
+
+### 10e. Daily site report (DSR) — `ATTENDANCE_MANAGE`, lifecycle `DRAFT→SUBMITTED→APPROVED|REJECTED→LOCKED`
+
+```http
+POST /api/v1/attendance/daily-reports/calculate     # aggregate a day into a report
+{ "siteId": "site-uuid", "businessDate": "2026-11-21" }
+```
+
+```json
+200 { "id": "dsr-uuid", "status": "DRAFT",
+      "totalWorkersHeadcount": 42, "totalPresentUnits": "40.5",
+      "totalOvertimeHours": "12.0", "totalFlaggedSessions": 2,
+      "catAStaffCount": 8, "catBDirectCount": 30, "catCSubconCount": 4 }
+```
+
+```http
+GET   /api/v1/attendance/daily-reports?siteId=…&fromDate=…&toDate=…&status=SUBMITTED
+GET   /api/v1/attendance/daily-reports/{id}
+PATCH /api/v1/attendance/daily-reports/{id}                     # DRAFT only
+{ "weather": "LIGHT_RAIN", "weatherStoppageHours": 2,
+  "workProgressNotes": "Footing pour completed, bay 2",
+  "siteObstaclesRemarks": "Crane breakdown 1hr",
+  "safetyIncidentReported": false, "version": 0 }
+PATCH /api/v1/attendance/daily-reports/{id}/labour-summary/{summaryId}
+{ "headcount": 30, "presentUnits": 29.5, "overtimeHours": 6.0,
+  "reason": "Manual recount after late punches" }
+POST  /api/v1/attendance/daily-reports/{id}/submit
+POST  /api/v1/attendance/daily-reports/{id}/approve
+POST  /api/v1/attendance/daily-reports/{id}/reject    { "reason": "Headcount mismatch" }
+POST  /api/v1/attendance/daily-reports/{id}/lock      { "reason": "Month-end close" }
+GET   /api/v1/attendance/daily-reports/{id}/audit-trail
+```
+
+Every transition writes audit rows (`submittedBy/At`, `approvedBy/At`,
+`rejectionReason`, `lockedBy/At` on the report + an append-only trail);
+`PATCH`/labour-summary edits are version-guarded and carry a mandatory `reason`.
 
 ## Step 11 — Leave setup: type defs → policies → allocations → requests
 
@@ -484,9 +589,35 @@ POST /api/v1/leave/types             # LEAVE_MANAGE
 
 ### 11b. Policies + immutable accrual _versions_
 
-Each policy binds a type def to a scope (`COMPANY`, `DEPARTMENT`, `EMPLOYEE`)
+Each policy binds a type def to a scope —
+`COMPANY | DEPARTMENT | PROJECT | SITE | EMPLOYEE`
 and starts with an immutable accrual version — `MONTHLY_CREDIT` (x days/month)
 or `WORKED_DAYS_RATIO` (y days per N worked days).
+
+**Resolution is most-specific-wins:** `EMPLOYEE → DEPARTMENT (primary
+membership) → SITE → PROJECT → COMPANY` fallback. There is no "head office"
+scope flag — differentiate HO staff by scoping the policy to the HO
+_department_.
+
+**HO vs site example** — HO employees get 4 CL/month, site employees 2:
+
+```http
+POST /api/v1/leave/policies                      # HO staff — dept-scoped
+{ "scopeType": "DEPARTMENT", "departmentId": "<ho-finance-dept-id>",
+  "typeDefId": "typedef-cl-uuid", "name": "CL — head office",
+  "version": { "effectiveFrom": "2026-01-01", "mode": "MONTHLY_CREDIT",
+               "monthlyCreditAmount": 4 } }
+
+POST /api/v1/leave/policies                      # Site staff — site-scoped
+{ "scopeType": "SITE", "siteId": "<site-id>",
+  "typeDefId": "typedef-cl-uuid", "name": "CL — site workers",
+  "version": { "effectiveFrom": "2026-01-01", "mode": "MONTHLY_CREDIT",
+               "monthlyCreditAmount": 2 } }
+```
+
+Every employee resolves automatically from their own membership — the PI never
+picks a policy. Add a `COMPANY` policy as the catch-all fallback for anyone not
+covered by a narrower scope (fail-closed: no matching policy → accrual denied).
 
 ```http
 POST /api/v1/leave/policies          # LEAVE_MANAGE
@@ -735,7 +866,7 @@ in `unavailable`, never fabricated:
   },
   "unavailable": [
     { "section": "workforce", "reason": "requires FINANCE_EMPLOYEE_READ + FINANCE_EMPLOYEE_DIRECTORY_VIEW" },
-    { "section": "wallets", "reason": "no wallet data model yet" },
+    { "section": "wallets", "reason": "wallet data lives on SiteWallet — see Step 15" },
     { "section": "pettyCash", "reason": "no petty-cash data model yet" },
     { "section": "payroll", "reason": "no payroll data model yet" },
     { "section": "actualCosts", "reason": "no Finance transaction ledger — actuals are not fabricated" },
@@ -777,6 +908,159 @@ PATCH  /finance/cash-flow-forecasts/{id}                  MANAGE + PROJECT_CASH_
 
 ---
 
+## Step 15 — Site wallet & funding (Finance side)
+
+One INR `SiteWallet` per site. Balance moves at **exactly two moments**: when
+the _PI confirms receipt_ (credit) and when an expense/reversal posts (debit).
+**Approvals and transfer records never touch the balance.** PI-side flows
+(create/submit/track requests, receipt confirm, expenses, vouchers, reversal
+requests) are in `docs/SITE-WALLET-API.md` — this section is the Finance half.
+All routes need `x-company-id` + bearer token; `FINANCE_WALLET_*` permission +
+matching operation key.
+
+### 15a. Finance creates the site wallet — `FINANCE_WALLET_MANAGE` + `PROJECT_WALLET_CREDIT_PROCESS`
+
+```http
+POST /api/v1/finance/sites/{siteId}/wallet      {}
+```
+
+```json
+201 { "wallet": { "id": "wallet-uuid", "siteId": "site-uuid",
+                  "status": "ACTIVE", "balance": "0.00", "currency": "INR",
+                  "version": 0 } }
+```
+
+Idempotent — re-POST returns the existing wallet (`200`). Currency is always
+`INR`, never derived from `Project.contractCurrency`; non-INR is rejected at
+API and DB `CHECK` level.
+
+### 15b. Account-head catalogue (voucher line vocabulary)
+
+```http
+POST /api/v1/finance/wallet/account-heads       # FINANCE_WALLET_MANAGE
+{ "code": "MATERIALS", "name": "Construction Materials" }
+```
+
+```json
+201 { "accountHead": { "id": "ah-uuid", "code": "MATERIALS",
+                       "name": "Construction Materials", "status": "ACTIVE" } }
+```
+
+```http
+GET   /api/v1/finance/wallet/account-heads?status=ACTIVE&limit=50
+PATCH /api/v1/finance/wallet/account-heads/{accountHeadId}
+      { "status": "INACTIVE", "expectedVersion": 0 }
+```
+
+Rename/deactivate never rewrites history — voucher lines snapshot
+`accountCode`/`accountHeadName` at creation.
+
+### 15c. Funding queue — what PIs submitted
+
+```http
+GET /api/v1/finance/wallet-funding-requests?status=SUBMITTED&limit=50
+GET /api/v1/finance/wallet-funding-requests/{requestId}
+```
+
+```json
+200 { "items": [ { "id": "req-uuid", "siteId": "site-uuid", "status": "SUBMITTED",
+                   "submittedAmount": "48000.00", "approvedAmount": null,
+                   "requestedByPrincipalId": "pi-uuid", "neededByDate": "2026-11-30" } ],
+      "nextCursor": null }
+```
+
+Statuses: `DRAFT SUBMITTED APPROVED REJECTED RETURNED PARTIALLY_FUNDED FUNDED
+CLOSED_SHORT CANCELLED`.
+
+### 15d. Decide the pending task — approve / reject / return
+
+Decisions go through the shared approval engine — the task id comes from the
+queue item's workflow task:
+
+```http
+POST /api/v1/approval-tasks/{taskId}/decisions   # FINANCE_WALLET_MANAGE
+{ "action": "APPROVE", "idempotencyKey": "fm-dec-1",
+  "decisionPayload": { "approvedAmount": "45000.00" } }
+```
+
+| Action    | Payload                                       | Rule                                                     |
+| --------- | --------------------------------------------- | -------------------------------------------------------- |
+| `APPROVE` | `decisionPayload.approvedAmount` **required** | positive, ≤ 2 decimals, ≤ submitted amount               |
+| `REJECT`  | `reason` required                             | terminal; request → `REJECTED`                           |
+| `RETURN`  | `reason` required                             | PI edits & resubmits as a new attempt; history preserved |
+
+```json
+201 { "decision": { "action": "APPROVE" },
+      "request": { "id": "req-uuid", "status": "APPROVED",
+                   "approvedAmount": "45000.00" } }
+```
+
+Balance is still `0.00` — approval only authorises; self-approval is blocked
+(`409 SELF_APPROVAL_FORBIDDEN`).
+
+### 15e. Record the bank transfer — still no credit
+
+```http
+POST /api/v1/finance/wallet-funding-requests/{requestId}/transfers
+{ "amount": "45000.00", "reference": "UTR-NEFT-88214",
+  "transferredAt": "2026-11-24T10:30:00Z", "idempotencyKey": "fm-tr-1" }
+```
+
+```json
+201 { "transfer": { "id": "tr-uuid", "status": "RECORDED",
+                    "amount": "45000.00" }, "replayed": false }
+```
+
+Cumulative transfers ≤ approved amount; request flips `PARTIALLY_FUNDED` when
+under-funded. The PI alone then confirms receipt — only the confirmed amount
+credits (partial → `DISPUTED`).
+
+### 15f. Resolve a disputed receipt / close short
+
+```http
+POST /api/v1/finance/wallet-transfers/{transferId}/resolve-dispute
+{ "action": "ACCEPT_SHORTAGE", "reason": "Bank charges", "idempotencyKey": "fm-rd-1" }
+POST /api/v1/finance/wallet-funding-requests/{requestId}/close-short
+{ "reason": "Remaining ₹2000 not sent", "idempotencyKey": "fm-cs-1" }
+```
+
+The unconfirmed shortfall is **never** credited — resolution only closes the
+transfer/request lifecycle (`CLOSED` / `CLOSED_SHORT`).
+
+### 15g. Reversals — PI requests, Finance executes
+
+```http
+GET  /api/v1/finance/wallet-reversal-requests?status=REQUESTED
+POST /api/v1/finance/wallet/ledger/{entryId}/reverse        # FINANCE_WALLET_MANAGE
+{ "reason": "Duplicate expense posted", "reversalRequestId": "rr-uuid",
+  "idempotencyKey": "fm-rev-1" }
+```
+
+```json
+201 { "reversalEntry": { "id": "le-uuid", "type": "REVERSAL_CREDIT",
+                         "amount": "1250.00", "balanceAfter": "43000.00" },
+      "replayed": false }
+```
+
+Full amount only (v1, DB-enforced); `REVERSAL_CREDIT`↔`DEBIT_EXPENSE`,
+`REVERSAL_DEBIT`↔`CREDIT_FUNDING`; exactly one reversal per entry; a
+funding-reversal that would overdraw is rejected.
+
+### 15h. Wallet reads & ledger
+
+```http
+GET /api/v1/finance/wallets?status=ACTIVE&limit=50
+GET /api/v1/finance/wallets/{walletId}
+GET /api/v1/finance/wallets/{walletId}/ledger?limit=50
+```
+
+Ledger entries: `CREDIT_FUNDING | DEBIT_EXPENSE | REVERSAL_DEBIT |
+REVERSAL_CREDIT`, each carrying `balanceAfter` (trigger-validated chain —
+append-only, no overdraft, direct balance/currency UPDATEs blocked outside the
+ledger path).
+
+---
+
 ## Common errors
 
 | Code                              | When                                                                 |
@@ -792,6 +1076,10 @@ PATCH  /finance/cash-flow-forecasts/{id}                  MANAGE + PROJECT_CASH_
 
 ## Roadmap — declared, not built
 
-Wallets · petty cash · quotations · invoicing/billing · payments · payroll ·
+~~Wallets~~ → **built** — see Step 15 + `docs/SITE-WALLET-API.md` (36 routes:
+wallet create, account heads, funding queue, decisions, transfers, disputes,
+close-short, reversals; real-PostgreSQL integration still gated).
+
+Still pending: petty cash · quotations · invoicing/billing · payments · payroll ·
 procurement commitments · transaction ledger (unlocks real `actualCosts` /
 `commitments` on `/costs` and the dashboard) · Finance reports/exports.

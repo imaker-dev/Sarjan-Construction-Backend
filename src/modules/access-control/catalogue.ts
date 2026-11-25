@@ -93,6 +93,11 @@ export const PERMISSIONS = [
   'FINANCE_BUDGET_MANAGE',
   'FINANCE_WALLET_READ',
   'FINANCE_WALLET_MANAGE',
+  // Site-scoped wallet surface for field roles (PI manages within an
+  // authorized site; PD reads only). Separate from the FINANCE_WALLET_*
+  // keys, which are company-wide and granted to Finance roles only.
+  'SITE_WALLET_VIEW',
+  'SITE_WALLET_MANAGE',
   'FINANCE_QUOTATION_READ',
   'FINANCE_QUOTATION_MANAGE',
   'FINANCE_BILLING_READ',

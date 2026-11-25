@@ -91,9 +91,31 @@ const ClassifyParams = Type.Object({
 
 export function scheduleRoutes(service: ScheduleService) {
   return async function routes(app: FastifyInstance) {
-    const perm = (key: string) => ({
-      preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, atCompany)],
+    // Route gates resolve the permission target from server-loaded entities
+    // — the schedule's own scope for :id routes, the criteria entity for
+    // create/list/effective. Scoped PI/PD holders pass only for their own
+    // project/site; unresolvable refs fall back to COMPANY (fail closed).
+    const perm = (
+      key: string,
+      resolveScope: (r: FastifyRequest) => ScopeTarget | Promise<ScopeTarget> = atCompany,
+    ) => ({
+      preHandler: [
+        app.authenticate,
+        app.tenantCompanyGuard,
+        app.requirePermission(key, resolveScope),
+      ],
     });
+
+    const atSchedule = (r: FastifyRequest): Promise<ScopeTarget> =>
+      service.resolveScopeTargetForSchedule(companyIdOf(r), (r.params as { id: string }).id);
+
+    const atCriteria = (r: FastifyRequest): Promise<ScopeTarget> => {
+      const src = {
+        ...(r.query !== null && typeof r.query === 'object' ? r.query : {}),
+        ...(r.body !== null && typeof r.body === 'object' ? r.body : {}),
+      } as { siteId?: string; projectId?: string; employeeId?: string; departmentId?: string };
+      return service.resolveScopeTargetForCriteria(companyIdOf(r), src);
+    };
 
     // -------------------------------------------------------------------------
     // Work schedules
@@ -101,7 +123,7 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.post(
       '/schedules',
-      { schema: { body: CreateWorkScheduleBody }, ...perm(WORK_SCHEDULE_MANAGE) },
+      { schema: { body: CreateWorkScheduleBody }, ...perm(WORK_SCHEDULE_MANAGE, atCriteria) },
       async (req, reply) => {
         const result = await service.createSchedule(
           actorOf(req),
@@ -115,7 +137,7 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.get(
       '/schedules',
-      { schema: { querystring: ListWorkSchedulesQuery }, ...perm(WORK_SCHEDULE_READ) },
+      { schema: { querystring: ListWorkSchedulesQuery }, ...perm(WORK_SCHEDULE_READ, atCriteria) },
       async (req) => {
         return service.listSchedules(
           actorOf(req),
@@ -127,7 +149,7 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.get(
       '/schedules/effective',
-      { schema: { querystring: EffectiveScheduleQuery }, ...perm(WORK_SCHEDULE_READ) },
+      { schema: { querystring: EffectiveScheduleQuery }, ...perm(WORK_SCHEDULE_READ, atCriteria) },
       async (req) => {
         return service.resolveEffective(
           actorOf(req),
@@ -139,7 +161,7 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.get(
       '/schedules/:id',
-      { schema: { params: IdParams }, ...perm(WORK_SCHEDULE_READ) },
+      { schema: { params: IdParams }, ...perm(WORK_SCHEDULE_READ, atSchedule) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getSchedule(actorOf(req), companyIdOf(req), id);
@@ -148,7 +170,10 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.patch(
       '/schedules/:id',
-      { schema: { params: IdParams, body: UpdateWorkScheduleBody }, ...perm(WORK_SCHEDULE_MANAGE) },
+      {
+        schema: { params: IdParams, body: UpdateWorkScheduleBody },
+        ...perm(WORK_SCHEDULE_MANAGE, atSchedule),
+      },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.updateSchedule(
@@ -164,7 +189,7 @@ export function scheduleRoutes(service: ScheduleService) {
       '/schedules/:id/archive',
       {
         schema: { params: IdParams, body: ArchiveWorkScheduleBody },
-        ...perm(WORK_SCHEDULE_MANAGE),
+        ...perm(WORK_SCHEDULE_MANAGE, atSchedule),
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -179,7 +204,7 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.get(
       '/schedules/:id/revisions',
-      { schema: { params: IdParams }, ...perm(WORK_SCHEDULE_READ) },
+      { schema: { params: IdParams }, ...perm(WORK_SCHEDULE_READ, atSchedule) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.listRevisions(actorOf(req), companyIdOf(req), id);
@@ -188,7 +213,10 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.post(
       '/schedules/:id/revisions',
-      { schema: { params: IdParams, body: AddRevisionBody }, ...perm(WORK_SCHEDULE_MANAGE) },
+      {
+        schema: { params: IdParams, body: AddRevisionBody },
+        ...perm(WORK_SCHEDULE_MANAGE, atSchedule),
+      },
       async (req, reply) => {
         const { id } = req.params as { id: string };
         const revision = await service.addRevision(
@@ -204,7 +232,7 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.post(
       '/schedules/:id/revisions/:revisionId/cancel',
-      { schema: { params: RevisionParams }, ...perm(WORK_SCHEDULE_MANAGE) },
+      { schema: { params: RevisionParams }, ...perm(WORK_SCHEDULE_MANAGE, atSchedule) },
       async (req) => {
         const { id, revisionId } = req.params as { id: string; revisionId: string };
         return service.cancelRevision(actorOf(req), companyIdOf(req), id, revisionId);
@@ -219,7 +247,7 @@ export function scheduleRoutes(service: ScheduleService) {
       '/schedules/:id/overrides',
       {
         schema: { params: IdParams, querystring: ListOverridesQuery },
-        ...perm(WORK_SCHEDULE_READ),
+        ...perm(WORK_SCHEDULE_READ, atSchedule),
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -234,7 +262,10 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.post(
       '/schedules/:id/overrides',
-      { schema: { params: IdParams, body: AddOverrideBody }, ...perm(WORK_SCHEDULE_MANAGE) },
+      {
+        schema: { params: IdParams, body: AddOverrideBody },
+        ...perm(WORK_SCHEDULE_MANAGE, atSchedule),
+      },
       async (req, reply) => {
         const { id } = req.params as { id: string };
         const override = await service.addOverride(
@@ -252,7 +283,7 @@ export function scheduleRoutes(service: ScheduleService) {
       '/schedules/:id/overrides/:overrideId/cancel',
       {
         schema: { params: OverrideParams, body: CancelOverrideBody },
-        ...perm(WORK_SCHEDULE_MANAGE),
+        ...perm(WORK_SCHEDULE_MANAGE, atSchedule),
       },
       async (req) => {
         const { id, overrideId } = req.params as { id: string; overrideId: string };
@@ -262,7 +293,7 @@ export function scheduleRoutes(service: ScheduleService) {
 
     app.get(
       '/schedules/:id/classify/:date',
-      { schema: { params: ClassifyParams }, ...perm(WORK_SCHEDULE_READ) },
+      { schema: { params: ClassifyParams }, ...perm(WORK_SCHEDULE_READ, atSchedule) },
       async (req) => {
         const { id, date } = req.params as { id: string; date: string };
         return service.classifyScheduleDate(actorOf(req), companyIdOf(req), id, date);

@@ -8,6 +8,7 @@ import type {
   WorkScheduleRevision,
 } from '@prisma/client';
 import type { ScopeTarget } from '../access-control/service.js';
+import { ForbiddenError } from '../../common/errors/app-error.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import { assertValidTimezone, normalizeCode } from '../organization/validation.js';
 import { OrgValidationError } from '../organization/errors.js';
@@ -51,6 +52,7 @@ import type {
   ListOverridesFilter,
   ListWorkSchedulesFilter,
   RevisionPatternInput,
+  IntradayInput,
   UpdateHolidayCalendarInput,
   UpdateWorkScheduleInput,
 } from './types.js';
@@ -60,6 +62,14 @@ export const WORK_SCHEDULE_MANAGE = 'WORK_SCHEDULE_MANAGE';
 
 interface Authorizer {
   assertPermission(principalId: string, permissionKey: string, target: ScopeTarget): Promise<void>;
+  hasPermission?(principalId: string, permissionKey: string, target: ScopeTarget): Promise<boolean>;
+}
+
+export interface ScheduleServiceDeps {
+  /** Company delegation probe — scoped holders may edit project/site
+   *  schedules only when the `scheduleManage` switch is ON (default OFF).
+   *  Company-scope permission holders bypass the flag entirely. */
+  delegationEnabled?: (companyId: string, flag: 'scheduleManage') => Promise<boolean>;
 }
 
 const auditEntry = (
@@ -107,6 +117,14 @@ function parseDate(dateStr: string, field: string): Date {
   return d;
 }
 
+/** The CHECK constraint guarantees the scope ref for scopeType — a missing
+ *  value means corrupted data; fail loudly rather than silently. */
+function scopeRef(v: string | null | undefined): string {
+  if (v === undefined || v === null)
+    throw new Error('schedule scope row missing its required scope ref');
+  return v;
+}
+
 function toDateStr(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -149,7 +167,194 @@ export class ScheduleService {
   constructor(
     private readonly uow: ScheduleUnitOfWork,
     private readonly authorizer: Authorizer,
+    private readonly deps?: ScheduleServiceDeps,
   ) {}
+
+  // -------------------------------------------------------------------------
+  // Scope-target resolution + scoped authorization
+  // -------------------------------------------------------------------------
+
+  /** Map a department to its authorization anchor: site-based departments
+   *  resolve SITE, head-office-based departments resolve HEAD_OFFICE, plain
+   *  company departments resolve COMPANY. */
+  private async deptScopeTarget(
+    repos: ScheduleRepos,
+    companyId: string,
+    departmentId: string,
+  ): Promise<ScopeTarget | null> {
+    const dept = await repos.departments.findById(companyId, departmentId);
+    if (dept === null || dept.status === 'ARCHIVED') return null;
+    if (dept.siteId != null) return { companyId, scopeType: 'SITE', scopeId: dept.siteId };
+    if (dept.projectId != null) return { companyId, scopeType: 'PROJECT', scopeId: dept.projectId };
+    if (dept.baseHeadOfficeId != null)
+      return { companyId, scopeType: 'HEAD_OFFICE', scopeId: dept.baseHeadOfficeId };
+    return companyTarget(companyId);
+  }
+
+  /** Anchor an employee for authorization via the primary/effective
+   *  membership department. Unresolvable or ambiguous membership anchors at
+   *  COMPANY (fail closed — only company-scope permission holders pass). */
+  private async employeeScopeTarget(
+    repos: ScheduleRepos,
+    companyId: string,
+    employeeId: string,
+    asOf?: Date,
+  ): Promise<ScopeTarget> {
+    const memberships = await repos.memberships.findActiveByEmployee(
+      companyId,
+      employeeId,
+      asOf ?? new Date(),
+    );
+    const primary = memberships.find((m) => m.isPrimary);
+    const departmentId =
+      primary?.departmentId ??
+      (memberships.length === 1 ? memberships[0]?.departmentId : undefined);
+    if (departmentId === undefined) return companyTarget(companyId);
+    return (await this.deptScopeTarget(repos, companyId, departmentId)) ?? companyTarget(companyId);
+  }
+
+  /** Authorization target of an existing schedule by its scope row. */
+  private async scheduleScopeTarget(
+    repos: ScheduleRepos,
+    companyId: string,
+    schedule: WorkSchedule,
+  ): Promise<ScopeTarget> {
+    switch (schedule.scopeType) {
+      case 'SITE':
+        return { companyId, scopeType: 'SITE', scopeId: scopeRef(schedule.siteId) };
+      case 'PROJECT':
+        return { companyId, scopeType: 'PROJECT', scopeId: scopeRef(schedule.projectId) };
+      case 'DEPARTMENT':
+        return (
+          (await this.deptScopeTarget(repos, companyId, scopeRef(schedule.departmentId))) ??
+          companyTarget(companyId)
+        );
+      case 'EMPLOYEE':
+        return this.employeeScopeTarget(repos, companyId, scopeRef(schedule.employeeId));
+      default:
+        return companyTarget(companyId);
+    }
+  }
+
+  /** Authorization target for schedule-create scope refs (mirrors
+   *  scheduleScopeTarget but from the request input). */
+  private async inputScopeTarget(
+    repos: ScheduleRepos,
+    companyId: string,
+    input: {
+      scopeType: string;
+      departmentId?: string;
+      projectId?: string;
+      siteId?: string;
+      employeeId?: string;
+    },
+  ): Promise<ScopeTarget> {
+    switch (input.scopeType) {
+      case 'SITE':
+        return { companyId, scopeType: 'SITE', scopeId: scopeRef(input.siteId) };
+      case 'PROJECT':
+        return { companyId, scopeType: 'PROJECT', scopeId: scopeRef(input.projectId) };
+      case 'DEPARTMENT':
+        return (
+          (await this.deptScopeTarget(repos, companyId, scopeRef(input.departmentId))) ??
+          companyTarget(companyId)
+        );
+      case 'EMPLOYEE':
+        return this.employeeScopeTarget(repos, companyId, scopeRef(input.employeeId));
+      default:
+        return companyTarget(companyId);
+    }
+  }
+
+  /** Manage authority: company-scope WORK_SCHEDULE_MANAGE holders keep the
+   *  existing path. Scoped (project/site) holders additionally require the
+   *  company's `scheduleManage` delegation switch — default OFF (fail closed
+   *  when the probe is not wired). */
+  private async assertManageAt(
+    actor: ActorContext,
+    companyId: string,
+    target: ScopeTarget,
+  ): Promise<void> {
+    // The caller must hold WORK_SCHEDULE_MANAGE at the resolved target —
+    // scoped holders pass only for their own project/site chain.
+    await this.authorizer.assertPermission(actor.actorId, WORK_SCHEDULE_MANAGE, target);
+    // Company-level entities are done; scoped editing additionally requires
+    // either a company-wide grant or the delegation flag — and the flag only
+    // ever unlocks SITE/PROJECT targets (HO/department/employee entities
+    // stay Finance/Admin only).
+    if (target.scopeType === 'COMPANY') return;
+    const companyWide =
+      this.authorizer.hasPermission !== undefined &&
+      (await this.authorizer.hasPermission(
+        actor.actorId,
+        WORK_SCHEDULE_MANAGE,
+        companyTarget(companyId),
+      ));
+    if (companyWide) return;
+    const scopedKind = target.scopeType === 'SITE' || target.scopeType === 'PROJECT';
+    const delegated =
+      scopedKind &&
+      this.deps?.delegationEnabled !== undefined &&
+      (await this.deps.delegationEnabled(companyId, 'scheduleManage'));
+    if (!delegated) {
+      throw new ForbiddenError(
+        'DELEGATION_DISABLED',
+        'company has not enabled delegated schedule management',
+      );
+    }
+  }
+
+  /** Route-facing scope resolution for entity routes: the :id route gate
+   *  resolves the schedule's own scope so PI/PD holders are checked against
+   *  their project/site chain — never the whole company. */
+  async resolveScopeTargetForSchedule(companyId: string, scheduleId: string): Promise<ScopeTarget> {
+    return this.uow.run(async (repos) => {
+      const schedule = await repos.schedules.findById(companyId, scheduleId);
+      if (!schedule) return companyTarget(companyId);
+      return this.scheduleScopeTarget(repos, companyId, schedule);
+    });
+  }
+
+  /** Route-facing scope resolution for the effective-schedule preview. */
+  async resolveScopeTargetForCriteria(
+    companyId: string,
+    criteria: {
+      siteId?: string;
+      projectId?: string;
+      employeeId?: string;
+      departmentId?: string;
+    },
+  ): Promise<ScopeTarget> {
+    return this.uow.run(async (repos) => this.criteriaScopeTarget(repos, companyId, criteria));
+  }
+
+  private async criteriaScopeTarget(
+    repos: ScheduleRepos,
+    companyId: string,
+    criteria: {
+      siteId?: string;
+      projectId?: string;
+      employeeId?: string;
+      departmentId?: string;
+    },
+  ): Promise<ScopeTarget> {
+    if (criteria.departmentId !== undefined) {
+      return (
+        (await this.deptScopeTarget(repos, companyId, criteria.departmentId)) ??
+        companyTarget(companyId)
+      );
+    }
+    if (criteria.siteId !== undefined) {
+      return { companyId, scopeType: 'SITE', scopeId: criteria.siteId };
+    }
+    if (criteria.projectId !== undefined) {
+      return { companyId, scopeType: 'PROJECT', scopeId: criteria.projectId };
+    }
+    if (criteria.employeeId !== undefined) {
+      return this.employeeScopeTarget(repos, companyId, criteria.employeeId);
+    }
+    return companyTarget(companyId);
+  }
 
   // -------------------------------------------------------------------------
   // Work schedules (identity)
@@ -160,11 +365,6 @@ export class ScheduleService {
     companyId: string,
     input: CreateWorkScheduleInput,
   ): Promise<{ schedule: WorkSchedule; revision: WorkScheduleRevision }> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_MANAGE,
-      companyTarget(companyId),
-    );
     this.validateScopeShape(input);
     const validated = this.validateRevisionPattern(input.revision);
     const scheduleFrom = parseDate(input.effectiveFrom, 'effectiveFrom');
@@ -184,6 +384,11 @@ export class ScheduleService {
 
     return this.uow.run(async (repos) => {
       await this.assertScopeTarget(repos, companyId, input);
+      await this.assertManageAt(
+        actor,
+        companyId,
+        await this.inputScopeTarget(repos, companyId, input),
+      );
       await this.assertCalendarUsable(repos, companyId, input.revision.holidayCalendarId);
 
       const schedule = await repos.schedules.create(companyId, {
@@ -243,23 +448,37 @@ export class ScheduleService {
     companyId: string,
     filter: ListWorkSchedulesFilter,
   ): Promise<WorkSchedule[]> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_READ,
-      companyTarget(companyId),
-    );
-    return this.uow.run((repos) => repos.schedules.list(companyId, filter));
+    return this.uow.run(async (repos) => {
+      // Scope-pinned listing: a filter that names a scope resolves to that
+      // target; no scope filter resolves COMPANY so scoped holders (PI/PD)
+      // cannot enumerate schedules outside their authority.
+      const target =
+        filter.siteId !== undefined
+          ? { companyId, scopeType: 'SITE' as const, scopeId: filter.siteId }
+          : filter.projectId !== undefined
+            ? { companyId, scopeType: 'PROJECT' as const, scopeId: filter.projectId }
+            : filter.departmentId !== undefined
+              ? ((await this.deptScopeTarget(repos, companyId, filter.departmentId)) ??
+                companyTarget(companyId))
+              : filter.employeeId !== undefined
+                ? await this.employeeScopeTarget(repos, companyId, filter.employeeId)
+                : companyTarget(companyId);
+      await this.authorizer.assertPermission(actor.actorId, WORK_SCHEDULE_READ, target);
+      return repos.schedules.list(companyId, filter);
+    });
   }
 
   async getSchedule(actor: ActorContext, companyId: string, id: string): Promise<WorkSchedule> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_READ,
-      companyTarget(companyId),
-    );
-    const schedule = await this.uow.run((repos) => repos.schedules.findById(companyId, id));
-    if (!schedule) throw new WorkScheduleNotFoundError();
-    return schedule;
+    return this.uow.run(async (repos) => {
+      const schedule = await repos.schedules.findById(companyId, id);
+      if (!schedule) throw new WorkScheduleNotFoundError();
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        WORK_SCHEDULE_READ,
+        await this.scheduleScopeTarget(repos, companyId, schedule),
+      );
+      return schedule;
+    });
   }
 
   /** Identity-level edits only (name, description, validity window). Pattern
@@ -270,15 +489,14 @@ export class ScheduleService {
     id: string,
     input: UpdateWorkScheduleInput,
   ): Promise<WorkSchedule> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_MANAGE,
-      companyTarget(companyId),
-    );
-
     return this.uow.run(async (repos) => {
       const existing = await repos.schedules.findById(companyId, id);
       if (!existing) throw new WorkScheduleNotFoundError();
+      await this.assertManageAt(
+        actor,
+        companyId,
+        await this.scheduleScopeTarget(repos, companyId, existing),
+      );
       if (existing.status === 'ARCHIVED') {
         throw new InvalidScheduleStateError(
           'Archived schedules are immutable; create a new schedule',
@@ -350,15 +568,14 @@ export class ScheduleService {
     id: string,
     expectedVersion: number,
   ): Promise<WorkSchedule> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_MANAGE,
-      companyTarget(companyId),
-    );
-
     return this.uow.run(async (repos) => {
       const existing = await repos.schedules.findById(companyId, id);
       if (!existing) throw new WorkScheduleNotFoundError();
+      await this.assertManageAt(
+        actor,
+        companyId,
+        await this.scheduleScopeTarget(repos, companyId, existing),
+      );
       if (existing.status === 'ARCHIVED') {
         throw new InvalidScheduleStateError('Schedule is already archived');
       }
@@ -392,16 +609,11 @@ export class ScheduleService {
     scheduleId: string,
     input: AddRevisionInput,
   ): Promise<WorkScheduleRevision> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_MANAGE,
-      companyTarget(companyId),
-    );
     const validated = this.validateRevisionPattern(input);
     const effectiveFrom = parseDate(input.effectiveFrom, 'effectiveFrom');
 
     return this.uow.run(async (repos) => {
-      const schedule = await this.assertScheduleMutable(repos, companyId, scheduleId);
+      const schedule = await this.assertScheduleMutable(repos, companyId, scheduleId, actor);
       if (schedule.effectiveTo !== null && effectiveFrom > schedule.effectiveTo) {
         throw new ScheduleValidationError(
           'effectiveFrom',
@@ -468,14 +680,8 @@ export class ScheduleService {
     scheduleId: string,
     revisionId: string,
   ): Promise<WorkScheduleRevision> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_MANAGE,
-      companyTarget(companyId),
-    );
-
     return this.uow.run(async (repos) => {
-      await this.assertScheduleMutable(repos, companyId, scheduleId);
+      await this.assertScheduleMutable(repos, companyId, scheduleId, actor);
       const revision = await repos.revisions.findById(companyId, scheduleId, revisionId);
       if (!revision) throw new ScheduleRevisionNotFoundError();
       if (revision.status === 'ARCHIVED') {
@@ -510,15 +716,10 @@ export class ScheduleService {
     scheduleId: string,
     input: AddOverrideInput,
   ): Promise<WorkScheduleOverride> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_MANAGE,
-      companyTarget(companyId),
-    );
     const date = parseDate(input.date, 'date');
 
     return this.uow.run(async (repos) => {
-      await this.assertScheduleMutable(repos, companyId, scheduleId);
+      await this.assertScheduleMutable(repos, companyId, scheduleId, actor);
       const existing = await repos.overrides.findActiveForDate(companyId, scheduleId, date);
       if (existing) throw new DuplicateOverrideError(input.date);
 
@@ -570,14 +771,8 @@ export class ScheduleService {
     scheduleId: string,
     overrideId: string,
   ): Promise<WorkScheduleOverride> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_MANAGE,
-      companyTarget(companyId),
-    );
-
     return this.uow.run(async (repos) => {
-      await this.assertScheduleMutable(repos, companyId, scheduleId);
+      await this.assertScheduleMutable(repos, companyId, scheduleId, actor);
       const override = await repos.overrides.findById(companyId, scheduleId, overrideId);
       if (!override) throw new ScheduleOverrideNotFoundError();
       if (override.status === 'ARCHIVED') {
@@ -621,15 +816,51 @@ export class ScheduleService {
     companyId: string,
     criteria: EffectiveScheduleCriteria,
   ): Promise<EffectiveScheduleResult> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_READ,
-      companyTarget(companyId),
-    );
     const asOf = criteria.asOf !== undefined ? parseDate(criteria.asOf, 'asOf') : new Date();
     const hasExplicitDate = criteria.asOf !== undefined;
 
     return this.uow.run(async (repos) => {
+      // Scoped read: the caller must hold WORK_SCHEDULE_READ at the target the
+      // criteria point at — site/project criteria resolve to those scopes,
+      // employee criteria anchor via the employee's membership. No criteria →
+      // COMPANY (only company-scope readers can resolve unscoped).
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        WORK_SCHEDULE_READ,
+        await this.criteriaScopeTarget(repos, companyId, criteria),
+      );
+      return this.resolveBody(repos, companyId, criteria, asOf, hasExplicitDate);
+    });
+  }
+
+  /**
+   * Authorization-free resolution for internal callers (attendance punch-in
+   * snapshot, workers). Callers enforce their own permission model first;
+   * this never authorizes anything by itself.
+   */
+  async resolveForEmployee(
+    companyId: string,
+    employeeId: string,
+    asOf?: Date,
+  ): Promise<EffectiveScheduleResult | null> {
+    return this.uow.run(async (repos) => {
+      try {
+        return await this.resolveBody(repos, companyId, { employeeId }, asOf ?? new Date(), false);
+      } catch (e) {
+        if (e instanceof NoEffectiveScheduleError) return null;
+        throw e;
+      }
+    });
+  }
+
+  private async resolveBody(
+    repos: ScheduleRepos,
+    companyId: string,
+    criteria: EffectiveScheduleCriteria,
+    asOf: Date,
+    hasExplicitDate: boolean,
+  ): Promise<EffectiveScheduleResult> {
+    {
       let ctxSiteId = criteria.siteId;
       let ctxProjectId = criteria.projectId;
 
@@ -711,7 +942,7 @@ export class ScheduleService {
       const companyResult = await withRevision({ scopeType: 'COMPANY' }, 'COMPANY');
       if (companyResult) return companyResult;
       throw new NoEffectiveScheduleError();
-    });
+    }
   }
 
   /**
@@ -726,16 +957,16 @@ export class ScheduleService {
     scheduleId: string,
     dateStr: string,
   ): Promise<{ revision: RevisionWithCalendar; classification: ClassifiedDay }> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      WORK_SCHEDULE_READ,
-      companyTarget(companyId),
-    );
     const date = parseDate(dateStr, 'date');
 
     return this.uow.run(async (repos) => {
       const schedule = await repos.schedules.findById(companyId, scheduleId);
       if (!schedule) throw new WorkScheduleNotFoundError();
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        WORK_SCHEDULE_READ,
+        await this.scheduleScopeTarget(repos, companyId, schedule),
+      );
       const revision = await repos.revisions.findEffective(companyId, scheduleId, date);
       if (!revision) throw new NoEffectiveScheduleError();
       const classification = await this.classifyForRevision(
@@ -1124,9 +1355,17 @@ export class ScheduleService {
     repos: ScheduleRepos,
     companyId: string,
     scheduleId: string,
+    actor?: ActorContext,
   ): Promise<WorkSchedule> {
     const schedule = await repos.schedules.findById(companyId, scheduleId);
     if (!schedule) throw new WorkScheduleNotFoundError();
+    if (actor !== undefined) {
+      await this.assertManageAt(
+        actor,
+        companyId,
+        await this.scheduleScopeTarget(repos, companyId, schedule),
+      );
+    }
     if (schedule.status === 'ARCHIVED') {
       throw new InvalidScheduleStateError('Archived schedules cannot be modified');
     }
@@ -1295,6 +1534,18 @@ export class ScheduleService {
       workingOffsets: number[];
       offOffsets: number[];
     } | null;
+    intraday: {
+      scheduledStartMins: number;
+      scheduledEndMins: number;
+      graceInMins: number;
+      graceOutMins: number;
+      breakWindowMode: 'FIXED_WINDOW' | 'DYNAMIC' | null;
+      breakWindowStartMins: number | null;
+      breakWindowEndMins: number | null;
+      breakDurationMins: number | null;
+      autoClockOutMode: 'DISABLED' | 'AT_SCHEDULED_END' | 'AFTER_GRACE' | null;
+      autoClockOutGraceMins: number | null;
+    } | null;
   } {
     let timezone: string;
     try {
@@ -1367,6 +1618,8 @@ export class ScheduleService {
       rotation = { anchor, lengthDays: r.lengthDays, workingOffsets, offOffsets };
     }
 
+    const intraday = this.validateIntraday(input.intraday);
+
     if (weekdays.length === 0 && (rotation === null || rotation.workingOffsets.length === 0)) {
       throw new ScheduleValidationError(
         'workingWeekdays',
@@ -1374,7 +1627,89 @@ export class ScheduleService {
       );
     }
 
-    return { timezone, workingWeekdays: weekdays, offNthWeekdays, rotation };
+    return { timezone, workingWeekdays: weekdays, offNthWeekdays, rotation, intraday };
+  }
+
+  /**
+   * Cross-field rules for the optional intraday block. Contradictory
+   * configurations are rejected rather than silently normalized — the same
+   * invariants are enforced at the database level by
+   * WorkScheduleRevision_intraday_shape.
+   */
+  private validateIntraday(
+    intraday: IntradayInput | undefined,
+  ): ReturnType<ScheduleService['validateRevisionPattern']>['intraday'] {
+    if (intraday === undefined) return null;
+    const v = (field: string, msg: string): never => {
+      throw new ScheduleValidationError(`intraday.${field}`, msg);
+    };
+
+    if (intraday.scheduledStartMins === intraday.scheduledEndMins) {
+      v('scheduledEndMins', 'must differ from scheduledStartMins (zero-length shift)');
+    }
+
+    const mode = intraday.breakWindowMode ?? null;
+    if (mode === 'FIXED_WINDOW') {
+      const wStart = intraday.breakWindowStartMins;
+      const wEnd = intraday.breakWindowEndMins;
+      const duration = intraday.breakDurationMins;
+      if (wStart === undefined)
+        throw new ScheduleValidationError(
+          'intraday.breakWindowStartMins',
+          'required when breakWindowMode is FIXED_WINDOW',
+        );
+      if (wEnd === undefined)
+        throw new ScheduleValidationError(
+          'intraday.breakWindowEndMins',
+          'required when breakWindowMode is FIXED_WINDOW',
+        );
+      if (wEnd === wStart) v('breakWindowEndMins', 'must differ from breakWindowStartMins');
+      if (duration === undefined)
+        throw new ScheduleValidationError(
+          'intraday.breakDurationMins',
+          'required when breakWindowMode is FIXED_WINDOW',
+        );
+      const span = (wEnd - wStart + 1440) % 1440;
+      if (duration > span) v('breakDurationMins', 'must not exceed the fixed window length');
+    } else if (mode === 'DYNAMIC') {
+      if (intraday.breakDurationMins === undefined)
+        v('breakDurationMins', 'required when breakWindowMode is DYNAMIC (per-day cap)');
+      if (
+        intraday.breakWindowStartMins !== undefined &&
+        intraday.breakWindowStartMins === intraday.breakWindowEndMins
+      )
+        v('breakWindowEndMins', 'must differ from breakWindowStartMins');
+    } else if (
+      intraday.breakWindowStartMins !== undefined ||
+      intraday.breakWindowEndMins !== undefined ||
+      intraday.breakDurationMins !== undefined
+    ) {
+      v('breakWindowMode', 'required when any break window/duration field is set');
+    }
+
+    const clockOut = intraday.autoClockOutMode ?? null;
+    if (clockOut === 'AFTER_GRACE' && (intraday.autoClockOutGraceMins ?? 0) <= 0) {
+      v('autoClockOutGraceMins', 'required and must be > 0 when autoClockOutMode is AFTER_GRACE');
+    }
+    if (clockOut === 'AT_SCHEDULED_END' && intraday.autoClockOutGraceMins !== undefined) {
+      v(
+        'autoClockOutGraceMins',
+        'must be omitted when autoClockOutMode is AT_SCHEDULED_END (grace must not delay the close)',
+      );
+    }
+
+    return {
+      scheduledStartMins: intraday.scheduledStartMins,
+      scheduledEndMins: intraday.scheduledEndMins,
+      graceInMins: intraday.graceInMins ?? 0,
+      graceOutMins: intraday.graceOutMins ?? 0,
+      breakWindowMode: mode,
+      breakWindowStartMins: intraday.breakWindowStartMins ?? null,
+      breakWindowEndMins: intraday.breakWindowEndMins ?? null,
+      breakDurationMins: intraday.breakDurationMins ?? null,
+      autoClockOutMode: clockOut,
+      autoClockOutGraceMins: intraday.autoClockOutGraceMins ?? null,
+    };
   }
 
   private revisionCreateData(
@@ -1393,6 +1728,16 @@ export class ScheduleService {
       rotationLengthDays: validated.rotation?.lengthDays ?? null,
       rotationWorkingOffsets: validated.rotation?.workingOffsets ?? [],
       rotationOffOffsets: validated.rotation?.offOffsets ?? [],
+      scheduledStartMins: validated.intraday?.scheduledStartMins ?? null,
+      scheduledEndMins: validated.intraday?.scheduledEndMins ?? null,
+      graceInMins: validated.intraday?.graceInMins ?? null,
+      graceOutMins: validated.intraday?.graceOutMins ?? null,
+      breakWindowMode: validated.intraday?.breakWindowMode ?? null,
+      breakWindowStartMins: validated.intraday?.breakWindowStartMins ?? null,
+      breakWindowEndMins: validated.intraday?.breakWindowEndMins ?? null,
+      breakDurationMins: validated.intraday?.breakDurationMins ?? null,
+      autoClockOutMode: validated.intraday?.autoClockOutMode ?? null,
+      autoClockOutGraceMins: validated.intraday?.autoClockOutGraceMins ?? null,
       ...(holidayCalendarId !== undefined && holidayCalendarId !== null
         ? {
             holidayCalendar: {

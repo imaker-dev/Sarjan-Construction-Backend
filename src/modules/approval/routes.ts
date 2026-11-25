@@ -33,6 +33,15 @@ const DecideBody = Type.Object(
     action: Type.Union([Type.Literal('APPROVE'), Type.Literal('REJECT'), Type.Literal('RETURN')]),
     reason: Type.Optional(Type.String({ maxLength: 500 })),
     expectedVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+    decisionPayload: Type.Optional(
+      Type.Record(Type.String(), Type.Unknown(), {
+        description:
+          'Action-specific structured payload. For wallet funding requests, APPROVE ' +
+          'requires {"approvedAmount": "<decimal INR>"} — ≤ the submitted attempt ' +
+          'amount. Forbidden on REJECT/RETURN for that workflow. Stored on the ' +
+          'decision row and folded into the idempotency fingerprint.',
+      }),
+    ),
     idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   },
   { additionalProperties: false },
@@ -126,12 +135,14 @@ export function approvalRoutes(service: ApprovalService) {
           action: 'APPROVE' | 'REJECT' | 'RETURN';
           reason?: string;
           expectedVersion?: number;
+          decisionPayload?: Record<string, unknown>;
           idempotencyKey?: string;
         };
         const result = await service.decideTask(actorOf(request), companyOf(request), id, {
           action: body.action,
           ...(body.reason !== undefined ? { reason: body.reason } : {}),
           ...(body.expectedVersion !== undefined ? { expectedVersion: body.expectedVersion } : {}),
+          ...(body.decisionPayload !== undefined ? { decisionPayload: body.decisionPayload } : {}),
           ...(body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : {}),
         });
         return reply.code(result.replayed ? 200 : 201).send({
