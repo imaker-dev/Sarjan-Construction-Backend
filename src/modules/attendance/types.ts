@@ -942,7 +942,8 @@ export const ListDailyReportsQuery = Type.Object({
 });
 
 export const CalculateDailyReportBody = Type.Object({
-  siteId: Type.String({ format: 'uuid' }),
+  siteId: Type.Optional(Type.String({ format: 'uuid' })),
+  headOfficeId: Type.Optional(Type.String({ format: 'uuid' })),
   businessDate: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
 });
 
@@ -972,13 +973,45 @@ export const LockDailyReportBody = Type.Object({
   reason: Type.Optional(Type.String({ maxLength: 500 })),
 });
 
+export const ReportExportFormatEnum = Type.Union([
+  Type.Literal('pdf'),
+  Type.Literal('xlsx'),
+]);
+
+export const ReportExportTargetEnum = Type.Union([
+  Type.Literal('SITE'),
+  Type.Literal('OFFICE'),
+]);
+
+export const TriggerReportExportBody = Type.Object({
+  reportType: ReportExportTargetEnum,
+  format: ReportExportFormatEnum,
+  siteId: Type.Optional(Type.String({ format: 'uuid' })),
+  headOfficeId: Type.Optional(Type.String({ format: 'uuid' })),
+  departmentId: Type.Optional(Type.String({ format: 'uuid' })),
+  reportId: Type.Optional(Type.String({ format: 'uuid' })),
+  period: Type.Optional(AttendancePeriodEnum),
+  date: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  from: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  to: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  recalculate: Type.Optional(Type.Boolean({ default: false })),
+});
+
+export const DailyReportExportQuery = Type.Object({
+  format: ReportExportFormatEnum,
+});
+
+export const MusterRollExportQuery = Type.Intersect([
+  MusterRollRangeQuery,
+  Type.Object({ format: ReportExportFormatEnum }),
+]);
+
 export type ListDailyReportsFilter = Static<typeof ListDailyReportsQuery>;
 export type CalculateDailyReportInput = Static<typeof CalculateDailyReportBody>;
 export type UpdateDailyReportInput = Static<typeof UpdateDailyReportBody>;
 export type UpdateLabourSummaryInput = Static<typeof UpdateLabourSummaryBody>;
 export type RejectDailyReportInput = Static<typeof RejectDailyReportBody>;
 export type LockDailyReportInput = Static<typeof LockDailyReportBody>;
-
 // ---------------------------------------------------------------------------
 // Intraday schedule snapshot — resolved at punch time
 // ---------------------------------------------------------------------------
@@ -1179,3 +1212,6 @@ export const ManualSessionBody = Type.Object(
   { additionalProperties: false },
 );
 export type ManualSessionInput = Static<typeof ManualSessionBody>;
+export type TriggerReportExportInput = Static<typeof TriggerReportExportBody>;
+export type DailyReportExportFilter = Static<typeof DailyReportExportQuery>;
+export type MusterRollExportFilter = Static<typeof MusterRollExportQuery>;

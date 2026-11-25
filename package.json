@@ -40,10 +40,12 @@
     "@sinclair/typebox": "^0.34.0",
     "bullmq": "^5.58.0",
     "dotenv": "^16.6.0",
+    "exceljs": "^4.4.0",
     "fastify": "^5.6.0",
     "fastify-plugin": "^5.0.0",
     "ioredis": "^5.8.0",
     "nodemailer": "^10.6.0",
+    "pdfkit": "^0.21.0",
     "pg": "^8.23.1"
   },
   "overrides": {
@@ -64,6 +66,7 @@
     "@eslint/js": "^9.0.0",
     "@types/node": "^24.0.0",
     "@types/nodemailer": "^8.0.2",
+    "@types/pdfkit": "^0.17.7",
     "@types/pg": "^8.23.1",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^10.0.0",

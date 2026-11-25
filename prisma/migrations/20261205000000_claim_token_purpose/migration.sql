@@ -2,8 +2,8 @@
 -- ClaimToken purpose + company/employee binding (Slice A)
 --
 -- Every live claim code is bound to the ONE operation it may perform:
---   COMPANY_ONBOARD  → activate admin + complete company/HO onboarding
---   EMPLOYEE_INVITE  → activate the bound employee's login only
+--   COMPANY_ONBOARD  -> activate admin + complete company/HO onboarding
+--   EMPLOYEE_INVITE  -> activate the bound employee's login only
 -- purpose NULL is allowed only on already-closed legacy rows.
 -- ======================================================================
 
@@ -14,7 +14,7 @@ ALTER TABLE "ClaimToken"
   ADD COLUMN "companyId" UUID,
   ADD COLUMN "employeeId" UUID;
 
--- Backing unique for the triple FK (principalId is nullable — NULL rows are
+-- Backing unique for the triple FK (principalId is nullable -- NULL rows are
 -- simply never referenced, which is exactly what invite binding needs).
 CREATE UNIQUE INDEX "Employee_id_companyId_principalId_key"
   ON "Employee"("id", "companyId", "principalId");
@@ -30,7 +30,7 @@ CREATE INDEX "ClaimToken_companyId_employeeId_consumedAt_idx"
 -- evidence kind. Invite evidence (EMPLOYEE_INVITED / EMPLOYEE_INVITE_RESENT
 -- audits on THAT employee in THAT company) and onboard evidence
 -- (CLAIM_TOKEN_REISSUED on THAT principal, or PLATFORM_COMPANY_CREATED
--- naming THAT employee) are tied to the principal/employee/company triple —
+-- naming THAT employee) are tied to the principal/employee/company triple --
 -- unrelated audit rows can never classify a token.
 WITH ev AS (
   SELECT
@@ -73,20 +73,20 @@ SET "purpose" = CASE WHEN ev.invite_evidence
     "employeeId" = CASE WHEN ev.invite_evidence THEN ev.employee_id END
 FROM ev
 WHERE ct.id = ev.token_id
-  -- XOR: exactly one evidence kind. Both or neither → unclassified.
+  -- XOR: exactly one evidence kind. Both or neither -> unclassified.
   AND ev.invite_evidence <> ev.onboard_evidence;
 
 -- Fail closed: every unclassifiable unconsumed token is permanently CLOSED.
 -- Both flows have safe reissue paths (platform claim-token route, employee
--- invite/resend), so closure is recoverable — never a silent guess.
+-- invite/resend), so closure is recoverable -- never a silent guess.
 UPDATE "ClaimToken" SET "consumedAt" = now()
 WHERE "consumedAt" IS NULL AND "purpose" IS NULL;
 -- <<< claim-token-classification <<<
 
 -- Purpose/binding invariants:
---   EMPLOYEE_INVITE → companyId AND employeeId required
---   COMPANY_ONBOARD → companyId required, employeeId forbidden
---   purpose NULL    → only on already-closed rows (legacy/consumed)
+--   EMPLOYEE_INVITE -> companyId AND employeeId required
+--   COMPANY_ONBOARD -> companyId required, employeeId forbidden
+--   purpose NULL    -> only on already-closed rows (legacy/consumed)
 ALTER TABLE "ClaimToken" ADD CONSTRAINT "ClaimToken_purpose_binding_ck" CHECK (
   ("purpose" IS NULL AND "consumedAt" IS NOT NULL)
   OR ("purpose" = 'EMPLOYEE_INVITE'

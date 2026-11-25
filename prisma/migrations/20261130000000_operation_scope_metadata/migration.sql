@@ -6,14 +6,14 @@
 --   departments under their assigned projects/sites.
 --
 -- New rows default to appliesTo=[COMPANY], leadershipInheritable=false.
--- Eligibility is NEVER inferred from key prefix, domain, or sensitive=false —
+-- Eligibility is NEVER inferred from key prefix, domain, or sensitive=false --
 -- only the explicit reviewed lists below grant it.
 
 ALTER TABLE "OperationCatalogueEntry"
   ADD COLUMN "appliesTo" "ScopeType"[] NOT NULL DEFAULT ARRAY['COMPANY']::"ScopeType"[],
   ADD COLUMN "leadershipInheritable" BOOLEAN NOT NULL DEFAULT FALSE;
 
--- ── appliesTo backfill ──────────────────────────────────────────────────────
+-- -- appliesTo backfill ------------------------------------------------------
 
 -- Field / project-execution domains: may be enabled on departments at any
 -- scope (company support depts, head office, project, site).
@@ -46,7 +46,7 @@ WHERE "key" IN (
   'PROJECT_WALLET_RETURN_FUNDS'
 );
 
--- ── leadershipInheritable backfill (explicit reviewed set) ──────────────────
+-- -- leadershipInheritable backfill (explicit reviewed set) ------------------
 --
 -- Only day-to-day project/site execution, technical review, reporting, and
 -- request-submission operations are inheritable. All approval, payment,
@@ -73,7 +73,7 @@ WHERE "key" IN (
   'LABOUR_PROJECT_ASSIGN',
   'LABOUR_RECORD_CREATE',
   'LABOUR_SHIFT_ASSIGN',
-  -- Project administration & site lifecycle (SITE_CLOSE excluded — high impact)
+  -- Project administration & site lifecycle (SITE_CLOSE excluded -- high impact)
   'PROJECT_MILESTONE_MANAGE',
   'PROJECT_PLAN_CREATE',
   'PROJECT_PLAN_UPDATE',
@@ -84,7 +84,7 @@ WHERE "key" IN (
   'SITE_INSTRUCTION_ACKNOWLEDGE',
   'SITE_INSTRUCTION_CLOSE',
   'SITE_INSTRUCTION_CREATE',
-  -- Project reporting & documents (PROJECT_COST_REPORT_GENERATE excluded — financial)
+  -- Project reporting & documents (PROJECT_COST_REPORT_GENERATE excluded -- financial)
   'DAILY_SITE_REPORT_SUBMIT',
   'PROJECT_DASHBOARD_VIEW',
   'PROJECT_DOCUMENT_UPLOAD',
@@ -139,7 +139,7 @@ WHERE "key" IN (
   'WORK_PACKAGE_CREATE',
   'WORK_PROGRESS_REVIEW',
   'WORK_PROGRESS_SUBMIT',
-  -- Request-side wallet/quotation (submit, view, confirm — NOT approve/process)
+  -- Request-side wallet/quotation (submit, view, confirm -- NOT approve/process)
   'PETTY_CASH_REQUEST_SUBMIT',
   'PETTY_CASH_EXPENSE_SUBMIT',
   'PROJECT_QUOTATION_PREPARE',

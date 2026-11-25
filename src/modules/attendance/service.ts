@@ -77,10 +77,17 @@ import {
   type RegularizeSessionInput,
   type RejectDailyReportInput,
   type StartBreakInput,
+  type TriggerReportExportInput,
   type UpdateDailyReportInput,
   type UpdateLabourSummaryInput,
   type UpdatePolicyInput,
 } from './types.js';
+import {
+  exportMusterRollToStream,
+  exportSiteReportToStream,
+  type ExportStreamResult,
+  type ReportExportFormat,
+} from './report-exporter.js';
 
 export const ATTENDANCE_RECORD = 'ATTENDANCE_RECORD';
 export const ATTENDANCE_READ = 'ATTENDANCE_READ';
@@ -2510,14 +2517,78 @@ export class AttendanceService {
     actor: ActorContext,
     companyId: string,
     input: CalculateDailyReportInput,
-  ): Promise<DailySiteReport & { labourSummaries: DailySiteReportLabour[] }> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_MANAGE,
-      siteTarget(companyId, input.siteId),
-    );
+  ): Promise<
+    | (DailySiteReport & { labourSummaries: DailySiteReportLabour[] })
+    | {
+        headOfficeId: string;
+        headOfficeName: string;
+        businessDate: string;
+        autoClosedCount: number;
+        totalSessions: number;
+        message: string;
+      }
+  > {
+    if (input.siteId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        siteTarget(companyId, input.siteId),
+      );
+    } else if (input.headOfficeId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        headOfficeTarget(companyId, input.headOfficeId),
+      );
+    } else {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_MANAGE,
+        companyTarget(companyId),
+      );
+    }
 
     return this.uow.run(async (repos) => {
+      // 1. Office / Head Office settlement
+      if (input.headOfficeId) {
+        const headOffice = await repos.headOffices.findById(companyId, input.headOfficeId);
+        if (!headOffice) {
+          throw new AttendanceEntityNotFoundError('HeadOffice', input.headOfficeId);
+        }
+
+        const summary = await repos.sessions.getDailySummary(companyId, {
+          headOfficeId: input.headOfficeId,
+          businessDate: input.businessDate,
+        });
+
+        let autoClosedCount = 0;
+        for (const s of summary.sessions) {
+          if (s.status === 'IN_PROGRESS') {
+            await repos.sessions.update(companyId, s.id, {
+              status: 'AUTO_CLOSED',
+              isFlagged: true,
+              flagReason: 'MISSING_PUNCH_OUT',
+              punchOutRemarks: 'Auto-closed at daily settlement due to missing punch out',
+            });
+            autoClosedCount += 1;
+          }
+        }
+
+        return {
+          headOfficeId: input.headOfficeId,
+          headOfficeName: headOffice.name,
+          businessDate: input.businessDate,
+          autoClosedCount,
+          totalSessions: summary.sessions.length,
+          message: `Recalculated office attendance for ${headOffice.name} on ${input.businessDate}`,
+        };
+      }
+
+      // 2. Construction Site settlement
+      if (!input.siteId) {
+        throw new AttendanceValidationError('Either siteId or headOfficeId must be provided');
+      }
+
       const existing = await repos.dailyReports.findBySiteAndDate(
         companyId,
         input.siteId,
@@ -3450,5 +3521,159 @@ export class AttendanceService {
         }
       }
     });
+  }
+
+  async exportDailySiteReport(
+    actor: ActorContext,
+    companyId: string,
+    reportId: string,
+    format: ReportExportFormat,
+  ): Promise<ExportStreamResult> {
+    const data = await this.uow.run(async (repos) => {
+      const report = await repos.dailyReports.findById(companyId, reportId);
+      if (!report) throw new DailyReportNotFoundError(reportId);
+
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        siteTarget(companyId, report.siteId),
+      );
+
+      const summary = await repos.sessions.getDailySummary(
+        companyId,
+        report.siteId,
+        report.businessDate,
+      );
+
+      return { report, sessions: summary.sessions };
+    });
+
+    return exportSiteReportToStream(data, format);
+  }
+
+  async exportMusterRollReport(
+    actor: ActorContext,
+    companyId: string,
+    filter: MusterRollRangeFilter,
+    format: ReportExportFormat,
+  ): Promise<ExportStreamResult> {
+    const muster = await this.getMusterRollRange(actor, companyId, filter);
+    const isSite = Boolean(filter.siteId && !filter.headOfficeId);
+    const scopeParts: string[] = [];
+    if (filter.headOfficeId) scopeParts.push(`Head Office: ${filter.headOfficeId}`);
+    else if (filter.siteId) scopeParts.push(`Site: ${filter.siteId}`);
+    else scopeParts.push('Company-Wide');
+    if (filter.departmentId) scopeParts.push(`Department: ${filter.departmentId}`);
+
+    return exportMusterRollToStream(
+      {
+        title: isSite ? 'Site Attendance Muster Roll' : 'Office Attendance Report',
+        scopeLabel: scopeParts.join(' | '),
+        ...muster,
+        period: muster.period ?? filter.period ?? 'DAILY',
+      },
+      format,
+    );
+  }
+
+  async triggerAndExportReport(
+    actor: ActorContext,
+    companyId: string,
+    input: TriggerReportExportInput,
+  ): Promise<ExportStreamResult> {
+    const businessDate = input.date ?? getBusinessDate(new Date(), 'Asia/Kolkata');
+
+    if (input.reportType === 'SITE') {
+      if (input.reportId) {
+        if (input.recalculate) {
+          const existing = await this.getDailyReportById(actor, companyId, input.reportId);
+          await this.calculateDailyReport(actor, companyId, {
+            siteId: existing.siteId,
+            businessDate: existing.businessDate,
+          });
+        }
+        return this.exportDailySiteReport(actor, companyId, input.reportId, input.format);
+      }
+
+      if (!input.siteId) {
+        throw new AttendanceValidationError('siteId or reportId is required when reportType is SITE');
+      }
+
+      const isRange = input.period === 'WEEKLY' || input.period === 'MONTHLY' || Boolean(input.from && input.to);
+      if (isRange) {
+        if (input.recalculate) {
+          await this.calculateDailyReport(actor, companyId, {
+            siteId: input.siteId,
+            businessDate,
+          });
+        }
+        return this.exportMusterRollReport(
+          actor,
+          companyId,
+          {
+            siteId: input.siteId,
+            period: input.period ?? 'DAILY',
+            ...(input.departmentId !== undefined ? { departmentId: input.departmentId } : {}),
+            ...(input.date !== undefined ? { date: input.date } : {}),
+            ...(input.from !== undefined ? { from: input.from } : {}),
+            ...(input.to !== undefined ? { to: input.to } : {}),
+          },
+          input.format,
+        );
+      }
+
+      if (input.recalculate) {
+        const calculated = (await this.calculateDailyReport(actor, companyId, {
+          siteId: input.siteId,
+          businessDate,
+        })) as DailySiteReport;
+        return this.exportDailySiteReport(actor, companyId, calculated.id, input.format);
+      }
+
+      const targetSiteId = input.siteId;
+      const report = await this.uow.run(async (repos) => {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_READ,
+          siteTarget(companyId, targetSiteId),
+        );
+        return repos.dailyReports.findBySiteAndDate(companyId, targetSiteId, businessDate);
+      });
+      if (!report) {
+        throw new DailyReportNotFoundError(`${input.siteId}:${businessDate}`);
+      }
+      return this.exportDailySiteReport(actor, companyId, report.id, input.format);
+    }
+
+    // OFFICE report export
+    if (input.recalculate) {
+      if (input.headOfficeId) {
+        await this.calculateDailyReport(actor, companyId, {
+          headOfficeId: input.headOfficeId,
+          businessDate,
+        });
+      } else {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_MANAGE,
+          companyTarget(companyId),
+        );
+      }
+    }
+
+    const effectiveDate = input.from || input.to ? input.date : (input.date ?? businessDate);
+    return this.exportMusterRollReport(
+      actor,
+      companyId,
+      {
+        period: input.period ?? 'DAILY',
+        ...(input.headOfficeId !== undefined ? { headOfficeId: input.headOfficeId } : {}),
+        ...(input.departmentId !== undefined ? { departmentId: input.departmentId } : {}),
+        ...(effectiveDate !== undefined ? { date: effectiveDate } : {}),
+        ...(input.from !== undefined ? { from: input.from } : {}),
+        ...(input.to !== undefined ? { to: input.to } : {}),
+      },
+      input.format,
+    );
   }
 }

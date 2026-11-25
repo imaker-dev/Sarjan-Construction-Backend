@@ -238,6 +238,21 @@ describe('Daily Site Report (DSR) & Attendance Settlement Routes', () => {
     expect(body.catCSubconCount).toBe(3);
   });
 
+  it('triggers on-demand auto-calculation for headOfficeId with 200', async () => {
+    app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/attendance/daily-reports/calculate',
+      headers: authed(app),
+      payload: {
+        headOfficeId: '00000000-0000-4000-8000-0000000000b1',
+        businessDate: '2026-11-21',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
   it('lists daily site reports with 200', async () => {
     app = await makeApp();
     const res = await app.inject({
