@@ -362,7 +362,9 @@ export interface AttendanceRepos {
     >;
     list(
       companyId: string,
-      filter: ListDailyReportsFilter,
+      filter: ListDailyReportsFilter & {
+        scopeFilter?: { projectIds: string[]; siteIds: string[]; headOfficeIds: string[] };
+      },
     ): Promise<{
       items: (DailySiteReport & {
         site: Pick<Site, 'id' | 'code' | 'name'>;
@@ -1536,10 +1538,22 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
         }),
 
       list: async (companyId, filter) => {
+        const sf = filter.scopeFilter;
+        const scopeOr = sf
+          ? [
+              ...(sf.siteIds.length > 0 ? [{ siteId: { in: sf.siteIds } }] : []),
+              ...(sf.projectIds.length > 0 ? [{ projectId: { in: sf.projectIds } }] : []),
+              ...(sf.headOfficeIds.length > 0
+                ? [{ project: { headOfficeId: { in: sf.headOfficeIds } } }]
+                : []),
+            ]
+          : null;
         const where: Prisma.DailySiteReportWhereInput = {
           companyId,
+          ...(filter.projectId ? { projectId: filter.projectId } : {}),
           ...(filter.siteId ? { siteId: filter.siteId } : {}),
           ...(filter.status ? { status: filter.status } : {}),
+          ...(scopeOr !== null ? { OR: scopeOr } : {}),
           ...(filter.fromDate || filter.toDate
             ? {
               businessDate: {

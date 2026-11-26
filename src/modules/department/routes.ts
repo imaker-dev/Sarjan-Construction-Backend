@@ -117,7 +117,23 @@ export function departmentRoutes(service: DepartmentService) {
     );
     app.get(
       '/departments',
-      { schema: { querystring: ListQuery }, ...auth('DEPARTMENT_READ', atListScope) },
+      {
+        schema: { querystring: ListQuery },
+        preHandler: [
+          app.authenticate,
+          app.tenantCompanyGuard,
+          async (req) => {
+            const q = req.query as { projectId?: string; siteId?: string };
+            const guard =
+              q.siteId !== undefined || q.projectId !== undefined
+                ? app.requirePermission('DEPARTMENT_READ', atListScope)
+                : typeof app.requireAnyScopePermission === 'function'
+                  ? app.requireAnyScopePermission('DEPARTMENT_READ', companyIdOf)
+                  : app.requirePermission('DEPARTMENT_READ', atCompany);
+            return guard.call(app, req);
+          },
+        ],
+      },
       async (req) => {
         const q = req.query as { status?: never; projectId?: string; siteId?: string };
         return service.listDepartments(actorOf(req), companyIdOf(req), q);

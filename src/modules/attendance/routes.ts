@@ -185,12 +185,14 @@ export function attendanceRoutes(service: AttendanceService) {
     const queryScope = (r: FastifyRequest): Promise<ScopeTarget> | ScopeTarget => {
       const companyId = companyIdOf(r);
       const q = (r.query ?? {}) as {
+        projectId?: string;
         siteId?: string;
         headOfficeId?: string;
         departmentId?: string;
         employeeId?: string;
       };
       if (q.siteId !== undefined) return siteTarget(companyId, q.siteId);
+      if (q.projectId !== undefined) return { companyId, scopeType: 'PROJECT', scopeId: q.projectId };
       if (q.headOfficeId !== undefined) return headOfficeTarget(companyId, q.headOfficeId);
       if (q.departmentId !== undefined)
         return service.resolveScope(companyId, 'department', q.departmentId);
@@ -205,12 +207,6 @@ export function attendanceRoutes(service: AttendanceService) {
       service.resolveScope(companyIdOf(r), 'dailyReport', (r.params as { id: string }).id);
     const atTvt = (r: FastifyRequest): Promise<ScopeTarget> =>
       service.resolveScope(companyIdOf(r), 'tvt', (r.params as { id: string }).id);
-    const atPrincipal = (r: FastifyRequest): Promise<ScopeTarget> =>
-      service.resolveScope(
-        companyIdOf(r),
-        'principal',
-        (r.principal as { actorId: string }).actorId,
-      );
     const scopedPerm = (key: string) => ({
       preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, resolveScope)],
     });
@@ -315,7 +311,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/punch-in',
-      { schema: { body: PunchInBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
+      { schema: { body: PunchInBody }, ...anyScopePerm(ATTENDANCE_RECORD) },
       async (req, reply) => {
         const session = await service.punchIn(
           actorOf(req),
@@ -328,7 +324,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/punch-out',
-      { schema: { body: PunchOutBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
+      { schema: { body: PunchOutBody }, ...anyScopePerm(ATTENDANCE_RECORD) },
       async (req) => {
         return service.punchOut(actorOf(req), companyIdOf(req), req.body as PunchOutInput);
       },
@@ -340,7 +336,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/breaks/start',
-      { schema: { body: StartBreakBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
+      { schema: { body: StartBreakBody }, ...anyScopePerm(ATTENDANCE_RECORD) },
       async (req, reply) => {
         const brk = await service.startBreak(
           actorOf(req),
@@ -353,7 +349,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/breaks/end',
-      { schema: { body: EndBreakBody }, ...perm(ATTENDANCE_RECORD, bodyScope) },
+      { schema: { body: EndBreakBody }, ...anyScopePerm(ATTENDANCE_RECORD) },
       async (req) => {
         return service.endBreak(actorOf(req), companyIdOf(req), req.body as EndBreakInput);
       },
@@ -371,12 +367,7 @@ export function attendanceRoutes(service: AttendanceService) {
             employeeId: Type.Optional(Type.String({ format: 'uuid' })),
           }),
         },
-        ...perm(ATTENDANCE_READ, (r) => {
-          const q = r.query as { employeeId?: string };
-          return q.employeeId !== undefined
-            ? service.resolveScope(companyIdOf(r), 'employee', q.employeeId)
-            : atPrincipal(r);
-        }),
+        ...anyScopePerm(ATTENDANCE_READ),
       },
       async (req) => {
         const query = req.query as { employeeId?: string };
@@ -649,7 +640,21 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/daily-reports',
-      { schema: { querystring: ListDailyReportsQuery }, ...perm(ATTENDANCE_READ, queryScope) },
+      {
+        schema: { querystring: ListDailyReportsQuery },
+        preHandler: [
+          app.authenticate,
+          app.tenantCompanyGuard,
+          async (req) => {
+            const q = req.query as { siteId?: string; projectId?: string };
+            const guard =
+              q.siteId !== undefined || q.projectId !== undefined
+                ? app.requirePermission(ATTENDANCE_READ, queryScope)
+                : app.requireAnyScopePermission(ATTENDANCE_READ, companyIdOf);
+            return guard(req);
+          },
+        ],
+      },
       async (req) => {
         return service.getDailyReports(
           actorOf(req),

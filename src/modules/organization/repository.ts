@@ -50,11 +50,17 @@ export interface HeadOfficeRepository {
   clearOtherPrimaries(companyId: string, exceptId?: string): Promise<void>;
 }
 
+export interface OrgScopeFilter {
+  projectIds: string[];
+  headOfficeIds: string[];
+  siteIds: string[];
+}
+
 export interface ProjectRepository {
   findById(companyId: string, id: string): Promise<Project | null>;
   list(
     companyId: string,
-    filter?: { status?: ProjectStatus; headOfficeId?: string },
+    filter?: { status?: ProjectStatus; headOfficeId?: string; scopeFilter?: OrgScopeFilter },
   ): Promise<Project[]>;
   create(
     companyId: string,
@@ -71,7 +77,10 @@ export interface ProjectRepository {
 
 export interface SiteRepository {
   findById(companyId: string, id: string): Promise<Site | null>;
-  list(companyId: string, filter?: { status?: OrgNodeStatus; projectId?: string }): Promise<Site[]>;
+  list(
+    companyId: string,
+    filter?: { status?: OrgNodeStatus; projectId?: string; scopeFilter?: OrgScopeFilter },
+  ): Promise<Site[]>;
   create(
     companyId: string,
     projectId: string,
@@ -283,15 +292,25 @@ export function makeOrgRepos(tx: Tx): OrgRepos {
     },
     projects: {
       findById: (companyId, id) => tx.project.findFirst({ where: { id, companyId } }),
-      list: (companyId, filter) =>
-        tx.project.findMany({
+      list: (companyId, filter) => {
+        const sf = filter?.scopeFilter;
+        const scopeOr = sf
+          ? [
+              ...(sf.projectIds.length > 0 ? [{ id: { in: sf.projectIds } }] : []),
+              ...(sf.headOfficeIds.length > 0 ? [{ headOfficeId: { in: sf.headOfficeIds } }] : []),
+              ...(sf.siteIds.length > 0 ? [{ sites: { some: { id: { in: sf.siteIds } } } }] : []),
+            ]
+          : null;
+        return tx.project.findMany({
           where: {
             companyId,
             ...(filter?.status ? { status: filter.status } : {}),
             ...(filter?.headOfficeId ? { headOfficeId: filter.headOfficeId } : {}),
+            ...(scopeOr !== null ? { OR: scopeOr } : {}),
           },
           orderBy: { id: 'asc' },
-        }),
+        });
+      },
       create: async (companyId, headOfficeId, data) => {
         try {
           // (headOfficeId, companyId) composite FK guarantees the HO belongs to
@@ -313,15 +332,27 @@ export function makeOrgRepos(tx: Tx): OrgRepos {
     },
     sites: {
       findById: (companyId, id) => tx.site.findFirst({ where: { id, companyId } }),
-      list: (companyId, filter) =>
-        tx.site.findMany({
+      list: (companyId, filter) => {
+        const sf = filter?.scopeFilter;
+        const scopeOr = sf
+          ? [
+              ...(sf.siteIds.length > 0 ? [{ id: { in: sf.siteIds } }] : []),
+              ...(sf.projectIds.length > 0 ? [{ projectId: { in: sf.projectIds } }] : []),
+              ...(sf.headOfficeIds.length > 0
+                ? [{ project: { headOfficeId: { in: sf.headOfficeIds } } }]
+                : []),
+            ]
+          : null;
+        return tx.site.findMany({
           where: {
             companyId,
             ...(filter?.status ? { status: filter.status } : {}),
             ...(filter?.projectId ? { projectId: filter.projectId } : {}),
+            ...(scopeOr !== null ? { OR: scopeOr } : {}),
           },
           orderBy: { id: 'asc' },
-        }),
+        });
+      },
       create: async (companyId, projectId, data) => {
         try {
           return await tx.site.create({ data: { ...data, companyId, projectId } });

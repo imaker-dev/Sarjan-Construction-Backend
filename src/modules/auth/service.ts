@@ -5,6 +5,7 @@ import { generateRefreshToken, hashRefreshToken, type TokenService } from './tok
 import type { AuthUnitOfWork, PrincipalDetails } from './repository.js';
 import type { ActorContext } from '../organization/types.js';
 import type { MfaService, MfaChallengeResult } from './mfa.js';
+import type { DelegationPolicyDto } from '../organization/delegation.js';
 import { OrgEntityNotFoundError } from '../organization/errors.js';
 import {
   type UserProfileCache,
@@ -173,6 +174,7 @@ export class AuthService {
     ) => Promise<string[]>,
     private readonly cache: UserProfileCache = new InMemoryUserProfileCache(),
     readonly mfaService?: MfaService | undefined,
+    private readonly resolveDelegations?: (companyId: string) => Promise<DelegationPolicyDto>,
   ) {}
 
   get userCache(): UserProfileCache {
@@ -672,6 +674,13 @@ export class AuthService {
       }
     }
 
+    const isCompanyScoped =
+      roles.includes('PLATFORM_ADMIN') ||
+      roles.includes('COMPANY_OWNER') ||
+      permissions.includes('ORG_COMPANY_READ') ||
+      permissions.includes('ORG_COMPANY_UPDATE') ||
+      assignments.some((a) => a.scopeType === 'COMPANY' && a.roleKey !== 'EMPLOYEE');
+
     const response: UserProfileResponse = {
       id: full.id,
       loginId: full.loginId ?? '',
@@ -696,6 +705,7 @@ export class AuthService {
       role: roles[0] ?? null,
       roles,
       permissions,
+      isCompanyScoped,
       assignments,
       departments,
       documents: documentsData,
@@ -706,21 +716,27 @@ export class AuthService {
   }
 
   /**
-   * Operations are resolved live on every /auth/me call — outside the cached
-   * profile — so admin enable/disable on employee or role-derived operations
-   * is reflected immediately rather than after the profile TTL expires.
+   * Operations and company delegation flags are resolved live on every /auth/me
+   * call — outside the cached profile — so admin enable/disable is reflected
+   * immediately rather than after the profile TTL expires.
    */
   private async withLiveOperations(profile: UserProfileResponse): Promise<UserProfileResponse> {
-    if (
-      profile.employeeId === null ||
-      profile.company === null ||
-      this.resolveOperations === undefined
-    ) {
+    const companyId = profile.company?.id ?? null;
+    const [operations, delegations] = await Promise.all([
+      profile.employeeId !== null && companyId !== null && this.resolveOperations !== undefined
+        ? this.resolveOperations(companyId, profile.employeeId)
+        : Promise.resolve(undefined),
+      companyId !== null && this.resolveDelegations !== undefined
+        ? this.resolveDelegations(companyId)
+        : Promise.resolve(undefined),
+    ]);
+    if (operations === undefined && delegations === undefined) {
       return profile;
     }
     return {
       ...profile,
-      operations: await this.resolveOperations(profile.company.id, profile.employeeId),
+      ...(operations !== undefined ? { operations } : {}),
+      ...(delegations !== undefined ? { delegations } : {}),
     };
   }
 
