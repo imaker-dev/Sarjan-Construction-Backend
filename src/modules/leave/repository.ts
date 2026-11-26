@@ -43,6 +43,30 @@ export interface LeavePolicyScopeTarget {
   employeeId?: string;
 }
 
+/** Department columns needed to map a department to a permission scope
+ *  target (site → SITE, project → PROJECT, base HO → HEAD_OFFICE) and the
+ *  parent project for scoped notification fanout. */
+export interface DepartmentScopeColumns {
+  id: string;
+  status: string;
+  siteId: string | null;
+  projectId: string | null;
+  baseHeadOfficeId: string | null;
+  site: { projectId: string } | null;
+}
+
+export interface MembershipWithScope {
+  departmentId: string;
+  isPrimary: boolean;
+  /** Present on window-batch lookups (findByEmployeesInWindow); absent on
+   *  single-employee effective-date queries that pre-filter by the DB. */
+  startedAt?: Date;
+  endedAt?: Date | null;
+  /** Department scope columns — populated by the real repository; treated
+   *  as unresolvable (company target, fail closed) when absent. */
+  department?: DepartmentScopeColumns;
+}
+
 export interface LeaveRepos {
   policies: {
     findById(companyId: string, id: string): Promise<LeavePolicy | null>;
@@ -127,7 +151,7 @@ export interface LeaveRepos {
     cancel(companyId: string, versionId: string): Promise<LeavePolicyVersion>;
   };
   departments: {
-    findById(companyId: string, id: string): Promise<{ id: string; status: string } | null>;
+    findById(companyId: string, id: string): Promise<DepartmentScopeColumns | null>;
   };
   memberships: {
     /** Memberships effective at `asOf` (startedAt <= asOf, not yet ended).
@@ -136,7 +160,7 @@ export interface LeaveRepos {
       companyId: string,
       employeeId: string,
       asOf?: Date,
-    ): Promise<{ departmentId: string; isPrimary: boolean }[]>;
+    ): Promise<MembershipWithScope[]>;
     /** Memberships covering the whole [start, end] window — started on or
      *  before `start` and not ended on or before `end`. */
     findCoveringByEmployee(
@@ -144,7 +168,19 @@ export interface LeaveRepos {
       employeeId: string,
       start: Date,
       end: Date,
-    ): Promise<{ departmentId: string; isPrimary: boolean }[]>;
+    ): Promise<MembershipWithScope[]>;
+    /** Batch lookup for scoped list filtering — memberships of many
+     *  employees overlapping a window, with department scope columns.
+     *  Optional so lightweight repo fakes can omit it (treated as empty →
+     *  scoped filters match nothing, fail closed). */
+    findByEmployeesInWindow?(
+      companyId: string,
+      employeeIds: string[],
+      minStart: Date,
+      maxEnd: Date,
+    ): Promise<
+      (MembershipWithScope & { employeeId: string; startedAt: Date; endedAt: Date | null })[]
+    >;
   };
   balances: {
     find(
@@ -205,6 +241,20 @@ export interface LeaveRepos {
       reviewedBy?: string,
       reviewRemarks?: string,
       expectedVersion?: number,
+    ): Promise<LeaveRequestWithDetails>;
+    /** RETURNED → PENDING owner resubmission: applies corrected fields,
+     *  clears the prior review columns, bumps version. */
+    resubmit(
+      companyId: string,
+      id: string,
+      data: {
+        startDate: Date;
+        endDate: Date;
+        totalDays: number;
+        reason?: string;
+        documentId?: string | null;
+      },
+      expectedVersion: number,
     ): Promise<LeaveRequestWithDetails>;
     findConflicting(
       companyId: string,
@@ -692,6 +742,50 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
             },
           }),
       ) as Promise<LeaveRequestWithDetails>,
+    resubmit: (
+      companyId: string,
+      id: string,
+      data: {
+        startDate: Date;
+        endDate: Date;
+        totalDays: number;
+        reason?: string;
+        documentId?: string | null;
+      },
+      expectedVersion: number,
+    ) =>
+      scopedUpdate(
+        'LEAVE_REQUEST',
+        { id, companyId },
+        {
+          status: 'PENDING',
+          startDate: data.startDate,
+          endDate: data.endDate,
+          totalDays: data.totalDays,
+          ...(data.reason !== undefined ? { reason: data.reason } : {}),
+          ...(data.documentId !== undefined ? { documentId: data.documentId } : {}),
+          reviewedBy: null,
+          reviewedAt: null,
+          reviewRemarks: null,
+        },
+        expectedVersion,
+        (args) => tx.leaveRequest.updateMany(args),
+        () =>
+          tx.leaveRequest.findFirst({
+            where: { id, companyId },
+            include: {
+              employee: {
+                select: {
+                  id: true,
+                  employeeCode: true,
+                  displayName: true,
+                  designation: true,
+                  principalId: true,
+                },
+              },
+            },
+          }),
+      ) as Promise<LeaveRequestWithDetails>,
     findConflicting: (
       companyId: string,
       employeeId: string,
@@ -837,9 +931,21 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
     },
   };
 
+  const departmentScopeSelect = {
+    id: true,
+    status: true,
+    siteId: true,
+    projectId: true,
+    baseHeadOfficeId: true,
+    site: { select: { projectId: true } },
+  } as const;
+
   const departments = {
     findById: (companyId: string, id: string) =>
-      tx.department.findFirst({ where: { id, companyId }, select: { id: true, status: true } }),
+      tx.department.findFirst({
+        where: { id, companyId },
+        select: departmentScopeSelect,
+      }),
   };
 
   const memberships = {
@@ -854,7 +960,11 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
                 startedAt: { lte: asOf },
                 OR: [{ endedAt: null }, { endedAt: { gt: asOf } }],
               },
-        select: { departmentId: true, isPrimary: true },
+        select: {
+          departmentId: true,
+          isPrimary: true,
+          department: { select: departmentScopeSelect },
+        },
       }),
     findCoveringByEmployee: (companyId: string, employeeId: string, start: Date, end: Date) =>
       tx.departmentMembership.findMany({
@@ -864,7 +974,33 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
           startedAt: { lte: start },
           OR: [{ endedAt: null }, { endedAt: { gt: end } }],
         },
-        select: { departmentId: true, isPrimary: true },
+        select: {
+          departmentId: true,
+          isPrimary: true,
+          department: { select: departmentScopeSelect },
+        },
+      }),
+    findByEmployeesInWindow: (
+      companyId: string,
+      employeeIds: string[],
+      minStart: Date,
+      maxEnd: Date,
+    ) =>
+      tx.departmentMembership.findMany({
+        where: {
+          companyId,
+          employeeId: { in: employeeIds },
+          startedAt: { lte: maxEnd },
+          OR: [{ endedAt: null }, { endedAt: { gt: minStart } }],
+        },
+        select: {
+          employeeId: true,
+          departmentId: true,
+          isPrimary: true,
+          startedAt: true,
+          endedAt: true,
+          department: { select: departmentScopeSelect },
+        },
       }),
   };
 

@@ -18,6 +18,7 @@ interface PolicyRow {
   memberSuspend: boolean;
   memberExit: boolean;
   scheduleManage: boolean;
+  leavePolicyManage: boolean;
   version: number;
 }
 
@@ -89,6 +90,7 @@ describe('DelegationService', () => {
       memberSuspend: false,
       memberExit: false,
       scheduleManage: false,
+      leavePolicyManage: false,
       version: 0,
     });
     expect(await service.isEnabled(companyId, 'siteCreate')).toBe(false);
@@ -109,6 +111,7 @@ describe('DelegationService', () => {
       memberSuspend: false,
       memberExit: false,
       scheduleManage: false,
+      leavePolicyManage: false,
       version: 0,
     });
     expect(auditRows).toHaveLength(1);
@@ -133,6 +136,7 @@ describe('DelegationService', () => {
       memberSuspend: false,
       memberExit: false,
       scheduleManage: false,
+      leavePolicyManage: false,
       version: 1,
     });
     expect(await service.isEnabled(companyId, 'deptManage')).toBe(true);

@@ -1656,16 +1656,20 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     leaveRoutes(
       services.leaveService ??
-      new LeaveService(
-        new PrismaLeaveUnitOfWork(app.prisma),
-        {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-          assertAnyScopePermission: (pid: string, key: string, cid: string) =>
-            accessControl.assertAnyScopePermission(pid, key, cid),
-        },
-        roleDispatcher,
-      ),
+        new LeaveService(
+          new PrismaLeaveUnitOfWork(app.prisma),
+          {
+            assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.assertPermission(pid, key, target),
+            hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+              accessControl.hasPermission(pid, key, target),
+            assertAnyScopePermission: (pid: string, key: string, cid: string) =>
+              accessControl.assertAnyScopePermission(pid, key, cid),
+          },
+          roleDispatcher,
+          (companyId: string, flag: 'leavePolicyManage') =>
+            delegationService.isEnabled(companyId, flag),
+        ),
     ),
     { prefix: '/api/v1' },
   );

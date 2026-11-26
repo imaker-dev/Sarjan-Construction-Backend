@@ -2413,6 +2413,9 @@ enum LeaveRequestStatus {
   PENDING
   APPROVED
   REJECTED
+  // Sent back to the requester for correction — resubmittable, pending
+  // balance released on return and re-reserved on resubmit.
+  RETURNED
   CANCELLED
 }
 
@@ -3096,6 +3099,11 @@ model CompanyDelegationPolicy {
   // editing is a separate authority from attendance-record management and
   // stays company/Finance unless this flag is on.
   scheduleManage  Boolean  @default(false)
+  // Scoped holders may author DEPARTMENT- and EMPLOYEE-scoped leave policies
+  // whose resolved target sits inside their project/site chain (entitlements
+  // for site-department employees and site labour). COMPANY-scope policies,
+  // leave types, allocations, and balances stay company/Finance only.
+  leavePolicyManage Boolean  @default(false)
   version         Int      @default(0)
   createdAt       DateTime @default(now()) @db.Timestamptz
   updatedAt       DateTime @updatedAt @db.Timestamptz

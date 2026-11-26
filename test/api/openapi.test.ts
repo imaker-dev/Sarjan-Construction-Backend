@@ -390,6 +390,7 @@ describe('openapi document', () => {
       'GET /api/v1/leave/requests',
       'GET /api/v1/leave/requests/{id}',
       'POST /api/v1/leave/requests/{id}/review',
+      'POST /api/v1/leave/requests/{id}/resubmit',
       'POST /api/v1/leave/requests/{id}/cancel',
       'POST /api/v1/schedules',
       'GET /api/v1/schedules',

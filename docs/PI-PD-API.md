@@ -84,14 +84,14 @@ flowchart TD
 
 ### Why each piece exists
 
-| Piece | Why |
-|---|---|
-| `x-company-id` + `tenantCompanyGuard` | Multi-tenant DB — every query/mutation must be pinned to one company; the header selects the tenant, the guard proves the caller belongs to it. |
-| `RoleAssignment` (scope-bound) | A PI grant is `PROJECT` scoped — it never bleeds into a sibling project or the whole company. `EMPLOYEE@COMPANY` is a *separate* grant that unlocks self-service; that's why a PI holds **two** roles. |
-| `CompanyDelegationPolicy` switches | Scoped holders get write power **only** where the company opts in (`siteCreate`, `deptManage`, `placement`, `employeeOnboard`, `memberSuspend`, `memberExit`). Fail-closed: switch off → `403 DELEGATION_DISABLED`. |
-| `DepartmentMembership` | Attendance/leave/team access resolves through *effective* memberships — suspend/exit work by ending these rows, not by touching the global login. |
-| `expectedVersion` | Optimistic concurrency — two admins editing the same record can't silently overwrite each other (`409 VERSION_CONFLICT`). |
-| `AuditLog` + `Outbox` | Every mutation is appended once (immutable evidence) and notifications are delivered transactionally — the scoped activity feed is a redacted view over AuditLog. |
+| Piece                                 | Why                                                                                                                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `x-company-id` + `tenantCompanyGuard` | Multi-tenant DB — every query/mutation must be pinned to one company; the header selects the tenant, the guard proves the caller belongs to it.                                                                     |
+| `RoleAssignment` (scope-bound)        | A PI grant is `PROJECT` scoped — it never bleeds into a sibling project or the whole company. `EMPLOYEE@COMPANY` is a _separate_ grant that unlocks self-service; that's why a PI holds **two** roles.              |
+| `CompanyDelegationPolicy` switches    | Scoped holders get write power **only** where the company opts in (`siteCreate`, `deptManage`, `placement`, `employeeOnboard`, `memberSuspend`, `memberExit`). Fail-closed: switch off → `403 DELEGATION_DISABLED`. |
+| `DepartmentMembership`                | Attendance/leave/team access resolves through _effective_ memberships — suspend/exit work by ending these rows, not by touching the global login.                                                                   |
+| `expectedVersion`                     | Optimistic concurrency — two admins editing the same record can't silently overwrite each other (`409 VERSION_CONFLICT`).                                                                                           |
+| `AuditLog` + `Outbox`                 | Every mutation is appended once (immutable evidence) and notifications are delivered transactionally — the scoped activity feed is a redacted view over AuditLog.                                                   |
 
 ---
 
@@ -312,20 +312,36 @@ POST /api/v1/employees/$PI_EMP/memberships       # EMPLOYEE_MANAGE@COMPANY
 GET   /api/v1/org/company/delegations            # ORG_COMPANY_READ@COMPANY
 → 200 { "siteCreate": false, "siteUpdate": false, "deptManage": false,
         "placement": false, "employeeOnboard": false,
-        "memberSuspend": false, "memberExit": false, "version": 0 }
+        "memberSuspend": false, "memberExit": false,
+        "scheduleManage": false, "leavePolicyManage": false, "version": 0 }
 
 PATCH /api/v1/org/company/delegations            # ORG_COMPANY_UPDATE@COMPANY
 { "expectedVersion": 0,                          # ← from GET, optimistic lock
   "siteCreate": true, "siteUpdate": true, "deptManage": true,
   "placement": true, "employeeOnboard": true,
-  "memberSuspend": true, "memberExit": true }
+  "memberSuspend": true, "memberExit": true,
+  "leavePolicyManage": true }
 ```
 
 ```json
 → 200 { "siteCreate": true, "siteUpdate": true, "deptManage": true,
         "placement": true, "employeeOnboard": true,
-        "memberSuspend": true, "memberExit": true, "version": 1 }
+        "memberSuspend": true, "memberExit": true,
+        "scheduleManage": false, "leavePolicyManage": true, "version": 1 }
 ```
+
+> `scheduleManage` is the explicit opt-in that lets a scoped PI edit **their
+> own site's** work-schedule revisions (shift times, break windows). Leave
+> it `false` to keep all schedule authoring with Finance/Admin — PI
+> attendance record/correction authority does **not** depend on it.
+>
+> `leavePolicyManage` is the explicit opt-in that lets a scoped PI/PM
+> author **DEPARTMENT-scope leave policies whose department resolves to a
+> SITE/PROJECT inside their grant** — e.g. giving site employees 2 CL/month
+> while HO gets 4. It never unlocks COMPANY-scope policies, EMPLOYEE-scope
+> overrides, HO-department policies, leave types, balance allocations, or
+> holiday calendars — those stay `LEAVE_MANAGE`@COMPANY (Finance/Admin).
+> Off → the same calls fail `403 DELEGATION_DISABLED`.
 
 Unknown keys → `422 UNKNOWN_FIELD`. All flags optional; omit what you don't want
 the PI/PD doing.
@@ -449,7 +465,53 @@ POST /api/v1/leave/requests/lr-…/cancel          # own request, LEAVE_APPLY
 
 > PI/PD own leave goes to **company-scope approvers** — they can hold
 > `LEAVE_APPROVE`@PROJECT but never approve their own request
-> (`SelfApprovalNotAllowed`).
+> (`SelfApprovalNotAllowed`), and the service additionally requires
+> `LEAVE_APPROVE`@COMPANY for any requester who is a scoped approver —
+> so a sibling PI can't decide it either.
+
+### B8 — Site-workforce leave review (PI @PROJECT)
+
+PI reviews leave for **site-department employees and site labour** at their
+assigned sites. Access resolves from the requester's **effective-dated
+department membership at the request `startDate`** — every engagement type
+(`DIRECT_EMPLOYEE`, `CONTRACTOR_WORKER`, `DAILY_WAGE`, `APPRENTICE`,
+`CONSULTANT`, `OTHER`) is covered identically; engagement type and
+department name are never consulted.
+
+```bash
+# requests pending at an assigned site
+GET /api/v1/leave/requests?siteId=$SITE&status=PENDING
+#   → approver-scope assert at SITE; rows kept only when the requester's
+#     dept-at-start resolves inside the site. Sibling site id → 403.
+
+# balance needed for the decision
+GET /api/v1/leave/balances/$EMP?leaveType=CASUAL&year=2026
+
+# approve / reject / return (REJECT & RETURN require remarks)
+POST /api/v1/leave/requests/lr-…/review        # LEAVE_APPROVE@SITE target
+{ "action": "APPROVE", "expectedVersion": 1 }
+{ "action": "RETURN",  "remarks": "Fix end date", "expectedVersion": 1 }
+→ 200 { "status": "RETURNED" }   # owner resubmits → PENDING, fresh review
+
+POST /api/v1/leave/requests/lr-…/resubmit    # owner only, from RETURNED
+{ "startDate": "2026-02-12", "endDate": "2026-02-12", "expectedVersion": 2 }
+```
+
+Approved days flow into the existing site attendance summaries
+(`leaveDays` / `totalApprovedLeaves`) — no extra call needed.
+
+Rules:
+
+- **No PI configuration authority** — leave types, policies, versions,
+  allocations, and balances administration stay `LEAVE_MANAGE`@COMPANY
+  (Finance/Administration). PI holds no key that looks granted but can't
+  work.
+- **Site schedule edits** are a separate opt-in — `scheduleManage`
+  delegation flag (see A12); attendance/leave review authority does not
+  depend on it.
+- Notifications for site requests go to scoped roles at the resolved
+  SITE/PROJECT plus company roles for oversight — bodies carry id/type/
+  dates only, never the free-text reason.
 
 ---
 
@@ -471,7 +533,7 @@ GET /api/v1/departments/$DEPT
         "headEmployeeId","status","version" }
 ```
 
-### C2 — Delegated site create/update *(PI only — `siteCreate`/`siteUpdate`)*
+### C2 — Delegated site create/update _(PI only — `siteCreate`/`siteUpdate`)_
 
 ```bash
 POST /api/v1/org/sites                            # ORG_SITE_CREATE@PROJECT(body.projectId)
@@ -488,7 +550,7 @@ PATCH /api/v1/org/sites/$SITE2                    # ORG_SITE_UPDATE@SITE + siteU
 
 PD gets `403` here — `ORG_SITE_CREATE`/`ORG_SITE_UPDATE` are not on the PD template.
 
-### C3 — Delegated department writes *(PI only — `deptManage`)*
+### C3 — Delegated department writes _(PI only — `deptManage`)_
 
 ```bash
 POST /api/v1/departments                          # DEPARTMENT_CONFIGURE@declared scope
@@ -660,16 +722,16 @@ redacted — only structured fields survive.
 
 ## PHASE C.5 — Operations coverage (the capability layer)
 
-Separate from *permission keys* (which gate routes), **operations** are the
+Separate from _permission keys_ (which gate routes), **operations** are the
 business-work catalogue (`OperationCatalogueEntry`, 300+ keys) — they describe
-*what work types* an employee can perform. Three sources combine into the
+_what work types_ an employee can perform. Three sources combine into the
 effective set resolved by `GET /auth/me` and `GET /employees/:id/operations`:
 
-| Source | How it lands |
-|---|---|
-| `DEPARTMENT` | Ops **enabled** on an ACTIVE department flow to every open member. |
-| `DIRECT` | Per-employee grant (`POST /employees/:id/operations`) — must be backed by an enabled member department. INACTIVE/REVOKED rows *subtract* coverage. |
-| `ROLE` | PD/PI `@PROJECT` assignments cover every `leadershipInheritable`, non-`sensitive` op enabled on departments under their project (incl. child sites). Derived live — grant = gain, revoke = loss, no rows written. |
+| Source       | How it lands                                                                                                                                                                                                      |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEPARTMENT` | Ops **enabled** on an ACTIVE department flow to every open member.                                                                                                                                                |
+| `DIRECT`     | Per-employee grant (`POST /employees/:id/operations`) — must be backed by an enabled member department. INACTIVE/REVOKED rows _subtract_ coverage.                                                                |
+| `ROLE`       | PD/PI `@PROJECT` assignments cover every `leadershipInheritable`, non-`sensitive` op enabled on departments under their project (incl. child sites). Derived live — grant = gain, revoke = loss, no rows written. |
 
 ### Auto-enable on department create
 
@@ -720,18 +782,19 @@ Rules that bite:
 
 ## PHASE D — PD vs PI (what differs)
 
-| Capability | PI | PD |
-|---|---|---|
-| All scoped reads (project/site/dept/team/members/documents/feed) | ✓ | ✓ |
-| Contact fields (`EMPLOYEE_CONTACT_READ`) | ✓ | ✓ |
-| `siteCreate`/`siteUpdate` (`ORG_SITE_*`) | ✓ (switch) | ✗ key not on template |
-| `deptManage` (`DEPARTMENT_CONFIGURE`) | ✓ (switch) | ✗ key not on template |
-| `placement` (`EMPLOYEE_MEMBER_MANAGE`) | ✓ (switch) | ✓ (switch) |
-| `employeeOnboard` | ✓ (switch) | ✓ (switch) |
-| `memberSuspend`/`memberExit` lifecycle | ✓ (switch) | ✓ (switch) |
-| `ATTENDANCE_RECORD`/`ATTENDANCE_MANAGE` | ✓ keys exist — scoped routes pending | ✗ (has `ATTENDANCE_READ` only) |
-| `LEAVE_APPLY` on template | ✓ | ✗ (own leave needs `EMPLOYEE`@COMPANY or similar) |
-| `COMPLIANCE_READ` | ✗ | ✓ |
+| Capability                                                       | PI                                                                | PD                                                |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------- |
+| All scoped reads (project/site/dept/team/members/documents/feed) | ✓                                                                 | ✓                                                 |
+| Contact fields (`EMPLOYEE_CONTACT_READ`)                         | ✓                                                                 | ✓                                                 |
+| `siteCreate`/`siteUpdate` (`ORG_SITE_*`)                         | ✓ (switch)                                                        | ✗ key not on template                             |
+| `deptManage` (`DEPARTMENT_CONFIGURE`)                            | ✓ (switch)                                                        | ✗ key not on template                             |
+| `placement` (`EMPLOYEE_MEMBER_MANAGE`)                           | ✓ (switch)                                                        | ✓ (switch)                                        |
+| `employeeOnboard`                                                | ✓ (switch)                                                        | ✓ (switch)                                        |
+| `memberSuspend`/`memberExit` lifecycle                           | ✓ (switch)                                                        | ✓ (switch)                                        |
+| `ATTENDANCE_RECORD`/`ATTENDANCE_MANAGE`                          | ✓ scoped routes live — site punches/corrections at assigned sites | ✗ (has `ATTENDANCE_READ` only)                    |
+| `LEAVE_APPLY` on template                                        | ✓                                                                 | ✗ (own leave needs `EMPLOYEE`@COMPANY or similar) |
+| `LEAVE_APPROVE` (site-workforce requests)                        | ✓ review/return at assigned sites                                 | ✓ review/return at assigned sites                 |
+| `COMPLIANCE_READ`                                                | ✗                                                                 | ✓                                                 |
 
 Grant: same `POST /employees/:id/assignments` call, `"roleKey": "PROJECT_DIRECTOR"`.
 
@@ -743,25 +806,24 @@ Grant: same `POST /employees/:id/assignments` call, `"roleKey": "PROJECT_DIRECTO
 { "statusCode": 403, "code": "DELEGATION_DISABLED", "message": "…" }
 ```
 
-| Code | When |
-|---|---|
-| `ACCESS_DENIED` (403) | Right key, wrong scope — or key missing entirely |
-| `DELEGATION_DISABLED` (403) | Scoped holder + the company switch is off |
-| `VERSION_CONFLICT` (409) | Stale `expectedVersion` |
-| `UNKNOWN_FIELD` (422) | Extra key in a security-sensitive body |
-| `PRIMARY_CONFLICT` / `ACTIVE_MEMBERSHIP_EXISTS` (409) | Membership invariants |
-| `WORKFORCE_NOT_ACTIVE` / `NOTHING_TO_REINSTATE` / `ALREADY_EXITED` (409) | Lifecycle preconditions |
-| `EMPLOYEE_NOT_LINKED` (409) | Grant on a profile-only employee (no principal) |
-| `EMPLOYEE_NOT_ACTIVE` (409) | Lifecycle on inactive employee |
-| `CLAIM_INVALID` (401) | Bad/expired/wrong-purpose claim token |
-| `ACCOUNT_ALREADY_CLAIMED` (409) | Invite resend on an activated account |
-| `GEOFENCE_BREACH` (422) | Punch outside site radius when policy `geofenceStrict` — otherwise session flagged, not rejected |
-| `COMPANY_REQUIRED` (401) | Missing `x-company-id` |
-| `429` | Rate limit — login/claim endpoints |
+| Code                                                                     | When                                                                                             |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `ACCESS_DENIED` (403)                                                    | Right key, wrong scope — or key missing entirely                                                 |
+| `DELEGATION_DISABLED` (403)                                              | Scoped holder + the company switch is off                                                        |
+| `VERSION_CONFLICT` (409)                                                 | Stale `expectedVersion`                                                                          |
+| `UNKNOWN_FIELD` (422)                                                    | Extra key in a security-sensitive body                                                           |
+| `PRIMARY_CONFLICT` / `ACTIVE_MEMBERSHIP_EXISTS` (409)                    | Membership invariants                                                                            |
+| `WORKFORCE_NOT_ACTIVE` / `NOTHING_TO_REINSTATE` / `ALREADY_EXITED` (409) | Lifecycle preconditions                                                                          |
+| `EMPLOYEE_NOT_LINKED` (409)                                              | Grant on a profile-only employee (no principal)                                                  |
+| `EMPLOYEE_NOT_ACTIVE` (409)                                              | Lifecycle on inactive employee                                                                   |
+| `CLAIM_INVALID` (401)                                                    | Bad/expired/wrong-purpose claim token                                                            |
+| `ACCOUNT_ALREADY_CLAIMED` (409)                                          | Invite resend on an activated account                                                            |
+| `GEOFENCE_BREACH` (422)                                                  | Punch outside site radius when policy `geofenceStrict` — otherwise session flagged, not rejected |
+| `COMPANY_REQUIRED` (401)                                                 | Missing `x-company-id`                                                                           |
+| `429`                                                                    | Rate limit — login/claim endpoints                                                               |
 
 ## Still not possible (designed, not bugs)
 
 - Scoped worker **invite** — `/employees/:id/invite` is `EMPLOYEE_INVITE`@COMPANY only; PI/PD-scoped invite (`memberInvite` flag) is the pending Slice C milestone.
-- Scoped attendance **routes** — `/attendance/*` gates at company scope today; the PI `ATTENDANCE_*` keys exist for the pending scoped-attendance slice.
-- `/leave/requests/:id/review` for own project team — `LEAVE_APPROVE`@COMPANY route gate; scoped leave approval is pending.
+- **Leave/attendance configuration** — leave types, EMPLOYEE/COMPANY-scope policies, allocations, holiday calendars, and attendance policies are `LEAVE_MANAGE`/`ATTENDANCE_MANAGE`@COMPANY (Finance/Administration). PI site-schedule edits exist only through the `scheduleManage` delegation flag; PI site-department leave-policy authoring exists only through the `leavePolicyManage` flag.
 - `/finance/*`, `/audit-logs` (company feed), `/platform/*`, company/HO/project lifecycle — admin-only by design.
