@@ -95,6 +95,11 @@ export const ATTENDANCE_MANAGE = 'ATTENDANCE_MANAGE';
 
 interface Authorizer {
   assertPermission(principalId: string, permissionKey: string, target: ScopeTarget): Promise<void>;
+  assertAnyScopePermission?(
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<void>;
 }
 
 /** Structural view of a resolved work-schedule revision — the intraday fields
@@ -330,16 +335,46 @@ export class AttendanceService {
     });
   }
 
+  private async assertAnyScope(
+    actorId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<void> {
+    if (typeof this.authorizer.assertAnyScopePermission === 'function') {
+      await this.authorizer.assertAnyScopePermission(actorId, permissionKey, companyId);
+    } else {
+      await this.authorizer.assertPermission(actorId, permissionKey, companyTarget(companyId));
+    }
+  }
+
+  /**
+   * Supervisor or privileged-source punches/breaks require ATTENDANCE_MANAGE at
+   * the exact location target. Self-service actions check ATTENDANCE_RECORD at
+   * any active scope (location eligibility is enforced via department membership).
+   */
+  private async assertPunchOrBreakPermission(
+    actorId: string,
+    companyId: string,
+    isPrivileged: boolean,
+    target: ScopeTarget,
+  ): Promise<void> {
+    if (isPrivileged) {
+      await this.authorizer.assertPermission(actorId, ATTENDANCE_MANAGE, target);
+      return;
+    }
+    if (typeof this.authorizer.assertAnyScopePermission === 'function') {
+      await this.authorizer.assertAnyScopePermission(actorId, ATTENDANCE_RECORD, companyId);
+      return;
+    }
+    await this.authorizer.assertPermission(actorId, ATTENDANCE_RECORD, target);
+  }
+
   async getPolicy(
     actor: ActorContext,
     companyId: string,
     policyId: string,
   ): Promise<AttendancePolicy> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_READ,
-      companyTarget(companyId),
-    );
+    await this.assertAnyScope(actor.actorId, ATTENDANCE_READ, companyId);
     return this.uow.run(async (repos) => {
       const p = await repos.policies.findById(companyId, policyId);
       if (!p) throw new AttendanceEntityNotFoundError('AttendancePolicy', policyId);
@@ -352,11 +387,7 @@ export class AttendanceService {
     companyId: string,
     scope?: AttendancePolicyScope,
   ): Promise<AttendancePolicy[]> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_READ,
-      companyTarget(companyId),
-    );
+    await this.assertAnyScope(actor.actorId, ATTENDANCE_READ, companyId);
     return this.uow.run((repos) =>
       repos.policies.list(companyId, scope !== undefined ? { scope } : {}),
     );
@@ -367,11 +398,15 @@ export class AttendanceService {
     companyId: string,
     criteria: { employeeId?: string; siteId?: string },
   ): Promise<AttendancePolicy> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_READ,
-      companyTarget(companyId),
-    );
+    if (criteria.siteId) {
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        siteTarget(companyId, criteria.siteId),
+      );
+    } else {
+      await this.assertAnyScope(actor.actorId, ATTENDANCE_READ, companyId);
+    }
 
     return this.uow.run(async (repos) => {
       let projectId: string | undefined;
@@ -432,11 +467,12 @@ export class AttendanceService {
 
       // Assert permission: supervisor punch or privileged source requires ATTENDANCE_MANAGE
       const isPrivilegedSource = input.source !== undefined && input.source !== 'MOBILE_SELF';
-      if (supervisorId || isPrivilegedSource) {
-        await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_MANAGE, punchTarget);
-      } else {
-        await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_RECORD, punchTarget);
-      }
+      await this.assertPunchOrBreakPermission(
+        actor.actorId,
+        companyId,
+        Boolean(supervisorId) || isPrivilegedSource,
+        punchTarget,
+      );
 
       const emp = await repos.employees.findById(companyId, employeeId);
       if (emp?.status !== 'ACTIVE') {
@@ -451,11 +487,14 @@ export class AttendanceService {
         throw new AttendanceEntityNotFoundError('Site', input.siteId);
       }
       // Site punches require an active membership in a department scoped to
-      // THIS site — a project-only membership does not authorize punching at
-      // every child site, and suspension/exit removes eligibility instantly.
+      // THIS site or its parent project (e.g., Project Incharge / Director).
       if (site !== null) {
         const atSite = await repos.memberships.hasActiveAtSite(companyId, employeeId, site.id);
-        if (!atSite) {
+        const atProject =
+          !atSite && repos.memberships.hasActiveAtProject !== undefined
+            ? await repos.memberships.hasActiveAtProject(companyId, employeeId, site.projectId)
+            : false;
+        if (!atSite && !atProject) {
           throw new PunchNotAllowedError(
             'Employee has no active membership in a department scoped to this site',
           );
@@ -737,11 +776,12 @@ export class AttendanceService {
       }
 
       const outTarget = sessionLocationTarget(companyId, session);
-      if (supervisorId) {
-        await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_MANAGE, outTarget);
-      } else {
-        await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_RECORD, outTarget);
-      }
+      await this.assertPunchOrBreakPermission(
+        actor.actorId,
+        companyId,
+        Boolean(supervisorId),
+        outTarget,
+      );
 
       if (postAutoClose) {
         // Keep the system-generated close + punchOutAt; the real out instant
@@ -935,19 +975,12 @@ export class AttendanceService {
       }
 
       const isSupervisor = callerEmp?.id !== session.employeeId;
-      if (isSupervisor) {
-        await this.authorizer.assertPermission(
-          actor.actorId,
-          ATTENDANCE_MANAGE,
-          sessionLocationTarget(companyId, session),
-        );
-      } else {
-        await this.authorizer.assertPermission(
-          actor.actorId,
-          ATTENDANCE_RECORD,
-          sessionLocationTarget(companyId, session),
-        );
-      }
+      await this.assertPunchOrBreakPermission(
+        actor.actorId,
+        companyId,
+        isSupervisor,
+        sessionLocationTarget(companyId, session),
+      );
 
       // Pinned break window: DYNAMIC breaks may only start inside the
       // configured local window (FIXED_WINDOW auto-deducts, so punches are
@@ -1034,19 +1067,12 @@ export class AttendanceService {
 
       const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
       const isSupervisor = callerEmp?.id !== session.employeeId;
-      if (isSupervisor) {
-        await this.authorizer.assertPermission(
-          actor.actorId,
-          ATTENDANCE_MANAGE,
-          sessionLocationTarget(companyId, session),
-        );
-      } else {
-        await this.authorizer.assertPermission(
-          actor.actorId,
-          ATTENDANCE_RECORD,
-          sessionLocationTarget(companyId, session),
-        );
-      }
+      await this.assertPunchOrBreakPermission(
+        actor.actorId,
+        companyId,
+        isSupervisor,
+        sessionLocationTarget(companyId, session),
+      );
 
       const now = new Date();
       const durationMins = Math.max(
@@ -1410,12 +1436,33 @@ export class AttendanceService {
     companyId: string,
     filter: ListSessionsFilter,
   ): Promise<AttendanceSessionWithDetails[]> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_READ,
-      companyTarget(companyId),
-    );
-    return this.uow.run((repos) => repos.sessions.list(companyId, filter));
+    return this.uow.run(async (repos) => {
+      if (filter.siteId) {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_READ,
+          siteTarget(companyId, filter.siteId),
+        );
+      } else if (filter.employeeId) {
+        const callerEmp = await repos.employees.findByPrincipal(companyId, actor.actorId);
+        if (callerEmp?.id === filter.employeeId) {
+          await this.assertAnyScope(actor.actorId, ATTENDANCE_READ, companyId);
+        } else {
+          await this.authorizer.assertPermission(
+            actor.actorId,
+            ATTENDANCE_READ,
+            companyTarget(companyId),
+          );
+        }
+      } else {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_READ,
+          companyTarget(companyId),
+        );
+      }
+      return repos.sessions.list(companyId, filter);
+    });
   }
 
   async getDailySummary(actor: ActorContext, companyId: string, filter: DailySummaryFilter) {
@@ -2281,15 +2328,14 @@ export class AttendanceService {
   }
 
   async getTvtSession(actor: ActorContext, companyId: string, id: string) {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      ATTENDANCE_READ,
-      companyTarget(companyId),
-    );
-
     return this.uow.run(async (repos) => {
       const session = await repos.tvt.findById(companyId, id);
       if (!session) throw new AttendanceEntityNotFoundError('SafetyTvtSession', id);
+      await this.authorizer.assertPermission(
+        actor.actorId,
+        ATTENDANCE_READ,
+        siteTarget(companyId, session.siteId),
+      );
       return session;
     });
   }

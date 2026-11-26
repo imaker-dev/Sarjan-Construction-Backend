@@ -1,8 +1,8 @@
--- Site Wallet Slice 2 — runtime API models: account heads, cash vouchers,
+-- Site Wallet Slice 2 - runtime API models: account heads, cash vouchers,
 -- reversal requests, ledger-entry document links, approval decision payload,
 -- and the INR-only money contract.
 --
--- Additive only — the already-applied 20261207000000_site_wallet migration is
+-- Additive only - the already-applied 20261207000000_site_wallet migration is
 -- untouched. New CHECK constraints validate existing rows; if any non-INR
 -- wallet rows exist this migration FAILS rather than rewriting them.
 
@@ -10,7 +10,7 @@
 -- part of decision history and the idempotency fingerprint.
 ALTER TABLE "ApprovalDecision" ADD COLUMN "decisionPayload" JSONB;
 
--- Editable draft fields on the funding envelope — snapshotted into an
+-- Editable draft fields on the funding envelope - snapshotted into an
 -- immutable attempt row at each submit.
 ALTER TABLE "WalletFundingRequest" ADD COLUMN "draftAmount" DECIMAL(18,2);
 ALTER TABLE "WalletFundingRequest" ADD COLUMN "draftPurpose" VARCHAR(500);
@@ -23,7 +23,7 @@ CREATE TYPE "WalletAccountHeadStatus" AS ENUM ('ACTIVE', 'INACTIVE');
 CREATE TYPE "WalletReversalRequestStatus" AS ENUM ('REQUESTED', 'EXECUTED', 'REJECTED');
 
 -- ---------------------------------------------------------------------------
--- WalletAccountHead — company-managed account catalogue for voucher lines.
+-- WalletAccountHead - company-managed account catalogue for voucher lines.
 -- ---------------------------------------------------------------------------
 CREATE TABLE "WalletAccountHead" (
     "id" UUID NOT NULL,
@@ -51,7 +51,7 @@ ALTER TABLE "WalletAccountHead" ADD CONSTRAINT "WalletAccountHead_name_nonempty"
   CHECK (btrim("name") <> '');
 
 -- ---------------------------------------------------------------------------
--- WalletVoucherCounter — gapless company-scoped voucher numbering.
+-- WalletVoucherCounter - gapless company-scoped voucher numbering.
 -- ---------------------------------------------------------------------------
 CREATE TABLE "WalletVoucherCounter" (
     "companyId" UUID NOT NULL,
@@ -64,7 +64,7 @@ ALTER TABLE "WalletVoucherCounter" ADD CONSTRAINT "WalletVoucherCounter_companyI
   FOREIGN KEY ("companyId") REFERENCES "Company"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- ---------------------------------------------------------------------------
--- WalletCashVoucher — printable evidence of an outgoing wallet expense.
+-- WalletCashVoucher - printable evidence of an outgoing wallet expense.
 -- ---------------------------------------------------------------------------
 CREATE TABLE "WalletCashVoucher" (
     "id" UUID NOT NULL,
@@ -115,7 +115,7 @@ ALTER TABLE "WalletCashVoucher" ADD CONSTRAINT "WalletCashVoucher_signedDocument
   FOREIGN KEY ("signedDocumentId", "companyId") REFERENCES "Document"("id", "companyId") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- ---------------------------------------------------------------------------
--- WalletCashVoucherLine — detail rows with account code/head snapshots.
+-- WalletCashVoucherLine - detail rows with account code/head snapshots.
 -- ---------------------------------------------------------------------------
 CREATE TABLE "WalletCashVoucherLine" (
     "id" UUID NOT NULL,
@@ -144,7 +144,7 @@ ALTER TABLE "WalletCashVoucherLine" ADD CONSTRAINT "WalletCashVoucherLine_amount
   CHECK ("amount" > 0);
 
 -- ---------------------------------------------------------------------------
--- WalletReversalRequest — PI requests, Finance executes/rejects.
+-- WalletReversalRequest - PI requests, Finance executes/rejects.
 -- ---------------------------------------------------------------------------
 CREATE TABLE "WalletReversalRequest" (
     "id" UUID NOT NULL,
@@ -199,7 +199,7 @@ ALTER TABLE "WalletReversalRequest" ADD CONSTRAINT "WalletReversalRequest_reason
   CHECK (btrim("reason") <> '');
 
 -- ---------------------------------------------------------------------------
--- DocumentLink — two new targets: WALLET_LEDGER_ENTRY and WALLET_VOUCHER.
+-- DocumentLink - two new targets: WALLET_LEDGER_ENTRY and WALLET_VOUCHER.
 -- The exactly-one-target CHECK is expanded, never weakened.
 -- ---------------------------------------------------------------------------
 ALTER TABLE "DocumentLink" ADD COLUMN "walletLedgerEntryId" UUID;
@@ -231,7 +231,7 @@ CREATE UNIQUE INDEX "DocumentLink_one_active_wallet_voucher_link"
   WHERE "walletVoucherId" IS NOT NULL AND "unlinkedAt" IS NULL;
 
 -- ---------------------------------------------------------------------------
--- INR-only money contract. These CHECKs validate existing rows — a non-INR
+-- INR-only money contract. These CHECKs validate existing rows - a non-INR
 -- row anywhere fails the migration rather than being silently rewritten.
 -- ---------------------------------------------------------------------------
 ALTER TABLE "SiteWallet" ADD CONSTRAINT "SiteWallet_currency_inr"
@@ -247,7 +247,7 @@ ALTER TABLE "WalletLedgerEntry" ADD CONSTRAINT "WalletLedgerEntry_currency_inr"
 ALTER TABLE "WalletCashVoucher" ADD CONSTRAINT "WalletCashVoucher_currency_inr"
   CHECK ("currency" = 'INR');
 
--- A voucher belongs to the expense's own wallet and site — the triple must
+-- A voucher belongs to the expense's own wallet and site - the triple must
 -- agree, exactly like transfers' three-tuple binding.
 CREATE OR REPLACE FUNCTION wallet_voucher_consistency() RETURNS trigger AS $$
 DECLARE
@@ -289,7 +289,7 @@ CREATE TRIGGER "WalletCashVoucher_immutable_cols"
   BEFORE UPDATE ON "WalletCashVoucher"
   FOR EACH ROW EXECUTE FUNCTION wallet_voucher_immutable_cols();
 
--- Voucher lines are immutable — the printed form is a snapshot.
+-- Voucher lines are immutable - the printed form is a snapshot.
 CREATE OR REPLACE FUNCTION wallet_voucher_line_immutable() RETURNS trigger AS $$
 BEGIN
   RAISE EXCEPTION 'WalletCashVoucherLine is append-only: % is not allowed', TG_OP;
@@ -342,7 +342,7 @@ BEGIN
   IF (NEW."balance" IS DISTINCT FROM OLD."balance"
       OR NEW."currency" IS DISTINCT FROM OLD."currency")
      AND pg_trigger_depth() <= 1 THEN
-    RAISE EXCEPTION 'SiteWallet.balance and .currency are ledger-derived — post a WalletLedgerEntry instead';
+    RAISE EXCEPTION 'SiteWallet.balance and .currency are ledger-derived - post a WalletLedgerEntry instead';
   END IF;
   RETURN NEW;
 END;

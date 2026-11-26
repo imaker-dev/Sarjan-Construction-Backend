@@ -1358,15 +1358,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
             ...(isPublic
               ? { 429: err('Rate limited') }
               : {
-                  401: err('Missing/invalid Bearer token'),
-                  403: err('Permission denied or platform/tenant boundary violation'),
-                }),
+                401: err('Missing/invalid Bearer token'),
+                403: err('Permission denied or platform/tenant boundary violation'),
+              }),
             ...(hasPathParam ? { 404: err('Entity not found in company scope') } : {}),
             ...(isWrite
               ? {
-                  409: err('Conflict (duplicate or stale version)'),
-                  422: err('Domain validation error'),
-                }
+                409: err('Conflict (duplicate or stale version)'),
+                422: err('Domain validation error'),
+              }
               : {}),
             500: err('Unexpected server error'),
           };
@@ -1516,16 +1516,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     organizationRoutes(
       services.organizationService ??
-        new OrganizationService(new PrismaOrgUnitOfWork(app.prisma), {
-          hasPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.hasPermission(pid, key, target),
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-          delegationEnabled: (companyId: string, flag) =>
-            delegationService.isEnabled(companyId, flag),
-          assertInitialBudgetAuthority: (actor, companyId) =>
-            financeService.assertInitialBudgetAuthority(actor, companyId),
-        }),
+      new OrganizationService(new PrismaOrgUnitOfWork(app.prisma), {
+        hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.hasPermission(pid, key, target),
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+        delegationEnabled: (companyId: string, flag) =>
+          delegationService.isEnabled(companyId, flag),
+        assertInitialBudgetAuthority: (actor, companyId) =>
+          financeService.assertInitialBudgetAuthority(actor, companyId),
+      }),
       { documentService },
     ),
     {
@@ -1535,14 +1535,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     departmentRoutes(
       services.departmentService ??
-        new DepartmentService(new PrismaDepartmentUnitOfWork(app.prisma), {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-          hasPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.hasPermission(pid, key, target),
-          delegationEnabled: (companyId: string, flag) =>
-            delegationService.isEnabled(companyId, flag),
-        }),
+      new DepartmentService(new PrismaDepartmentUnitOfWork(app.prisma), {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+        hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.hasPermission(pid, key, target),
+        delegationEnabled: (companyId: string, flag) =>
+          delegationService.isEnabled(companyId, flag),
+      }),
     ),
     { prefix: '/api/v1' },
   );
@@ -1561,29 +1561,29 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     employeeRoutes(
       services.employeeService ??
-        new EmployeeService(
-          new PrismaEmployeeUnitOfWork(app.prisma),
-          {
-            assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-              accessControl.assertPermission(pid, key, target),
-            hasPermission: (pid: string, key: string, target: ScopeTarget) =>
-              accessControl.hasPermission(pid, key, target),
-            delegationEnabled: (companyId: string, flag) =>
-              delegationService.isEnabled(companyId, flag),
-          },
-          userProfileCache,
-        ),
+      new EmployeeService(
+        new PrismaEmployeeUnitOfWork(app.prisma),
+        {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+          hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.hasPermission(pid, key, target),
+          delegationEnabled: (companyId: string, flag) =>
+            delegationService.isEnabled(companyId, flag),
+        },
+        userProfileCache,
+      ),
       services.employeeAccessService ??
-        new EmployeeAccessService(
-          app.prisma,
-          userProfileCache,
-          mailService,
-          app.config.APP_BASE_URL,
-          app.config.CLAIM_URL_ORIGINS.split(',')
-            .map((o) => o.trim())
-            .filter((o) => o !== ''),
-          nodeEnv === 'production',
-        ),
+      new EmployeeAccessService(
+        app.prisma,
+        userProfileCache,
+        mailService,
+        app.config.APP_BASE_URL,
+        app.config.CLAIM_URL_ORIGINS.split(',')
+          .map((o) => o.trim())
+          .filter((o) => o !== ''),
+        nodeEnv === 'production',
+      ),
       employeeDocumentService,
     ),
     { prefix: '/api/v1' },
@@ -1596,10 +1596,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     formRoutes(
       services.formService ??
-        new FormService(new PrismaFormUnitOfWork(app.prisma), {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-        }),
+      new FormService(new PrismaFormUnitOfWork(app.prisma), {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+      }),
     ),
     { prefix: '/api/v1' },
   );
@@ -1625,6 +1625,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       {
         assertPermission: (pid: string, key: string, target: ScopeTarget) =>
           accessControl.assertPermission(pid, key, target),
+        assertAnyScopePermission: (pid: string, key: string, cid: string) =>
+          accessControl.assertAnyScopePermission(pid, key, cid),
       },
       { scheduleResolver: scheduleService },
     );
@@ -1654,6 +1656,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
               accessControl.assertPermission(pid, key, target),
             hasPermission: (pid: string, key: string, target: ScopeTarget) =>
               accessControl.hasPermission(pid, key, target),
+            assertAnyScopePermission: (pid: string, key: string, cid: string) =>
+              accessControl.assertAnyScopePermission(pid, key, cid),
           },
           roleDispatcher,
           (companyId: string, flag: 'leavePolicyManage') =>
@@ -1666,18 +1670,18 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     approvalRoutes(
       services.approvalService ??
-        new ApprovalService(
-          new PrismaApprovalUnitOfWork(app.prisma),
-          {
-            assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-              accessControl.assertPermission(pid, key, target),
-            hasPermission: (pid: string, key: string, target: ScopeTarget) =>
-              accessControl.hasPermission(pid, key, target),
-          },
-          undefined,
-          // Domain completion hooks — run inside the decision's unit of work.
-          [walletFundingDecisionHook()],
-        ),
+      new ApprovalService(
+        new PrismaApprovalUnitOfWork(app.prisma),
+        {
+          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.assertPermission(pid, key, target),
+          hasPermission: (pid: string, key: string, target: ScopeTarget) =>
+            accessControl.hasPermission(pid, key, target),
+        },
+        undefined,
+        // Domain completion hooks — run inside the decision's unit of work.
+        [walletFundingDecisionHook()],
+      ),
     ),
     { prefix: '/api/v1' },
   );
@@ -1698,23 +1702,23 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   await app.register(
     auditRoutes(
       services.auditService ??
-        new AuditService(app.prisma, {
-          assertPermission: (pid: string, key: string, target: ScopeTarget) =>
-            accessControl.assertPermission(pid, key, target),
-        }),
+      new AuditService(app.prisma, {
+        assertPermission: (pid: string, key: string, target: ScopeTarget) =>
+          accessControl.assertPermission(pid, key, target),
+      }),
     ),
     { prefix: '/api/v1' },
   );
   await app.register(
     platformRoutes(
       services.platformService ??
-        new PlatformService(
-          new PrismaPlatformUnitOfWork(app.prisma),
-          app.config.APP_BASE_URL,
-          (actor, principalId, meta) =>
-            authService.createImpersonationSession(actor, principalId, meta),
-          nodeEnv === 'production',
-        ),
+      new PlatformService(
+        new PrismaPlatformUnitOfWork(app.prisma),
+        app.config.APP_BASE_URL,
+        (actor, principalId, meta) =>
+          authService.createImpersonationSession(actor, principalId, meta),
+        nodeEnv === 'production',
+      ),
       platformResolver,
     ),
     { prefix: '/api/v1' },

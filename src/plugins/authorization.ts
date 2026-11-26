@@ -17,6 +17,10 @@ declare module 'fastify' {
       permissionKey: string,
       resolveScope: (request: FastifyRequest) => ScopeTarget | Promise<ScopeTarget>,
     ) => (request: FastifyRequest) => Promise<void>;
+    requireAnyScopePermission: (
+      permissionKey: string,
+      resolveCompanyId: (request: FastifyRequest) => string,
+    ) => (request: FastifyRequest) => Promise<void>;
     /** Rejects requests whose x-company-id targets the platform company. */
     tenantCompanyGuard: (request: FastifyRequest) => Promise<void>;
   }
@@ -34,6 +38,36 @@ export default fp<AuthorizationPluginOptions>(
         }
         const target = await resolveScope(request);
         await opts.accessControl.assertPermission(request.principal.actorId, permissionKey, target);
+      };
+    });
+
+    app.decorate('requireAnyScopePermission', (permissionKey, resolveCompanyId) => {
+      return async (request: FastifyRequest) => {
+        if (!request.principal) {
+          throw new UnauthorizedError();
+        }
+        const companyId = resolveCompanyId(request);
+        const ac = opts.accessControl as {
+          assertAnyScopePermission?: (
+            principalId: string,
+            permissionKey: string,
+            companyId: string,
+          ) => Promise<void>;
+          assertPermission: (
+            principalId: string,
+            permissionKey: string,
+            target: ScopeTarget,
+          ) => Promise<void>;
+        };
+        if (typeof ac.assertAnyScopePermission === 'function') {
+          await ac.assertAnyScopePermission(request.principal.actorId, permissionKey, companyId);
+        } else {
+          await ac.assertPermission(request.principal.actorId, permissionKey, {
+            companyId,
+            scopeType: 'COMPANY',
+            scopeId: companyId,
+          });
+        }
       };
     });
 

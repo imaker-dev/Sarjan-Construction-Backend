@@ -105,6 +105,13 @@ export function leaveRoutes(service: LeaveService) {
         app.requirePermission(key, resolveScope),
       ],
     });
+    const anyScopePerm = (key: string) => ({
+      preHandler: [
+        app.authenticate,
+        app.tenantCompanyGuard,
+        app.requireAnyScopePermission(key, companyIdOf),
+      ],
+    });
 
     const atRequest = (r: FastifyRequest): Promise<ScopeTarget> =>
       service.resolveScope(companyIdOf(r), 'request', (r.params as { id: string }).id);
@@ -174,7 +181,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.get(
       '/leave/types',
-      { schema: { querystring: ListLeaveTypeDefsQuery }, ...perm(LEAVE_READ) },
+      { schema: { querystring: ListLeaveTypeDefsQuery }, ...anyScopePerm(LEAVE_READ) },
       async (req) => {
         return service.listTypeDefs(
           actorOf(req),
@@ -457,7 +464,7 @@ export function leaveRoutes(service: LeaveService) {
 
     app.post(
       '/leave/requests',
-      { schema: { body: SubmitLeaveRequestBody }, ...perm(LEAVE_APPLY) },
+      { schema: { body: SubmitLeaveRequestBody }, ...anyScopePerm(LEAVE_APPLY) },
       async (req, reply) => {
         const request = await service.submitRequest(
           actorOf(req),

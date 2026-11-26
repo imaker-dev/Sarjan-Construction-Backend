@@ -100,6 +100,44 @@ export class AccessControlService {
     if (!allowed) throw new AccessDeniedError();
   }
 
+  /**
+   * Returns true if the active principal holds `permissionKey` at ANY active
+   * scope within `companyId` (COMPANY, HEAD_OFFICE, PROJECT, SITE, or DEPARTMENT).
+   * Preserves Finance-role department membership checks.
+   */
+  async hasAnyScopePermission(
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<boolean> {
+    const principal = await this.deps.principals.findById(principalId);
+    if (principal?.status !== 'ACTIVE') return false;
+
+    const exists = await this.deps.access.companyExists(companyId);
+    if (!exists) return false;
+
+    const assignments = await this.deps.access.assignmentsForPrincipal(
+      principalId,
+      companyId,
+      this.now(),
+    );
+    const granted = assignments.filter((a) =>
+      a.role.permissions.some((rp) => rp.permission.key === permissionKey),
+    );
+    if (granted.some((a) => !FINANCE_ROLE_KEYS.has(a.role.key))) return true;
+    if (granted.length === 0) return false;
+    return this.deps.access.hasActiveFinanceMembership(principalId, companyId, this.now());
+  }
+
+  async assertAnyScopePermission(
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<void> {
+    const allowed = await this.hasAnyScopePermission(principalId, permissionKey, companyId);
+    if (!allowed) throw new AccessDeniedError();
+  }
+
   private resolveChain(target: ScopeTarget): Promise<ScopeChain | null> {
     const { companyId, scopeType, scopeId } = target;
     switch (scopeType) {

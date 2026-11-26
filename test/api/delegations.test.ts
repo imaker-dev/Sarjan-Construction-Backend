@@ -323,4 +323,46 @@ describe('scoped mutation targets', () => {
       await app.close();
     }
   });
+
+  it('site list with projectId evaluates ORG_SITE_READ at PROJECT scope', async () => {
+    const { app, calls } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/org/sites?projectId=${PID}`,
+        headers: authHeaders(app),
+      });
+      expect(res.statusCode).toBe(200);
+      const idx = calls.keys.indexOf('ORG_SITE_READ');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(calls.targets[idx]).toEqual({
+        companyId: CID,
+        scopeType: 'PROJECT',
+        scopeId: PID,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('site list without projectId evaluates ORG_SITE_READ at COMPANY scope', async () => {
+    const { app, calls } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/org/sites',
+        headers: authHeaders(app),
+      });
+      expect(res.statusCode).toBe(200);
+      const idx = calls.keys.indexOf('ORG_SITE_READ');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(calls.targets[idx]).toEqual({
+        companyId: CID,
+        scopeType: 'COMPANY',
+        scopeId: CID,
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });

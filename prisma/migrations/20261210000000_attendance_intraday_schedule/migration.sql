@@ -1,4 +1,4 @@
--- Dynamic Head Office & site attendance schedules — Slice 1.
+-- Dynamic Head Office & site attendance schedules -- Slice 1.
 -- Additive only: every new column is NULLable so day-pattern-only revisions
 -- and pre-existing sessions behave exactly as before. No historical
 -- attendance rows are rewritten or backfilled.
@@ -94,5 +94,5 @@ CREATE INDEX "AttendanceSession_auto_close_idx"
   WHERE "status" = 'IN_PROGRESS' AND "scheduledEndAt" IS NOT NULL;
 
 -- Delegation switch: scoped holders may edit project/site work schedules.
--- Defaults OFF — Finance/Admin remain the only schedule editors until enabled.
+-- Defaults OFF -- Finance/Admin remain the only schedule editors until enabled.
 ALTER TABLE "CompanyDelegationPolicy" ADD COLUMN "scheduleManage" BOOLEAN NOT NULL DEFAULT false;

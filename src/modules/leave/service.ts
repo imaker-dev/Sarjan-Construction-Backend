@@ -68,6 +68,11 @@ export const LEAVE_MANAGE = 'LEAVE_MANAGE';
 interface Authorizer {
   assertPermission(principalId: string, permissionKey: string, target: ScopeTarget): Promise<void>;
   hasPermission(principalId: string, permissionKey: string, target: ScopeTarget): Promise<boolean>;
+  assertAnyScopePermission?(
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<void>;
 }
 
 const auditEntry = (
@@ -118,13 +123,25 @@ export class LeaveService {
     ) => Promise<boolean>,
   ) {}
 
+  private async assertAnyScope(
+    actorId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<void> {
+    if (typeof this.authorizer.assertAnyScopePermission === 'function') {
+      await this.authorizer.assertAnyScopePermission(actorId, permissionKey, companyId);
+    } else {
+      await this.authorizer.assertPermission(actorId, permissionKey, companyTarget(companyId));
+    }
+  }
+
   private async isSupervisorOrManager(actorId: string, companyId: string): Promise<boolean> {
     try {
-      await this.authorizer.assertPermission(actorId, LEAVE_MANAGE, companyTarget(companyId));
+      await this.assertAnyScope(actorId, LEAVE_MANAGE, companyId);
       return true;
     } catch {
       try {
-        await this.authorizer.assertPermission(actorId, LEAVE_APPROVE, companyTarget(companyId));
+        await this.assertAnyScope(actorId, LEAVE_APPROVE, companyId);
         return true;
       } catch {
         return false;
@@ -134,9 +151,9 @@ export class LeaveService {
 
   private async assertSupervisorOrManager(actorId: string, companyId: string): Promise<void> {
     try {
-      await this.authorizer.assertPermission(actorId, LEAVE_MANAGE, companyTarget(companyId));
+      await this.assertAnyScope(actorId, LEAVE_MANAGE, companyId);
     } catch {
-      await this.authorizer.assertPermission(actorId, LEAVE_APPROVE, companyTarget(companyId));
+      await this.assertAnyScope(actorId, LEAVE_APPROVE, companyId);
     }
   }
 
@@ -429,7 +446,7 @@ export class LeaveService {
     companyId: string,
     filter?: ListLeaveTypeDefsFilter,
   ): Promise<LeaveTypeDef[]> {
-    await this.authorizer.assertPermission(actor.actorId, LEAVE_READ, companyTarget(companyId));
+    await this.assertAnyScope(actor.actorId, LEAVE_READ, companyId);
     return this.uow.run((repos) => repos.typeDefs.list(companyId, filter));
   }
 
@@ -1418,7 +1435,7 @@ export class LeaveService {
     companyId: string,
     input: SubmitLeaveRequestInput,
   ): Promise<LeaveRequestWithDetails> {
-    await this.authorizer.assertPermission(actor.actorId, LEAVE_APPLY, companyTarget(companyId));
+    await this.assertAnyScope(actor.actorId, LEAVE_APPLY, companyId);
 
     const isHalfDay = input.isHalfDay ?? false;
 
@@ -1753,7 +1770,7 @@ export class LeaveService {
     id: string,
     input: CancelLeaveRequestInput,
   ): Promise<LeaveRequestWithDetails> {
-    await this.authorizer.assertPermission(actor.actorId, LEAVE_APPLY, companyTarget(companyId));
+    await this.assertAnyScope(actor.actorId, LEAVE_APPLY, companyId);
 
     return this.uow.run(async (repos) => {
       const existing = await repos.requests.findById(companyId, id);

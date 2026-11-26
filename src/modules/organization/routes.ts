@@ -804,7 +804,16 @@ export function organizationRoutes(
     );
     app.get(
       '/org/sites',
-      { schema: { querystring: ListQuery }, ...perm('ORG_SITE_READ', atCompany) },
+      {
+        schema: { querystring: ListQuery },
+        ...perm('ORG_SITE_READ', (r) => {
+          const companyId = companyIdOf(r);
+          const { projectId } = r.query as { projectId?: string };
+          return projectId !== undefined
+            ? { companyId, scopeType: 'PROJECT', scopeId: projectId }
+            : atCompany(r);
+        }),
+      },
       async (req) => {
         const q = req.query as { status?: never; projectId?: string };
         return service.listSites(companyIdOf(req), q);

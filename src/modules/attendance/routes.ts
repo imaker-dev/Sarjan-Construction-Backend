@@ -121,6 +121,29 @@ const EffectivePolicyQuery = Type.Object({
 
 export function attendanceRoutes(service: AttendanceService) {
   return async function routes(app: FastifyInstance) {
+    const resolveScope = (r: FastifyRequest): ScopeTarget => {
+      const companyId = companyIdOf(r);
+      const q = (r.query ?? {}) as Record<string, unknown>;
+      const b = (r.body ?? {}) as Record<string, unknown>;
+      const siteId = typeof q.siteId === 'string' ? q.siteId : typeof b.siteId === 'string' ? b.siteId : undefined;
+      if (siteId) return { companyId, scopeType: 'SITE', scopeId: siteId };
+      const headOfficeId =
+        typeof q.headOfficeId === 'string'
+          ? q.headOfficeId
+          : typeof b.headOfficeId === 'string'
+            ? b.headOfficeId
+            : undefined;
+      if (headOfficeId) return { companyId, scopeType: 'HEAD_OFFICE', scopeId: headOfficeId };
+      const projectId =
+        typeof q.projectId === 'string'
+          ? q.projectId
+          : typeof b.projectId === 'string'
+            ? b.projectId
+            : undefined;
+      if (projectId) return { companyId, scopeType: 'PROJECT', scopeId: projectId };
+      return { companyId, scopeType: 'COMPANY', scopeId: companyId };
+    };
+
     // Route gates resolve the permission target from server-loaded entities —
     // never from caller-supplied employee/site combinations alone. PI/PD
     // scoped grants pass only for their own project/site targets; anything
@@ -188,6 +211,19 @@ export function attendanceRoutes(service: AttendanceService) {
         'principal',
         (r.principal as { actorId: string }).actorId,
       );
+    const scopedPerm = (key: string) => ({
+      preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, resolveScope)],
+    });
+    const anyScopePerm = (key: string) => ({
+      preHandler: [
+        app.authenticate,
+        app.tenantCompanyGuard,
+        app.requireAnyScopePermission(key, companyIdOf),
+      ],
+    });
+    const authOnly = {
+      preHandler: [app.authenticate, app.tenantCompanyGuard],
+    };
 
     // -----------------------------------------------------------------------
     // Policy Routes
@@ -208,7 +244,7 @@ export function attendanceRoutes(service: AttendanceService) {
             ),
           }),
         },
-        ...perm(ATTENDANCE_READ),
+        ...anyScopePerm(ATTENDANCE_READ),
       },
       async (req) => {
         const query = req.query as { scope?: 'COMPANY' | 'PROJECT' | 'SITE' | 'EMPLOYEE' };
@@ -240,7 +276,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/policies/:id',
-      { schema: { params: PolicyParams }, ...perm(ATTENDANCE_READ) },
+      { schema: { params: PolicyParams }, ...anyScopePerm(ATTENDANCE_READ) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getPolicy(actorOf(req), companyIdOf(req), id);
@@ -369,32 +405,32 @@ export function attendanceRoutes(service: AttendanceService) {
           session: active,
           ...(active.isDelayedClockIn !== undefined
             ? {
-                isDelayedClockIn: active.isDelayedClockIn,
-                delayedClockInMinutes: active.delayedClockInMinutes,
-                delayedClockInTime: active.delayedClockInTime,
-                delayedClockInFormatted: active.delayedClockInFormatted,
-                clockOutTimeProper8Hours: active.clockOutTimeProper8Hours,
-                expectedClockOutAt: active.expectedClockOutAt,
-                scheduledClockInAt: active.scheduledClockInAt,
-                targetWorkDurationMins: active.targetWorkDurationMins,
-                remainingMinutesFor8Hours: active.remainingMinutesFor8Hours,
-              }
+              isDelayedClockIn: active.isDelayedClockIn,
+              delayedClockInMinutes: active.delayedClockInMinutes,
+              delayedClockInTime: active.delayedClockInTime,
+              delayedClockInFormatted: active.delayedClockInFormatted,
+              clockOutTimeProper8Hours: active.clockOutTimeProper8Hours,
+              expectedClockOutAt: active.expectedClockOutAt,
+              scheduledClockInAt: active.scheduledClockInAt,
+              targetWorkDurationMins: active.targetWorkDurationMins,
+              remainingMinutesFor8Hours: active.remainingMinutesFor8Hours,
+            }
             : {}),
           ...(active.weeklyProgress !== undefined
             ? {
-                weeklyProgress: active.weeklyProgress,
-              }
+              weeklyProgress: active.weeklyProgress,
+            }
             : {}),
           ...(active.activityLog !== undefined
             ? {
-                businessDate: active.businessDate,
-                totalCheckInsToday: active.totalCheckInsToday,
-                totalCheckOutsToday: active.totalCheckOutsToday,
-                currentlyCheckedIn: active.currentlyCheckedIn,
-                totalWorkMinutesToday: active.totalWorkMinutesToday,
-                totalBreakMinutesToday: active.totalBreakMinutesToday,
-                activityLog: active.activityLog,
-              }
+              businessDate: active.businessDate,
+              totalCheckInsToday: active.totalCheckInsToday,
+              totalCheckOutsToday: active.totalCheckOutsToday,
+              currentlyCheckedIn: active.currentlyCheckedIn,
+              totalWorkMinutesToday: active.totalWorkMinutesToday,
+              totalBreakMinutesToday: active.totalBreakMinutesToday,
+              activityLog: active.activityLog,
+            }
             : {}),
         };
       },
@@ -746,7 +782,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.post(
       '/attendance/reports/export',
-      { schema: { body: TriggerReportExportBody }, ...perm(ATTENDANCE_READ) },
+      { schema: { body: TriggerReportExportBody }, ...scopedPerm(ATTENDANCE_READ) },
       async (req, reply) => {
         const body = req.body as TriggerReportExportInput;
         const exported = await service.triggerAndExportReport(actorOf(req), companyIdOf(req), body);
@@ -760,7 +796,7 @@ export function attendanceRoutes(service: AttendanceService) {
       '/attendance/daily-reports/:id/export',
       {
         schema: { params: DailyReportParams, querystring: DailyReportExportQuery },
-        ...perm(ATTENDANCE_READ),
+        ...authOnly,
       },
       async (req, reply) => {
         const { id } = req.params as { id: string };
@@ -779,7 +815,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/muster-roll/export',
-      { schema: { querystring: MusterRollExportQuery }, ...perm(ATTENDANCE_READ) },
+      { schema: { querystring: MusterRollExportQuery }, ...scopedPerm(ATTENDANCE_READ) },
       async (req, reply) => {
         const { format, ...filter } = req.query as MusterRollExportFilter;
         const exported = await service.exportMusterRollReport(
