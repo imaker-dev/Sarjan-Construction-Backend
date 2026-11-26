@@ -21,6 +21,7 @@ export const LeaveRequestStatusEnum = Type.Union([
   Type.Literal('PENDING'),
   Type.Literal('APPROVED'),
   Type.Literal('REJECTED'),
+  Type.Literal('RETURNED'),
   Type.Literal('CANCELLED'),
 ]);
 
@@ -169,10 +170,24 @@ export const SubmitLeaveRequestBody = Type.Object({
 });
 
 export const ReviewLeaveRequestBody = Type.Object({
-  action: Type.Union([Type.Literal('APPROVE'), Type.Literal('REJECT')]),
+  action: Type.Union([Type.Literal('APPROVE'), Type.Literal('REJECT'), Type.Literal('RETURN')]),
+  /** Required for REJECT and RETURN (the requester needs the reason);
+   *  optional for APPROVE. */
   remarks: Type.Optional(Type.String({ maxLength: 500 })),
   expectedVersion: Type.Integer(),
 });
+
+/** Owner resubmission of a RETURNED request — any field may be corrected;
+ *  the full submission pipeline (boundary, notice, conflict, balance) is
+ *  re-validated and pending days are re-reserved. */
+export const ResubmitLeaveRequestBody = Type.Object({
+  startDate: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  endDate: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+  reason: Type.Optional(Type.String({ minLength: 3, maxLength: 500 })),
+  documentId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  expectedVersion: Type.Integer(),
+});
+export type ResubmitLeaveRequestInput = Static<typeof ResubmitLeaveRequestBody>;
 
 export const CancelLeaveRequestBody = Type.Object({
   reason: Type.Optional(Type.String({ maxLength: 500 })),
@@ -207,12 +222,22 @@ export const ListLeaveBalancesQuery = Type.Object({
   employeeId: Type.Optional(Type.String({ format: 'uuid' })),
   leaveType: Type.Optional(LeaveTypeEnum),
   year: Type.Optional(Type.Integer({ minimum: 2000, maximum: 2100 })),
+  /** Scoped-approver filters — each resolves to a permission scope target;
+   *  a scoped caller must pass a filter inside their grant. */
+  siteId: Type.Optional(Uuid),
+  projectId: Type.Optional(Uuid),
+  departmentId: Type.Optional(Uuid),
 });
 
 export const ListLeaveRequestsQuery = Type.Object({
   employeeId: Type.Optional(Type.String({ format: 'uuid' })),
   leaveType: Type.Optional(LeaveTypeEnum),
   status: Type.Optional(LeaveRequestStatusEnum),
+  /** Scoped-approver filters — resolved server-side against each request's
+   *  department membership effective at the request start date. */
+  siteId: Type.Optional(Uuid),
+  projectId: Type.Optional(Uuid),
+  departmentId: Type.Optional(Uuid),
   from: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
   to: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 50 })),

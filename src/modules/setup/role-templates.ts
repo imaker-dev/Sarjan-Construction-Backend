@@ -195,6 +195,11 @@ export const PROJECT_INCHARGE_PERMISSIONS: readonly string[] = [
   'LEAVE_APPLY',
   'LEAVE_READ',
   'LEAVE_APPROVE',
+  // Scoped site-department leave-policy authoring additionally requires the
+  // company delegation flag `leavePolicyManage` (default OFF) — the
+  // permission alone grants nothing; COMPANY-scope policies, leave types,
+  // and allocations stay Finance/Admin only.
+  'LEAVE_MANAGE',
   // Site wallet — PI creates/submits funding requests, confirms receipts,
   // posts expenses/vouchers, attaches evidence, requests reversals. Scoped
   // to assigned sites; the operation grant supplies the second gate.

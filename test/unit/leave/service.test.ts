@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Prisma,
   type LeaveBalance,
@@ -48,6 +48,7 @@ function createMockUow(repos: Partial<LeaveRepos>): LeaveUnitOfWork {
   const defaultMemberships: LeaveRepos['memberships'] = {
     findActiveByEmployee: vi.fn().mockResolvedValue([]),
     findCoveringByEmployee: vi.fn().mockResolvedValue([]),
+    findByEmployeesInWindow: vi.fn().mockResolvedValue([]),
   };
 
   const completeRepos: LeaveRepos = {
@@ -68,6 +69,7 @@ describe('LeaveService', () => {
   const companyId = 'c1';
   const authorizer = {
     assertPermission: vi.fn().mockResolvedValue(undefined),
+    hasPermission: vi.fn().mockResolvedValue(false),
   };
 
   const samplePolicy: LeavePolicy = {
@@ -694,6 +696,7 @@ describe('LeaveService', () => {
             throw new Error('Permission denied: LEAVE_MANAGE');
           }
         }),
+        hasPermission: vi.fn().mockResolvedValue(false),
       };
 
       const mockRepos: Partial<LeaveRepos> = {
@@ -816,6 +819,7 @@ describe('LeaveService', () => {
             throw new Error('Permission denied: LEAVE_MANAGE');
           }
         }),
+        hasPermission: vi.fn().mockResolvedValue(false),
       };
 
       const service = new LeaveService(createMockUow(mockRepos), strictAuthorizer);
@@ -845,6 +849,7 @@ describe('LeaveService', () => {
             throw new Error('Not supervisor');
           }
         }),
+        hasPermission: vi.fn().mockResolvedValue(false),
       };
 
       const service = new LeaveService(createMockUow(mockRepos), normalEmployeeAuthorizer);
@@ -866,6 +871,7 @@ describe('LeaveService', () => {
             throw new Error('Access denied to other employee balance');
           }
         }),
+        hasPermission: vi.fn().mockResolvedValue(false),
       };
 
       const service = new LeaveService(createMockUow(mockRepos), normalEmployeeAuthorizer);
@@ -915,6 +921,7 @@ describe('LeaveService', () => {
             throw new Error('Access denied: supervisor permission required');
           }
         }),
+        hasPermission: vi.fn().mockResolvedValue(false),
       };
 
       const service = new LeaveService(createMockUow(mockRepos), normalEmployeeAuthorizer);
@@ -932,7 +939,10 @@ describe('LeaveService', () => {
 describe('LeaveService — types, versions, resolution', () => {
   const actor: ActorContext = { actorId: 'u1', actorType: 'USER' };
   const companyId = 'c1';
-  const authorizer = { assertPermission: vi.fn().mockResolvedValue(undefined) };
+  const authorizer = {
+    assertPermission: vi.fn().mockResolvedValue(undefined),
+    hasPermission: vi.fn().mockResolvedValue(false),
+  };
 
   const typeDefRow = (over: Partial<LeaveTypeDef> = {}): LeaveTypeDef => ({
     id: 'td-1',
@@ -1164,7 +1174,8 @@ describe('LeaveService — types, versions, resolution', () => {
       } as unknown as LeaveRepos['typeDefs'],
       employees: {
         findById: vi.fn().mockResolvedValue({ id: employeeId, status: 'ACTIVE' }),
-      } as unknown as LeaveRepos['employees'],
+        findByPrincipal: vi.fn().mockResolvedValue({ id: 'emp-1', principalId: 'u1' }),
+      },
       memberships: {
         findActiveByEmployee: vi.fn().mockResolvedValue(hits.memberships ?? []),
         findCoveringByEmployee: vi.fn().mockResolvedValue([]),
@@ -1584,7 +1595,8 @@ describe('LeaveService — types, versions, resolution', () => {
         } as unknown as LeaveRepos['typeDefs'],
         employees: {
           findById: vi.fn().mockResolvedValue({ id: 'emp-1', status: 'ACTIVE' }),
-        } as unknown as LeaveRepos['employees'],
+          findByPrincipal: vi.fn().mockResolvedValue({ id: 'emp-1', principalId: 'u1' }),
+        },
         memberships: {
           findActiveByEmployee,
           findCoveringByEmployee: vi.fn().mockResolvedValue([]),
@@ -1615,5 +1627,927 @@ describe('LeaveService — types, versions, resolution', () => {
         new Date('2026-06-15T00:00:00.000Z'),
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PI/PD-scoped leave authorization — site/project-department workforce
+// ---------------------------------------------------------------------------
+
+describe('LeaveService — scoped PI/PD authorization', () => {
+  const companyId = 'c1';
+  const piActor: ActorContext = { actorId: 'u-pi', actorType: 'USER' };
+  const siblingPiActor: ActorContext = { actorId: 'u-pi-b', actorType: 'USER' };
+  const financeActor: ActorContext = { actorId: 'u-fin', actorType: 'USER' };
+
+  const SITE_A1 = 'site-a1';
+  const SITE_A2 = 'site-a2';
+  const PROJ_A = 'proj-a';
+  const SITE_B1 = 'site-b1';
+  const HO_1 = 'ho-1';
+
+  interface DeptScope {
+    id: string;
+    status: string;
+    siteId: string | null;
+    projectId: string | null;
+    baseHeadOfficeId: string | null;
+    site: { projectId: string } | null;
+  }
+
+  const siteDept = (id: string, siteId: string): DeptScope => ({
+    id,
+    status: 'ACTIVE',
+    siteId,
+    projectId: null,
+    baseHeadOfficeId: null,
+    site: { projectId: PROJ_A },
+  });
+  const siblingDept = (id: string): DeptScope => ({
+    id,
+    status: 'ACTIVE',
+    siteId: SITE_B1,
+    projectId: null,
+    baseHeadOfficeId: null,
+    site: { projectId: 'proj-b' },
+  });
+  const hoDept = (id: string): DeptScope => ({
+    id,
+    status: 'ACTIVE',
+    siteId: null,
+    projectId: null,
+    baseHeadOfficeId: HO_1,
+    site: null,
+  });
+
+  const membershipOf = (departmentId: string, department: DeptScope) => ({
+    departmentId,
+    isPrimary: true,
+    department,
+  });
+
+  /**
+   * PI grant model: LEAVE_APPROVE at sites a1/a2 of proj-a (a project grant
+   * covers child-site targets). LEAVE_READ / LEAVE_APPLY come from the
+   * company-scope EMPLOYEE baseline, so they always resolve — the scope
+   * barrier lives entirely on the approver keys.
+   */
+  const piAuthorizer = {
+    assertPermission: vi
+      .fn()
+      .mockImplementation(
+        async (_pid: string, perm: string, target?: { scopeType: string; scopeId: string }) => {
+          if (perm === 'LEAVE_READ' || perm === 'LEAVE_APPLY') return;
+          const t = target ?? { scopeType: 'COMPANY', scopeId: companyId };
+          const covered =
+            (t.scopeType === 'SITE' && (t.scopeId === SITE_A1 || t.scopeId === SITE_A2)) ||
+            (t.scopeType === 'PROJECT' && t.scopeId === PROJ_A);
+          if (!covered) throw new Error('Access denied: out of scope');
+          if (perm === 'LEAVE_APPROVE') return;
+          throw new Error(`Permission denied: ${perm}`);
+        },
+      ),
+    hasPermission: vi
+      .fn()
+      .mockImplementation(async (pid: string, perm: string, target: { scopeId: string }) => {
+        if (perm !== 'LEAVE_APPROVE') return false;
+        if (pid === 'u-pi' || pid === 'u-pi-b') {
+          return (
+            target.scopeId === SITE_A1 || target.scopeId === SITE_A2 || target.scopeId === PROJ_A
+          );
+        }
+        return false;
+      }),
+  };
+
+  /** Finance/Admin: company-level authority — every target resolves. */
+  const financeAuthorizer = {
+    assertPermission: vi.fn().mockResolvedValue(undefined),
+    hasPermission: vi.fn().mockResolvedValue(true),
+  };
+
+  const pendingRequest = (
+    over: {
+      id?: string;
+      employeeId?: string;
+      principalId?: string;
+      status?: 'PENDING' | 'RETURNED' | 'APPROVED';
+      version?: number;
+    } = {},
+  ): LeaveRequestWithDetails => ({
+    id: over.id ?? 'req-1',
+    companyId,
+    employeeId: over.employeeId ?? 'emp-site',
+    leaveType: 'CASUAL',
+    startDate: new Date('2026-11-20T00:00:00.000Z'),
+    endDate: new Date('2026-11-20T00:00:00.000Z'),
+    isHalfDay: false,
+    halfDayPortion: null,
+    totalDays: new Prisma.Decimal(1.0),
+    reason: 'Site work',
+    documentId: null,
+    status: over.status ?? 'PENDING',
+    reviewedBy: null,
+    reviewedAt: null,
+    reviewRemarks: null,
+    version: over.version ?? 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    employee: {
+      id: over.employeeId ?? 'emp-site',
+      employeeCode: 'E9',
+      displayName: 'Site Worker',
+      designation: 'Mason',
+      principalId: over.principalId ?? 'u-emp',
+    },
+  });
+
+  const sampleBalance: LeaveBalance = {
+    id: 'bal-1',
+    companyId,
+    employeeId: 'emp-site',
+    leaveType: 'CASUAL',
+    year: 2026,
+    allocatedDays: new Prisma.Decimal(12),
+    usedDays: new Prisma.Decimal(2),
+    pendingDays: new Prisma.Decimal(0),
+    carriedOverDays: new Prisma.Decimal(0),
+    version: 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const commitApproved = vi.fn().mockResolvedValue(sampleBalance);
+  const rejectPending = vi.fn().mockResolvedValue(sampleBalance);
+  const reservePending = vi.fn().mockResolvedValue(sampleBalance);
+
+  beforeEach(() => {
+    commitApproved.mockClear();
+    rejectPending.mockClear();
+    reservePending.mockClear();
+    piAuthorizer.assertPermission.mockClear();
+  });
+
+  const requestRepos = (department: DeptScope, req: LeaveRequestWithDetails) =>
+    ({
+      requests: {
+        findById: vi.fn().mockResolvedValue(req),
+        updateStatus: vi
+          .fn()
+          .mockImplementation(async (_c: string, _i: string, status: string) => ({
+            ...req,
+            status,
+            version: req.version + 1,
+          })),
+      } as unknown as LeaveRepos['requests'],
+      memberships: {
+        findActiveByEmployee: vi.fn().mockResolvedValue([membershipOf(department.id, department)]),
+        findCoveringByEmployee: vi
+          .fn()
+          .mockResolvedValue([membershipOf(department.id, department)]),
+      } as unknown as LeaveRepos['memberships'],
+      balances: {
+        commitApproved,
+        rejectPending,
+        reservePending,
+        find: vi.fn().mockResolvedValue(sampleBalance),
+      } as unknown as LeaveRepos['balances'],
+      audit: { record: vi.fn().mockResolvedValue(undefined) },
+    }) satisfies Partial<LeaveRepos>;
+
+  it('PI approves a site-department employee request inside the assigned site', async () => {
+    const req = pendingRequest();
+    const repos = requestRepos(siteDept('dept-a1', SITE_A1), req);
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    const result = await service.reviewRequest(piActor, companyId, 'req-1', {
+      action: 'APPROVE',
+      expectedVersion: 0,
+    });
+
+    expect(result.status).toBe('APPROVED');
+    expect(commitApproved).toHaveBeenCalledWith(companyId, 'emp-site', 'CASUAL', 2026, 1);
+    expect(piAuthorizer.assertPermission).toHaveBeenCalledWith(
+      'u-pi',
+      'LEAVE_APPROVE',
+      expect.objectContaining({ scopeType: 'SITE', scopeId: SITE_A1 }),
+    );
+  });
+
+  it('PI authority covers site labour regardless of engagement type — membership, not engagement, drives access', async () => {
+    const req = pendingRequest({ id: 'req-lab', employeeId: 'emp-labour', principalId: 'u-lab' });
+    const repos = requestRepos(siteDept('dept-lab-a', SITE_A2), req);
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    const result = await service.reviewRequest(piActor, companyId, 'req-lab', {
+      action: 'APPROVE',
+      expectedVersion: 0,
+    });
+
+    expect(result.status).toBe('APPROVED');
+    expect(piAuthorizer.assertPermission).toHaveBeenCalledWith(
+      'u-pi',
+      'LEAVE_APPROVE',
+      expect.objectContaining({ scopeType: 'SITE', scopeId: SITE_A2 }),
+    );
+  });
+
+  it('PI cannot review a request in a sibling site', async () => {
+    const req = pendingRequest();
+    const repos = requestRepos(siblingDept('dept-b1'), req);
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    await expect(
+      service.reviewRequest(piActor, companyId, 'req-1', {
+        action: 'APPROVE',
+        expectedVersion: 0,
+      }),
+    ).rejects.toThrow(/Access denied|Permission denied/);
+    expect(commitApproved).not.toHaveBeenCalled();
+  });
+
+  it('PI cannot review a head-office department request', async () => {
+    const req = pendingRequest();
+    const repos = requestRepos(hoDept('dept-ho'), req);
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    await expect(
+      service.reviewRequest(piActor, companyId, 'req-1', {
+        action: 'REJECT',
+        remarks: 'nope',
+        expectedVersion: 0,
+      }),
+    ).rejects.toThrow(/Access denied|Permission denied/);
+  });
+
+  it('Finance retains company-level authority over site-department requests', async () => {
+    const req = pendingRequest();
+    const repos = requestRepos(siteDept('dept-a1', SITE_A1), req);
+    const service = new LeaveService(createMockUow(repos), financeAuthorizer);
+
+    const result = await service.reviewRequest(financeActor, companyId, 'req-1', {
+      action: 'APPROVE',
+      expectedVersion: 0,
+    });
+    expect(result.status).toBe('APPROVED');
+  });
+
+  it("a PI's own leave request cannot be approved by another scoped approver — it requires company authority", async () => {
+    const req = pendingRequest({ principalId: 'u-pi', employeeId: 'emp-pi' });
+    const repos = requestRepos(siteDept('dept-a1', SITE_A1), req);
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    await expect(
+      service.reviewRequest(siblingPiActor, companyId, 'req-1', {
+        action: 'APPROVE',
+        expectedVersion: 0,
+      }),
+    ).rejects.toThrow(/Access denied|Permission denied/);
+    expect(piAuthorizer.assertPermission).toHaveBeenCalledWith(
+      'u-pi-b',
+      'LEAVE_APPROVE',
+      expect.objectContaining({ scopeType: 'COMPANY', scopeId: companyId }),
+    );
+  });
+
+  it("a PI's own leave request CAN be approved by company-level Finance", async () => {
+    const req = pendingRequest({ principalId: 'u-pi', employeeId: 'emp-pi' });
+    const repos = requestRepos(siteDept('dept-a1', SITE_A1), req);
+    const service = new LeaveService(createMockUow(repos), financeAuthorizer);
+
+    const result = await service.reviewRequest(financeActor, companyId, 'req-1', {
+      action: 'APPROVE',
+      expectedVersion: 0,
+    });
+    expect(result.status).toBe('APPROVED');
+  });
+
+  it('PI can view a site employee balance but not a sibling-site balance', async () => {
+    const memberships = {
+      findActiveByEmployee: vi
+        .fn()
+        .mockImplementation(async (_c: string, employeeId: string) =>
+          employeeId === 'emp-site'
+            ? [membershipOf('dept-a1', siteDept('dept-a1', SITE_A1))]
+            : [membershipOf('dept-b1', siblingDept('dept-b1'))],
+        ),
+    };
+    const repos: Partial<LeaveRepos> = {
+      memberships: memberships as unknown as LeaveRepos['memberships'],
+      balances: {
+        find: vi.fn().mockResolvedValue(sampleBalance),
+      } as unknown as LeaveRepos['balances'],
+    };
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    const bal = await service.getEmployeeBalance(piActor, companyId, 'emp-site', 'CASUAL', 2026);
+    expect(bal?.leaveType).toBe('CASUAL');
+
+    await expect(
+      service.getEmployeeBalance(piActor, companyId, 'emp-sibling', 'CASUAL', 2026),
+    ).rejects.toThrow(/Access denied|Permission denied/);
+  });
+
+  it('scoped request listing asserts approver at the site target and excludes sibling-site rows', async () => {
+    const rowA = pendingRequest({ id: 'req-a', employeeId: 'emp-a' });
+    const rowB = pendingRequest({ id: 'req-b', employeeId: 'emp-b' });
+    const repos: Partial<LeaveRepos> = {
+      requests: {
+        list: vi.fn().mockResolvedValue([rowA, rowB]),
+      } as unknown as LeaveRepos['requests'],
+      memberships: {
+        findActiveByEmployee: vi.fn().mockResolvedValue([]),
+        findCoveringByEmployee: vi.fn().mockResolvedValue([]),
+        findByEmployeesInWindow: vi.fn().mockResolvedValue([
+          {
+            employeeId: 'emp-a',
+            departmentId: 'dept-a1',
+            isPrimary: true,
+            startedAt: new Date('2026-01-01T00:00:00.000Z'),
+            endedAt: null,
+            department: siteDept('dept-a1', SITE_A1),
+          },
+          {
+            employeeId: 'emp-b',
+            departmentId: 'dept-b1',
+            isPrimary: true,
+            startedAt: new Date('2026-01-01T00:00:00.000Z'),
+            endedAt: null,
+            department: siblingDept('dept-b1'),
+          },
+        ]),
+      },
+    };
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    const rows = await service.listRequests(piActor, companyId, { siteId: SITE_A1 });
+    expect(rows.map((r) => r.id)).toEqual(['req-a']);
+    expect(piAuthorizer.assertPermission).toHaveBeenCalledWith(
+      'u-pi',
+      'LEAVE_APPROVE',
+      expect.objectContaining({ scopeType: 'SITE', scopeId: SITE_A1 }),
+    );
+  });
+
+  it('PI cannot list requests filtered to a sibling site', async () => {
+    const service = new LeaveService(createMockUow({}), piAuthorizer);
+    await expect(service.listRequests(piActor, companyId, { siteId: SITE_B1 })).rejects.toThrow(
+      /Access denied|Permission denied/,
+    );
+  });
+
+  it('RETURN requires remarks', async () => {
+    const req = pendingRequest();
+    const repos = requestRepos(siteDept('dept-a1', SITE_A1), req);
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    await expect(
+      service.reviewRequest(piActor, companyId, 'req-1', {
+        action: 'RETURN',
+        expectedVersion: 0,
+      }),
+    ).rejects.toBeInstanceOf(LeaveRequestStateError);
+  });
+
+  it('RETURN releases the pending reservation and sets RETURNED status', async () => {
+    const req = pendingRequest();
+    const repos = requestRepos(siteDept('dept-a1', SITE_A1), req);
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    const result = await service.reviewRequest(piActor, companyId, 'req-1', {
+      action: 'RETURN',
+      remarks: 'Fix the dates',
+      expectedVersion: 0,
+    });
+
+    expect(result.status).toBe('RETURNED');
+    expect(rejectPending).toHaveBeenCalledWith(companyId, 'emp-site', 'CASUAL', 2026, 1);
+  });
+
+  it('only the owner may resubmit a RETURNED request', async () => {
+    const req = pendingRequest({ status: 'RETURNED' });
+    const service = new LeaveService(
+      createMockUow({
+        requests: { findById: vi.fn().mockResolvedValue(req) } as unknown as LeaveRepos['requests'],
+      }),
+      piAuthorizer,
+    );
+
+    await expect(
+      service.resubmitRequest(piActor, companyId, 'req-1', { expectedVersion: 1 }),
+    ).rejects.toBeInstanceOf(LeaveRequestStateError);
+  });
+
+  it('owner resubmission re-runs the submission pipeline, re-reserves balance, and re-enters PENDING', async () => {
+    const req = pendingRequest({ status: 'RETURNED', version: 1, principalId: 'u1' });
+    const dept = siteDept('dept-a1', SITE_A1);
+    const policy: LeavePolicy = {
+      id: 'pol-1',
+      companyId,
+      scopeType: 'COMPANY',
+      departmentId: null,
+      projectId: null,
+      siteId: null,
+      employeeId: null,
+      typeDefId: 'td-1',
+      leaveType: 'CASUAL',
+      name: 'Casual Leave Policy',
+      description: null,
+      annualAllowance: new Prisma.Decimal(12),
+      accrualFrequency: 'ANNUAL',
+      maxConsecutiveDays: 3,
+      minNoticeDays: 0,
+      allowHalfDay: true,
+      sandwichRule: false,
+      carryoverMaxDays: new Prisma.Decimal(0),
+      encashable: false,
+      requiresDocAboveDays: null,
+      isActive: true,
+      version: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const resubmitMock = vi
+      .fn()
+      .mockImplementation(async (_c: string, _i: string, data: { totalDays: number }) => ({
+        ...req,
+        ...data,
+        totalDays: new Prisma.Decimal(data.totalDays),
+        status: 'PENDING',
+        version: 2,
+      }));
+    const repos: Partial<LeaveRepos> = {
+      requests: {
+        findById: vi.fn().mockResolvedValue(req),
+        findConflicting: vi.fn().mockResolvedValue(null),
+        resubmit: resubmitMock,
+      } as unknown as LeaveRepos['requests'],
+      memberships: {
+        findActiveByEmployee: vi.fn().mockResolvedValue([membershipOf(dept.id, dept)]),
+        findCoveringByEmployee: vi.fn().mockResolvedValue([membershipOf(dept.id, dept)]),
+      },
+      policies: {
+        resolveEffective: vi.fn().mockResolvedValue(policy),
+      } as unknown as LeaveRepos['policies'],
+      versions: {
+        findEffective: vi.fn().mockResolvedValue({ id: 'pv-1', version: 1 }),
+        findNextEffective: vi.fn().mockResolvedValue(null),
+      } as unknown as LeaveRepos['versions'],
+      balances: {
+        find: vi.fn().mockResolvedValue(sampleBalance),
+        reservePending,
+      } as unknown as LeaveRepos['balances'],
+      audit: { record: vi.fn().mockResolvedValue(undefined) },
+    };
+    const resubmitter: ActorContext = { actorId: 'u1', actorType: 'USER' };
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    const result = await service.resubmitRequest(resubmitter, companyId, 'req-1', {
+      startDate: '2026-11-25',
+      endDate: '2026-11-25',
+      expectedVersion: 1,
+    });
+
+    expect(result.status).toBe('PENDING');
+    expect(reservePending).toHaveBeenCalledWith(companyId, 'emp-site', 'CASUAL', 2026, 1);
+    expect(resubmitMock).toHaveBeenCalledWith(
+      companyId,
+      'req-1',
+      expect.objectContaining({
+        startDate: new Date('2026-11-25T00:00:00.000Z'),
+        endDate: new Date('2026-11-25T00:00:00.000Z'),
+      }),
+      1,
+    );
+  });
+
+  it('resolveScope maps a request to its site target via the requester department', async () => {
+    const req = pendingRequest();
+    const repos = requestRepos(siteDept('dept-a1', SITE_A1), req);
+    const service = new LeaveService(createMockUow(repos), piAuthorizer);
+
+    const target = await service.resolveScope(companyId, 'request', 'req-1');
+    expect(target).toEqual({ companyId, scopeType: 'SITE', scopeId: SITE_A1 });
+  });
+
+  it('resolveScope falls back to COMPANY for an unresolvable request', async () => {
+    const service = new LeaveService(
+      createMockUow({
+        requests: {
+          findById: vi.fn().mockResolvedValue(null),
+        } as unknown as LeaveRepos['requests'],
+      }),
+      piAuthorizer,
+    );
+    const target = await service.resolveScope(companyId, 'request', 'req-ghost');
+    expect(target.scopeType).toBe('COMPANY');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Delegated leave-policy management — CompanyDelegationPolicy.leavePolicyManage
+// ---------------------------------------------------------------------------
+
+describe('LeaveService — delegated site leave-policy management', () => {
+  const companyId = 'c1';
+  const piActor: ActorContext = { actorId: 'u-pi', actorType: 'USER' };
+  const financeActor: ActorContext = { actorId: 'u-fin', actorType: 'USER' };
+
+  const SITE_A1 = 'site-a1';
+  const SITE_B1 = 'site-b1';
+  const PROJ_A = 'proj-a';
+  const HO_1 = 'ho-1';
+
+  interface DeptScope {
+    id: string;
+    status: string;
+    siteId: string | null;
+    projectId: string | null;
+    baseHeadOfficeId: string | null;
+    site: { projectId: string } | null;
+  }
+
+  const siteDept = (id: string, siteId: string, projectId = PROJ_A): DeptScope => ({
+    id,
+    status: 'ACTIVE',
+    siteId,
+    projectId: null,
+    baseHeadOfficeId: null,
+    site: { projectId },
+  });
+  const hoDept = (id: string): DeptScope => ({
+    id,
+    status: 'ACTIVE',
+    siteId: null,
+    projectId: null,
+    baseHeadOfficeId: HO_1,
+    site: null,
+  });
+
+  const typeDefRow: LeaveTypeDef = {
+    id: 'td-1',
+    companyId,
+    code: 'CL',
+    name: 'Casual Leave',
+    description: null,
+    leaveType: 'CASUAL',
+    status: 'ACTIVE',
+    version: 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const policyOf = (over: Partial<LeavePolicy> = {}): LeavePolicy => ({
+    id: 'pol-1',
+    companyId,
+    scopeType: 'DEPARTMENT',
+    departmentId: 'dept-a1',
+    projectId: null,
+    siteId: null,
+    employeeId: null,
+    typeDefId: 'td-1',
+    leaveType: 'CASUAL',
+    name: 'Site CL Policy',
+    description: null,
+    annualAllowance: new Prisma.Decimal(24),
+    accrualFrequency: 'MONTHLY',
+    maxConsecutiveDays: 3,
+    minNoticeDays: 0,
+    allowHalfDay: true,
+    sandwichRule: false,
+    carryoverMaxDays: new Prisma.Decimal(0),
+    encashable: false,
+    requiresDocAboveDays: null,
+    isActive: true,
+    version: 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...over,
+  });
+
+  const versionRow: LeavePolicyVersion = {
+    id: 'pv-2',
+    companyId,
+    policyId: 'pol-1',
+    version: 2,
+    effectiveFrom: new Date('2099-06-01T00:00:00Z'),
+    mode: 'MONTHLY_CREDIT',
+    monthlyCreditAmount: new Prisma.Decimal(2),
+    ratioThresholdDays: null,
+    ratioEarnedAmount: null,
+    note: null,
+    legacyConfig: null,
+    status: 'ACTIVE',
+    createdByPrincipalId: 'u-pi',
+    createdAt: new Date(),
+  };
+
+  /** PI grant model: LEAVE_MANAGE + LEAVE_APPROVE at site a1 of proj-a —
+   *  a project grant covers child-site targets. Company-wide and
+   *  sibling-site targets deny; hasPermission never reports a
+   *  company-wide grant. */
+  const piAuthorizer = {
+    assertPermission: vi
+      .fn()
+      .mockImplementation(
+        async (_pid: string, perm: string, target?: { scopeType: string; scopeId: string }) => {
+          if (perm === 'LEAVE_READ' || perm === 'LEAVE_APPLY') return;
+          const t = target ?? { scopeType: 'COMPANY', scopeId: companyId };
+          const covered =
+            (t.scopeType === 'SITE' && t.scopeId === SITE_A1) ||
+            (t.scopeType === 'PROJECT' && t.scopeId === PROJ_A);
+          if (!covered) throw new Error('Access denied: out of scope');
+          if (perm === 'LEAVE_MANAGE' || perm === 'LEAVE_APPROVE') return;
+          throw new Error(`Permission denied: ${perm}`);
+        },
+      ),
+    hasPermission: vi.fn().mockResolvedValue(false),
+  };
+
+  const financeAuthorizer = {
+    assertPermission: vi.fn().mockResolvedValue(undefined),
+    hasPermission: vi.fn().mockResolvedValue(true),
+  };
+
+  const flagOn = vi.fn().mockResolvedValue(true);
+  const flagOff = vi.fn().mockResolvedValue(false);
+
+  beforeEach(() => {
+    flagOn.mockClear();
+    flagOff.mockClear();
+    piAuthorizer.assertPermission.mockClear();
+  });
+
+  const createInput = {
+    scopeType: 'DEPARTMENT' as const,
+    departmentId: 'dept-a1',
+    typeDefId: 'td-1',
+    name: 'Site CL',
+    version: {
+      effectiveFrom: '2099-01-01',
+      mode: 'MONTHLY_CREDIT' as const,
+      monthlyCreditAmount: 2,
+    },
+  };
+
+  const createRepos = (department: DeptScope | null): Partial<LeaveRepos> => ({
+    typeDefs: {
+      findById: vi.fn().mockResolvedValue(typeDefRow),
+    } as unknown as LeaveRepos['typeDefs'],
+    departments: {
+      findById: vi.fn().mockResolvedValue(department),
+    },
+    policies: {
+      create: vi.fn().mockResolvedValue(policyOf()),
+    } as unknown as LeaveRepos['policies'],
+    versions: {
+      create: vi.fn().mockResolvedValue(versionRow),
+    } as unknown as LeaveRepos['versions'],
+    audit: { record: vi.fn().mockResolvedValue(undefined) },
+  });
+
+  const policyRepos = (policy: LeavePolicy, department: DeptScope | null): Partial<LeaveRepos> => ({
+    departments: {
+      findById: vi.fn().mockResolvedValue(department),
+    },
+    policies: {
+      findById: vi.fn().mockResolvedValue(policy),
+      update: vi.fn().mockImplementation(async (_c: string, _i: string, patch: object) => ({
+        ...policy,
+        ...patch,
+      })),
+    } as unknown as LeaveRepos['policies'],
+    versions: {
+      findById: vi.fn().mockResolvedValue(versionRow),
+      findActiveAtDate: vi.fn().mockResolvedValue(null),
+      countActive: vi.fn().mockResolvedValue(2),
+      nextVersionNumber: vi.fn().mockResolvedValue(2),
+      create: vi.fn().mockResolvedValue(versionRow),
+      cancel: vi.fn().mockResolvedValue({ ...versionRow, status: 'ARCHIVED' }),
+    } as unknown as LeaveRepos['versions'],
+    audit: { record: vi.fn().mockResolvedValue(undefined) },
+  });
+
+  it('flag OFF → PI cannot create a site-department leave policy', async () => {
+    const service = new LeaveService(
+      createMockUow(createRepos(siteDept('dept-a1', SITE_A1))),
+      piAuthorizer,
+      undefined,
+      flagOff,
+    );
+    await expect(service.createPolicy(piActor, companyId, createInput)).rejects.toMatchObject({
+      code: 'DELEGATION_DISABLED',
+    });
+  });
+
+  it('flag ON → PI creates a leave policy on an assigned site department', async () => {
+    const service = new LeaveService(
+      createMockUow(createRepos(siteDept('dept-a1', SITE_A1))),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    const result = await service.createPolicy(piActor, companyId, createInput);
+    expect(result.policy.scopeType).toBe('DEPARTMENT');
+    expect(piAuthorizer.assertPermission).toHaveBeenCalledWith('u-pi', 'LEAVE_MANAGE', {
+      companyId,
+      scopeType: 'SITE',
+      scopeId: SITE_A1,
+    });
+  });
+
+  it('flag ON → PI is denied on a sibling-site department', async () => {
+    const service = new LeaveService(
+      createMockUow(createRepos(siteDept('dept-b1', SITE_B1, 'proj-b'))),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    await expect(
+      service.createPolicy(piActor, companyId, {
+        ...createInput,
+        departmentId: 'dept-b1',
+      }),
+    ).rejects.toThrow('Access denied');
+  });
+
+  it('flag ON → COMPANY-scope policy creation stays company-only', async () => {
+    const service = new LeaveService(
+      createMockUow(createRepos(null)),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    await expect(
+      service.createPolicy(piActor, companyId, {
+        ...createInput,
+        scopeType: 'COMPANY',
+        departmentId: undefined,
+      } as never),
+    ).rejects.toThrow('Access denied');
+  });
+
+  it('flag ON → EMPLOYEE-scope policy creation stays company-only', async () => {
+    const service = new LeaveService(
+      createMockUow(createRepos(null)),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    await expect(
+      service.createPolicy(piActor, companyId, {
+        ...createInput,
+        scopeType: 'EMPLOYEE',
+        departmentId: undefined,
+        employeeId: 'emp-site',
+      } as never),
+    ).rejects.toThrow('Access denied');
+  });
+
+  it('flag ON → HO-department policy creation is denied for PI', async () => {
+    const service = new LeaveService(
+      createMockUow(createRepos(hoDept('dept-ho'))),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    await expect(
+      service.createPolicy(piActor, companyId, { ...createInput, departmentId: 'dept-ho' }),
+    ).rejects.toThrow('Access denied');
+  });
+
+  it('Finance manages a site-department policy regardless of the flag', async () => {
+    const service = new LeaveService(
+      createMockUow(createRepos(siteDept('dept-a1', SITE_A1))),
+      financeAuthorizer,
+      undefined,
+      flagOff,
+    );
+    const result = await service.createPolicy(financeActor, companyId, createInput);
+    expect(result.policy.scopeType).toBe('DEPARTMENT');
+    expect(flagOff).not.toHaveBeenCalled();
+  });
+
+  it('flag OFF → PI cannot update a site-department policy', async () => {
+    const service = new LeaveService(
+      createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_A1))),
+      piAuthorizer,
+      undefined,
+      flagOff,
+    );
+    await expect(
+      service.updatePolicy(piActor, companyId, 'pol-1', {
+        name: 'Renamed',
+        expectedVersion: 0,
+      }),
+    ).rejects.toMatchObject({ code: 'DELEGATION_DISABLED' });
+  });
+
+  it('flag ON → PI updates a site-department policy inside their scope', async () => {
+    const service = new LeaveService(
+      createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_A1))),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    const updated = await service.updatePolicy(piActor, companyId, 'pol-1', {
+      name: 'Site CL v2',
+      expectedVersion: 0,
+    });
+    expect(updated.name).toBe('Site CL v2');
+  });
+
+  it('flag ON → PI appends a new accrual version to a site-department policy', async () => {
+    const service = new LeaveService(
+      createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_A1))),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    const version = await service.addVersion(piActor, companyId, 'pol-1', {
+      effectiveFrom: '2099-06-01',
+      mode: 'MONTHLY_CREDIT',
+      monthlyCreditAmount: 2,
+      expectedVersion: 0,
+    });
+    expect(version.version).toBe(2);
+  });
+
+  it('flag ON → PI archives a site-department policy inside their scope', async () => {
+    const service = new LeaveService(
+      createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_A1))),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    const archived = await service.archivePolicy(piActor, companyId, 'pol-1', 0);
+    expect(archived.isActive).toBe(false);
+  });
+
+  it('flag ON → a COMPANY-scope policy cannot be touched by PI', async () => {
+    const companyPolicy = policyOf({
+      scopeType: 'COMPANY',
+      departmentId: null,
+    });
+    const service = new LeaveService(
+      createMockUow(policyRepos(companyPolicy, null)),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    await expect(
+      service.updatePolicy(piActor, companyId, 'pol-1', {
+        name: 'Hijack',
+        expectedVersion: 0,
+      }),
+    ).rejects.toThrow('Access denied');
+  });
+
+  it('flag ON → an EMPLOYEE-scope policy cannot be touched by PI', async () => {
+    const employeePolicy = policyOf({
+      scopeType: 'EMPLOYEE',
+      departmentId: null,
+      employeeId: 'emp-site',
+    });
+    const service = new LeaveService(
+      createMockUow(policyRepos(employeePolicy, siteDept('dept-a1', SITE_A1))),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    await expect(service.archivePolicy(piActor, companyId, 'pol-1', 0)).rejects.toThrow(
+      'Access denied',
+    );
+  });
+
+  it('flag ON → PI cannot update a sibling-site department policy', async () => {
+    const service = new LeaveService(
+      createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_B1, 'proj-b'))),
+      piAuthorizer,
+      undefined,
+      flagOn,
+    );
+    await expect(
+      service.updatePolicy(piActor, companyId, 'pol-1', {
+        name: 'Cross-site edit',
+        expectedVersion: 0,
+      }),
+    ).rejects.toThrow('Access denied');
+  });
+
+  it('Finance manages a COMPANY-scope policy regardless of the flag', async () => {
+    const companyPolicy = policyOf({ scopeType: 'COMPANY', departmentId: null });
+    const service = new LeaveService(
+      createMockUow(policyRepos(companyPolicy, null)),
+      financeAuthorizer,
+      undefined,
+      flagOff,
+    );
+    const updated = await service.updatePolicy(financeActor, companyId, 'pol-1', {
+      name: 'Company baseline v2',
+      expectedVersion: 0,
+    });
+    expect(updated.name).toBe('Company baseline v2');
+    expect(flagOff).not.toHaveBeenCalled();
   });
 });

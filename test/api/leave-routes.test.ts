@@ -30,6 +30,11 @@ afterAll(async () => {
 
 async function makeApp(opts: { allow?: boolean } = {}) {
   const mockLeaveService = {
+    resolveScope: async (opts: { companyId: string }) => ({
+      companyId: opts.companyId,
+      scopeType: 'COMPANY' as const,
+      scopeId: opts.companyId,
+    }),
     createTypeDef: async (_actor: unknown, _cid: string, input: Record<string, unknown>) => ({
       id: '00000000-0000-4000-8000-0000000000d1',
       companyId: CID,
@@ -162,6 +167,11 @@ async function makeApp(opts: { allow?: boolean } = {}) {
       id,
       companyId: CID,
       status: 'CANCELLED',
+    }),
+    resubmitRequest: async (_actor: unknown, _cid: string, id: string) => ({
+      id,
+      companyId: CID,
+      status: 'PENDING',
     }),
   } as unknown as LeaveService;
 

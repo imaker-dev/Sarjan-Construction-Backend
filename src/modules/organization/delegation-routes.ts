@@ -21,6 +21,7 @@ const PatchDelegations = Type.Object(
     memberSuspend: Type.Optional(Type.Boolean()),
     memberExit: Type.Optional(Type.Boolean()),
     scheduleManage: Type.Optional(Type.Boolean()),
+    leavePolicyManage: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -52,6 +53,7 @@ const ALLOWED_PATCH_KEYS = new Set([
   'memberSuspend',
   'memberExit',
   'scheduleManage',
+  'leavePolicyManage',
 ]);
 
 // The app's ajv config strips unknown properties during validation instead
@@ -98,6 +100,7 @@ export function delegationRoutes(service: DelegationService) {
             memberSuspend?: boolean;
             memberExit?: boolean;
             scheduleManage?: boolean;
+            leavePolicyManage?: boolean;
           },
         ),
     );
