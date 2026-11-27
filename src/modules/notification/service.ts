@@ -7,6 +7,7 @@ import type { NotificationUnitOfWork } from './repository.js';
 import type {
   InboxListFilter,
   InboxCursor,
+  NotificationEmailDelivery,
   NotificationPublisher,
   NotificationTicket,
   TicketStore,
@@ -23,6 +24,19 @@ const BASE_BACKOFF_MS = 60_000;
 
 export const TICKET_TTL_SECONDS = 30;
 export const TICKET_TYPE = 'NOTIF_TICKET';
+
+const EMAIL_MAX_ATTEMPTS = 5;
+const EMAIL_BASE_BACKOFF_MS = 60_000;
+export const SKIP_NO_VERIFIED_ADDRESS = 'NO_VERIFIED_ADDRESS';
+
+/** Narrow mail boundary — the worker only needs sendMail. */
+export interface MailSender {
+  sendMail(options: {
+    to: string;
+    subject: string;
+    text?: string;
+  }): Promise<{ success: boolean; error?: string | undefined }>;
+}
 
 export function channelFor(companyId: string, principalId: string): string {
   return `notif:${companyId}:${principalId}`;
@@ -45,6 +59,11 @@ export interface NotificationServiceDeps {
     claims: { sub: string; sid: string },
     opts?: { correlationId?: string },
   ) => Promise<ActorContext & { sessionId: string }>;
+  /** Optional SMTP sender — absent means email deliveries are never claimed. */
+  mailService?: MailSender;
+  /** Trusted application origin (APP_BASE_URL) — email links are built from
+   *  config, never from an incoming Host header. */
+  appBaseUrl?: string;
   batchSize?: number;
   leaseMs?: number;
   now?: () => Date;
@@ -84,6 +103,12 @@ const TITLES: Record<string, (s: Record<string, string>) => string> = {
   APPROVAL_TASK_DECIDED: (s) => `Approval ${s.outcome ?? 'decided'}`,
   DOCUMENT_APPROVED: () => 'Document approved',
   DOCUMENT_REJECTED: () => 'Document rejected',
+  LEAVE_REQUEST_SUBMITTED: (s) => `New leave request: ${s.leaveType ?? 'leave'}`,
+  LEAVE_REQUEST_RESUBMITTED: (s) => `Leave request resubmitted: ${s.leaveType ?? 'leave'}`,
+  LEAVE_REQUEST_APPROVED: (s) => `Leave request approved: ${s.leaveType ?? 'leave'}`,
+  LEAVE_REQUEST_REJECTED: (s) => `Leave request rejected: ${s.leaveType ?? 'leave'}`,
+  LEAVE_REQUEST_RETURNED: (s) => `Leave request returned for correction: ${s.leaveType ?? 'leave'}`,
+  LEAVE_REQUEST_CANCELLED: (s) => `Leave request cancelled: ${s.leaveType ?? 'leave'}`,
   SITE_WALLET_CREATED: () => 'Site wallet created',
   WALLET_FUNDING_SUBMITTED: (s) => `Funding request submitted (attempt ${s.attemptNo ?? '?'})`,
   WALLET_FUNDING_APPROVED: () => 'Funding request approved',
@@ -179,6 +204,14 @@ export class NotificationService {
     });
   }
 
+  /** Unread count for the authenticated recipient only — the app badge. */
+  async unreadCount(actor: ActorContext, companyId: string): Promise<number> {
+    return this.deps.uow.run(async (repos) => {
+      await this.assertMembership(repos, actor, companyId);
+      return repos.notifications.countUnread(companyId, actor.actorId);
+    });
+  }
+
   // ------------------------------------------------------------ ticket flow
 
   /** Issue a 30s single-use ticket — binds the verified company at issue. */
@@ -247,21 +280,48 @@ export class NotificationService {
           const payload = ev.payload as {
             recipientPrincipalIds?: string[];
             summary?: Record<string, string>;
+            titles?: Record<string, string>;
+            emails?: Record<string, { subject: string; bodyText: string; appPath?: string }>;
           };
           const recipients = new Set(payload.recipientPrincipalIds ?? []);
           const summary = payload.summary ?? {};
-          const title = titleFor(ev.eventType, summary);
+          const sharedTitle = titleFor(ev.eventType, summary);
           await repos.notifications.createManySkipping(
             [...recipients].map((rid) => ({
               companyId: ev.companyId,
               recipientPrincipalId: rid,
               eventType: ev.eventType,
-              title,
+              title: payload.titles?.[rid] ?? sharedTitle,
               resourceType: ev.aggregateType,
               resourceId: ev.aggregateId,
               eventKey: ev.eventKey,
             })),
           );
+          // Durable email intents — same tx as inbox rows so a committed
+          // notification can never lose its email, and dedupe keys make
+          // outbox replays idempotent. Recipients without a verified
+          // (EMAIL-type) loginId are recorded SKIPPED, never sent.
+          const emailRecipients = Object.keys(payload.emails ?? {});
+          if (emailRecipients.length > 0) {
+            const verified = await repos.principals.findVerifiedEmailAddresses(emailRecipients);
+            await repos.emailDeliveries.createManySkipping(
+              emailRecipients.map((rid) => {
+                const mail = payload.emails?.[rid];
+                const toAddress = verified.get(rid) ?? null;
+                return {
+                  companyId: ev.companyId,
+                  recipientPrincipalId: rid,
+                  eventKey: ev.eventKey,
+                  toAddress,
+                  subject: mail?.subject ?? ev.eventType,
+                  bodyText: mail?.bodyText ?? '',
+                  appPath: mail?.appPath ?? null,
+                  status: toAddress !== null ? 'PENDING' : 'SKIPPED',
+                  skipReason: toAddress !== null ? null : SKIP_NO_VERIFIED_ADDRESS,
+                };
+              }),
+            );
+          }
           ids.push(ev.id);
         }
         await repos.outbox.markDone(ids, now);
@@ -315,13 +375,93 @@ export class NotificationService {
 
   /** Periodic sweep: reclaim expired leases + republish unpublished rows. */
   async sweep(): Promise<{ reclaimed: number; republished: number }> {
-    const reclaimed = await this.deps.uow.run((repos) =>
-      repos.outbox.reclaimExpiredLeases(this.now()),
-    );
+    const [reclaimed, reclaimedEmails] = await Promise.all([
+      this.deps.uow.run((repos) => repos.outbox.reclaimExpiredLeases(this.now())),
+      this.deps.uow.run((repos) => repos.emailDeliveries.reclaimExpiredLeases(this.now())),
+    ]);
     const stale = await this.deps.uow.run((repos) =>
       repos.notifications.listUnpublishedAll(this.batchSize * 10),
     );
     const republished = await this.publishAll(stale);
-    return { reclaimed, republished };
+    return { reclaimed: reclaimed + reclaimedEmails, republished };
+  }
+
+  // ---------------------------------------------------------- email delivery
+
+  /**
+   * One email batch: claim (leased) → send → mark SENT or record backoff.
+   * Send happens strictly after the durable row exists — a crash mid-send is
+   * recovered by lease expiry + claim replay; dedupe keys keep replays from
+   * enqueueing a second row. Per-row failures are recorded in a separate tx
+   * so backoff persists past any rollback. A mail failure never touches the
+   * leave decision or the inbox row.
+   */
+  async processEmailBatch(): Promise<{
+    claimed: number;
+    sent: number;
+    failed: number;
+  }> {
+    if (this.deps.mailService === undefined) return { claimed: 0, sent: 0, failed: 0 };
+    const now = this.now();
+    const leaseUntil = new Date(now.getTime() + this.leaseMs);
+    const claimed = await this.deps.uow.run((repos) =>
+      repos.emailDeliveries.claim(now, leaseUntil, this.batchSize),
+    );
+    if (claimed.length === 0) return { claimed: 0, sent: 0, failed: 0 };
+
+    let sent = 0;
+    let failed = 0;
+    for (const d of claimed) {
+      const ok = await this.sendDelivery(d);
+      if (ok) sent += 1;
+      else failed += 1;
+    }
+    return { claimed: claimed.length, sent, failed };
+  }
+
+  private async sendDelivery(d: NotificationEmailDelivery): Promise<boolean> {
+    if (d.toAddress === null) {
+      await this.deps.uow.run((repos) =>
+        repos.emailDeliveries.recordFailure(d.id, {
+          lastError: SKIP_NO_VERIFIED_ADDRESS,
+          dead: true,
+        }),
+      );
+      return false;
+    }
+    const link =
+      d.appPath !== null && this.deps.appBaseUrl !== undefined
+        ? `${this.deps.appBaseUrl.replace(/\/$/, '')}${d.appPath}`
+        : null;
+    const text = link !== null ? `${d.bodyText}\n\nView: ${link}` : d.bodyText;
+    try {
+      const result = await this.deps.mailService?.sendMail({
+        to: d.toAddress,
+        subject: d.subject,
+        text,
+      });
+      if (result?.success === true) {
+        await this.deps.uow.run((repos) => repos.emailDeliveries.markSent(d.id, this.now()));
+        return true;
+      }
+      await this.deps.uow.run((repos) =>
+        repos.emailDeliveries.recordFailure(d.id, {
+          lastError: result?.error ?? 'send failed',
+          dead: d.attempts + 1 >= EMAIL_MAX_ATTEMPTS,
+          nextAttemptAt: new Date(this.now().getTime() + EMAIL_BASE_BACKOFF_MS * 2 ** d.attempts),
+        }),
+      );
+      return false;
+    } catch (error) {
+      const lastError = error instanceof Error ? error.message : 'send failed';
+      await this.deps.uow.run((repos) =>
+        repos.emailDeliveries.recordFailure(d.id, {
+          lastError,
+          dead: d.attempts + 1 >= EMAIL_MAX_ATTEMPTS,
+          nextAttemptAt: new Date(this.now().getTime() + EMAIL_BASE_BACKOFF_MS * 2 ** d.attempts),
+        }),
+      );
+      return false;
+    }
   }
 }

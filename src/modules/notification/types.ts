@@ -1,4 +1,4 @@
-import type { Notification, OutboxEvent } from '@prisma/client';
+import type { Notification, NotificationEmailDelivery, OutboxEvent } from '@prisma/client';
 
 export const EVT_WORKFLOW_TRANSITIONED = 'WORKFLOW_TRANSITIONED';
 export const EVT_APPROVAL_TASK_OPENED = 'APPROVAL_TASK_OPENED';
@@ -18,6 +18,14 @@ export interface OutboxEmitInput {
   recipientPrincipalIds: string[];
   /** Bounded safe summary for title/body construction. */
   summary: Record<string, string>;
+  /** Optional per-recipient title override — recipients whose title differs
+   *  from the shared TITLES-derived title (e.g. requester confirmation). */
+  titles?: Record<string, string>;
+  /** Optional per-recipient email intent — recipients listed here also get a
+   *  durable NotificationEmailDelivery row; recipients absent from the map get
+   *  inbox + realtime only (e.g. cancellation alerts to approvers). Payload
+   *  content must stay free of free-text reasons, remarks, and documents. */
+  emails?: Record<string, { subject: string; bodyText: string; appPath?: string }>;
 }
 
 export interface InboxCursor {
@@ -55,4 +63,4 @@ export interface NotificationPublisher {
   publish(channel: string, message: string): Promise<void>;
 }
 
-export type { Notification, OutboxEvent };
+export type { Notification, NotificationEmailDelivery, OutboxEvent };

@@ -54,6 +54,8 @@ function createMockUow(repos: Partial<LeaveRepos>): LeaveUnitOfWork {
   const completeRepos: LeaveRepos = {
     employees: defaultEmployees,
     memberships: defaultMemberships,
+    outbox: { record: vi.fn().mockResolvedValue(undefined) },
+    assignments: { findActivePrincipals: vi.fn().mockResolvedValue([]) },
     ...repos,
   } as LeaveRepos;
 
@@ -1479,7 +1481,35 @@ describe('LeaveService — types, versions, resolution', () => {
       } as unknown as LeaveRepos['balances'],
       requests: {
         findConflicting: vi.fn().mockResolvedValue(null),
-        create: vi.fn().mockResolvedValue({ id: 'req-1', status: 'PENDING' }),
+        create: vi
+          .fn()
+          .mockImplementation(async (_cid: string, data: Prisma.LeaveRequestCreateInput) => ({
+            id: 'req-1',
+            companyId,
+            employeeId: 'emp-1',
+            leaveType: data.leaveType,
+            startDate: data.startDate as Date,
+            endDate: data.endDate as Date,
+            isHalfDay: data.isHalfDay ?? false,
+            halfDayPortion: null,
+            totalDays: data.totalDays ?? new Prisma.Decimal(1),
+            reason: null,
+            documentId: null,
+            status: 'PENDING',
+            reviewedBy: null,
+            reviewedAt: null,
+            reviewRemarks: null,
+            version: 0,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            employee: {
+              id: 'emp-1',
+              employeeCode: 'E1',
+              displayName: 'Ramesh',
+              designation: null,
+              principalId: 'u1',
+            },
+          })),
       } as unknown as LeaveRepos['requests'],
       audit: { record: vi.fn() },
     });
@@ -2332,7 +2362,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(createRepos(siteDept('dept-a1', SITE_A1))),
       piAuthorizer,
-      undefined,
       flagOff,
     );
     await expect(service.createPolicy(piActor, companyId, createInput)).rejects.toMatchObject({
@@ -2344,7 +2373,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(createRepos(siteDept('dept-a1', SITE_A1))),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     const result = await service.createPolicy(piActor, companyId, createInput);
@@ -2360,7 +2388,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(createRepos(siteDept('dept-b1', SITE_B1, 'proj-b'))),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     await expect(
@@ -2372,12 +2399,7 @@ describe('LeaveService — delegated site leave-policy management', () => {
   });
 
   it('flag ON → COMPANY-scope policy creation stays company-only', async () => {
-    const service = new LeaveService(
-      createMockUow(createRepos(null)),
-      piAuthorizer,
-      undefined,
-      flagOn,
-    );
+    const service = new LeaveService(createMockUow(createRepos(null)), piAuthorizer, flagOn);
     await expect(
       service.createPolicy(piActor, companyId, {
         ...createInput,
@@ -2388,12 +2410,7 @@ describe('LeaveService — delegated site leave-policy management', () => {
   });
 
   it('flag ON → EMPLOYEE-scope policy creation stays company-only', async () => {
-    const service = new LeaveService(
-      createMockUow(createRepos(null)),
-      piAuthorizer,
-      undefined,
-      flagOn,
-    );
+    const service = new LeaveService(createMockUow(createRepos(null)), piAuthorizer, flagOn);
     await expect(
       service.createPolicy(piActor, companyId, {
         ...createInput,
@@ -2408,7 +2425,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(createRepos(hoDept('dept-ho'))),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     await expect(
@@ -2420,7 +2436,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(createRepos(siteDept('dept-a1', SITE_A1))),
       financeAuthorizer,
-      undefined,
       flagOff,
     );
     const result = await service.createPolicy(financeActor, companyId, createInput);
@@ -2432,7 +2447,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_A1))),
       piAuthorizer,
-      undefined,
       flagOff,
     );
     await expect(
@@ -2447,7 +2461,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_A1))),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     const updated = await service.updatePolicy(piActor, companyId, 'pol-1', {
@@ -2461,7 +2474,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_A1))),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     const version = await service.addVersion(piActor, companyId, 'pol-1', {
@@ -2477,7 +2489,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_A1))),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     const archived = await service.archivePolicy(piActor, companyId, 'pol-1', 0);
@@ -2492,7 +2503,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(policyRepos(companyPolicy, null)),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     await expect(
@@ -2512,7 +2522,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(policyRepos(employeePolicy, siteDept('dept-a1', SITE_A1))),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     await expect(service.archivePolicy(piActor, companyId, 'pol-1', 0)).rejects.toThrow(
@@ -2524,7 +2533,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(policyRepos(policyOf(), siteDept('dept-a1', SITE_B1, 'proj-b'))),
       piAuthorizer,
-      undefined,
       flagOn,
     );
     await expect(
@@ -2540,7 +2548,6 @@ describe('LeaveService — delegated site leave-policy management', () => {
     const service = new LeaveService(
       createMockUow(policyRepos(companyPolicy, null)),
       financeAuthorizer,
-      undefined,
       flagOff,
     );
     const updated = await service.updatePolicy(financeActor, companyId, 'pol-1', {

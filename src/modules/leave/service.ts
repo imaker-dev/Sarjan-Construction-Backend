@@ -10,7 +10,6 @@ import type {
 import type { ScopeTarget } from '../access-control/service.js';
 import { ForbiddenError } from '../../common/errors/app-error.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
-import type { RoleNotificationDispatcher } from '../notification/role-dispatcher.js';
 import { normalizeCode } from '../organization/validation.js';
 import { PROJECT_DIRECTOR_ROLE_KEY, PROJECT_INCHARGE_ROLE_KEY } from '../setup/role-templates.js';
 import {
@@ -112,7 +111,6 @@ export class LeaveService {
   constructor(
     private readonly uow: LeaveUnitOfWork,
     private readonly authorizer: Authorizer,
-    private readonly dispatcher?: RoleNotificationDispatcher | undefined,
     /** Company delegation probe — scoped holders may author leave policies
      *  whose resolved target is a SITE/PROJECT inside their grant only when
      *  the company's `leavePolicyManage` switch is ON (default OFF, fail
@@ -1369,52 +1367,226 @@ export class LeaveService {
    * stays with company approvers. Notifications never carry the free-text
    * reason or medical details; the request id is the lookup key.
    */
-  private async notifyLeaveSubmitted(
+  private static readonly APPROVER_ROLE_KEYS = [
+    PROJECT_INCHARGE_ROLE_KEY,
+    PROJECT_DIRECTOR_ROLE_KEY,
+    'PROJECT_MANAGER',
+    'SITE_ENGINEER',
+    'DEPT_HEAD',
+  ] as const;
+  private static readonly COMPANY_APPROVER_ROLE_KEYS = [
+    'HO_ADMIN',
+    'COMPANY_OWNER',
+    'FINANCE_MANAGER',
+  ] as const;
+
+  /** Approver principals for a request — the same scope/membership rule the
+   *  decision API enforces: site + project approvers of the requester's
+   *  department scope, plus company-wide HO Admin/Owner/Finance. A requester
+   *  who themselves holds LEAVE_APPROVE at the resolved scope is company-
+   *  administration business and stays with company approvers only. The
+   *  requester is never returned as their own approver. */
+  private async resolveApproverPrincipalIds(
+    repos: LeaveRepos,
     companyId: string,
-    request: LeaveRequestWithDetails,
     dept: DepartmentScopeColumns | undefined,
     requesterIsScopedApprover: boolean,
-  ): Promise<void> {
-    if (this.dispatcher === undefined) return;
-    const totalDays = Number(request.totalDays);
-    const start = request.startDate.toISOString().slice(0, 10);
-    const end = request.endDate.toISOString().slice(0, 10);
-    const base = {
-      companyId,
-      eventType: 'LEAVE_REQUEST_SUBMITTED',
-      title: `New Leave Request: ${request.leaveType} (${String(totalDays)} day${totalDays > 1 ? 's' : ''})`,
-      body: `Leave request ${start} to ${end} awaiting review`,
-      resourceType: 'LEAVE_REQUEST' as const,
-      resourceId: request.id,
-      email: {
-        subject: `New Leave Application: ${request.leaveType}`,
-        text: `A ${request.leaveType} leave request from ${start} to ${end} awaits your review.`,
-      },
-    };
-
+    requesterPrincipalId: string | null,
+  ): Promise<string[]> {
+    const ids = new Set<string>();
     if (dept !== undefined && !requesterIsScopedApprover) {
       const scopes: { scopeType: 'SITE' | 'PROJECT'; scopeId: string }[] = [];
       if (dept.siteId !== null) scopes.push({ scopeType: 'SITE', scopeId: dept.siteId });
       const projectId = dept.projectId ?? dept.site?.projectId ?? null;
       if (projectId !== null) scopes.push({ scopeType: 'PROJECT', scopeId: projectId });
       for (const scope of scopes) {
-        void this.dispatcher.notifyRoles({
-          ...base,
+        for (const pid of await repos.assignments.findActivePrincipals(
+          companyId,
+          [...LeaveService.APPROVER_ROLE_KEYS],
           scope,
-          roleKeys: [
-            PROJECT_INCHARGE_ROLE_KEY,
-            PROJECT_DIRECTOR_ROLE_KEY,
-            'PROJECT_MANAGER',
-            'SITE_ENGINEER',
-            'DEPT_HEAD',
-          ],
-        });
+        )) {
+          ids.add(pid);
+        }
       }
     }
+    for (const pid of await repos.assignments.findActivePrincipals(companyId, [
+      ...LeaveService.COMPANY_APPROVER_ROLE_KEYS,
+    ])) {
+      ids.add(pid);
+    }
+    if (requesterPrincipalId !== null) ids.delete(requesterPrincipalId);
+    return [...ids];
+  }
 
-    void this.dispatcher.notifyRoles({
-      ...base,
-      roleKeys: ['HO_ADMIN', 'COMPANY_OWNER', 'FINANCE_MANAGER'],
+  /**
+   * Fanout for a new/resubmitted request — persisted as ONE durable outbox
+   * event inside the SAME transaction as the mutation + audit row. After
+   * commit the relay materializes inbox rows, realtime pushes, and durable
+   * email intents. Payloads stay free of free-text reasons, decision
+   * remarks, medical details, and document ids — the request id is the
+   * lookup key.
+   */
+  private async emitLeaveSubmission(
+    repos: LeaveRepos,
+    companyId: string,
+    request: LeaveRequestWithDetails,
+    dept: DepartmentScopeColumns | undefined,
+    requesterIsScopedApprover: boolean,
+    resubmitted: boolean,
+  ): Promise<void> {
+    const totalDays = Number(request.totalDays);
+    const start = request.startDate.toISOString().slice(0, 10);
+    const end = request.endDate.toISOString().slice(0, 10);
+    const days = `${String(totalDays)} day${totalDays > 1 ? 's' : ''}`;
+    const requesterPrincipalId = request.employee.principalId;
+
+    const approverIds = await this.resolveApproverPrincipalIds(
+      repos,
+      companyId,
+      dept,
+      requesterIsScopedApprover,
+      requesterPrincipalId,
+    );
+    const recipients = new Set(approverIds);
+    if (requesterPrincipalId !== null) recipients.add(requesterPrincipalId);
+    if (recipients.size === 0) return;
+
+    const eventType = resubmitted ? 'LEAVE_REQUEST_RESUBMITTED' : 'LEAVE_REQUEST_SUBMITTED';
+    const verb = resubmitted ? 'resubmitted' : 'submitted';
+    const appPath = `/leave/requests/${request.id}`;
+    const titles: Record<string, string> = {};
+    const emails: Record<string, { subject: string; bodyText: string; appPath: string }> = {};
+    for (const pid of approverIds) {
+      titles[pid] = resubmitted
+        ? `Leave request resubmitted: ${request.leaveType} (${days})`
+        : `New leave request: ${request.leaveType} (${days})`;
+      emails[pid] = {
+        subject: resubmitted
+          ? `Leave request resubmitted: ${request.leaveType}`
+          : `New leave request: ${request.leaveType}`,
+        bodyText: `A ${request.leaveType} leave request for ${start} to ${end} (${days}) awaits your review.`,
+        appPath,
+      };
+    }
+    if (requesterPrincipalId !== null) {
+      titles[requesterPrincipalId] =
+        `Your ${request.leaveType} leave request was ${verb} (${start} to ${end})`;
+      emails[requesterPrincipalId] = {
+        subject: `Leave request ${verb}: ${request.leaveType}`,
+        bodyText: `Your ${request.leaveType} leave request for ${start} to ${end} (${days}) was ${verb} and now awaits review.`,
+        appPath,
+      };
+    }
+
+    await repos.outbox.record({
+      companyId,
+      eventType,
+      aggregateType: 'LEAVE_REQUEST',
+      aggregateId: request.id,
+      eventKey: `evt:leave:${request.id}:${eventType}:v${request.version}`,
+      recipientPrincipalIds: [...recipients],
+      summary: {
+        leaveType: request.leaveType,
+        startDate: start,
+        endDate: end,
+        totalDays: String(totalDays),
+        status: 'PENDING',
+      },
+      titles,
+      emails,
+    });
+  }
+
+  /** Decision notification — requester only, durable in-tx outbox event.
+   *  Decision remarks stay in the audit trail and API response only; they
+   *  are never placed in notification or email payloads. */
+  private async emitLeaveDecision(
+    repos: LeaveRepos,
+    companyId: string,
+    request: LeaveRequestWithDetails,
+    newStatus: 'APPROVED' | 'REJECTED' | 'RETURNED',
+  ): Promise<void> {
+    const requesterPrincipalId = request.employee.principalId;
+    if (requesterPrincipalId === null) return;
+    const start = request.startDate.toISOString().slice(0, 10);
+    const end = request.endDate.toISOString().slice(0, 10);
+    const label = newStatus === 'RETURNED' ? 'returned for correction' : newStatus.toLowerCase();
+    await repos.outbox.record({
+      companyId,
+      eventType: `LEAVE_REQUEST_${newStatus}`,
+      aggregateType: 'LEAVE_REQUEST',
+      aggregateId: request.id,
+      eventKey: `evt:leave:${request.id}:LEAVE_REQUEST_${newStatus}:v${request.version}`,
+      recipientPrincipalIds: [requesterPrincipalId],
+      summary: {
+        leaveType: request.leaveType,
+        startDate: start,
+        endDate: end,
+        totalDays: String(Number(request.totalDays)),
+        status: newStatus,
+      },
+      titles: {
+        [requesterPrincipalId]: `Your ${request.leaveType} leave request was ${label} (${start} to ${end})`,
+      },
+      emails: {
+        [requesterPrincipalId]: {
+          subject: `Leave request ${label}: ${request.leaveType}`,
+          bodyText:
+            newStatus === 'RETURNED'
+              ? `Your ${request.leaveType} leave request for ${start} to ${end} was returned for correction. Edit and resubmit it from the app.`
+              : `Your ${request.leaveType} leave request for ${start} to ${end} was ${label}.`,
+          appPath: `/leave/requests/${request.id}`,
+        },
+      },
+    });
+  }
+
+  /** Cancellation alert — approvers only (in-app + realtime, no email by
+   *  default). The requester initiated the cancel and needs no alert. */
+  private async emitLeaveCancelled(
+    repos: LeaveRepos,
+    companyId: string,
+    request: LeaveRequestWithDetails,
+  ): Promise<void> {
+    const memberships = await repos.memberships.findActiveByEmployee(
+      companyId,
+      request.employeeId,
+      request.startDate,
+    );
+    const dept = LeaveService.pickMembershipAt(memberships, request.startDate)?.department;
+    const approverIds = await this.resolveApproverPrincipalIds(
+      repos,
+      companyId,
+      dept,
+      await this.requesterIsScopedApprover(
+        companyId,
+        request.employee.principalId,
+        dept !== undefined ? departmentScopeTarget(companyId, dept) : companyTarget(companyId),
+      ),
+      request.employee.principalId,
+    );
+    if (approverIds.length === 0) return;
+    const start = request.startDate.toISOString().slice(0, 10);
+    const end = request.endDate.toISOString().slice(0, 10);
+    const titles: Record<string, string> = {};
+    for (const pid of approverIds) {
+      titles[pid] = `Leave request cancelled: ${request.leaveType} (${start} to ${end})`;
+    }
+    await repos.outbox.record({
+      companyId,
+      eventType: 'LEAVE_REQUEST_CANCELLED',
+      aggregateType: 'LEAVE_REQUEST',
+      aggregateId: request.id,
+      eventKey: `evt:leave:${request.id}:LEAVE_REQUEST_CANCELLED:v${request.version}`,
+      recipientPrincipalIds: approverIds,
+      summary: {
+        leaveType: request.leaveType,
+        startDate: start,
+        endDate: end,
+        totalDays: String(Number(request.totalDays)),
+        status: 'CANCELLED',
+      },
+      titles,
     });
   }
 
@@ -1532,7 +1704,7 @@ export class LeaveService {
         requesterPrincipalId,
         target,
       );
-      await this.notifyLeaveSubmitted(companyId, created, dept, scopedApproverRequest);
+      await this.emitLeaveSubmission(repos, companyId, created, dept, scopedApproverRequest, false);
 
       return created;
     });
@@ -1643,22 +1815,7 @@ export class LeaveService {
         }),
       );
 
-      if (this.dispatcher && existing.employee.principalId) {
-        const label = newStatus === 'RETURNED' ? 'RETURNED for correction' : newStatus;
-        void this.dispatcher.notifyUser({
-          companyId,
-          recipientPrincipalId: existing.employee.principalId,
-          eventType: `LEAVE_REQUEST_${newStatus}`,
-          title: `Your Leave Request has been ${label}`,
-          body: `${existing.leaveType} leave from ${existing.startDate.toISOString().slice(0, 10)} to ${existing.endDate.toISOString().slice(0, 10)} was ${label}. ${input.remarks ? `Remarks: ${input.remarks}` : ''}`.trim(),
-          resourceType: 'LEAVE_REQUEST',
-          resourceId: id,
-          email: {
-            subject: `Leave Request ${label}: ${existing.leaveType}`,
-            text: `Your ${existing.leaveType} leave request from ${existing.startDate.toISOString().slice(0, 10)} to ${existing.endDate.toISOString().slice(0, 10)} has been ${label}. ${input.remarks ? `Remarks: ${input.remarks}` : ''}`.trim(),
-          },
-        });
-      }
+      await this.emitLeaveDecision(repos, companyId, updated, newStatus);
 
       return updated;
     });
@@ -1758,7 +1915,7 @@ export class LeaveService {
         existing.employee.principalId,
         target,
       );
-      await this.notifyLeaveSubmitted(companyId, updated, dept, scopedApproverRequest);
+      await this.emitLeaveSubmission(repos, companyId, updated, dept, scopedApproverRequest, true);
 
       return updated;
     });
@@ -1844,6 +2001,8 @@ export class LeaveService {
           metadata: { reason: input.reason },
         }),
       );
+
+      await this.emitLeaveCancelled(repos, companyId, updated);
 
       return updated;
     });
