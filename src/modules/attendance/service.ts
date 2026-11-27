@@ -106,6 +106,13 @@ interface Authorizer {
     permissionKey: string,
     companyId: string,
   ): Promise<ReadableScopes | null>;
+  assertApprovalHierarchy?(params: {
+    companyId: string;
+    actorPrincipalId: string;
+    targetPrincipalId: string | null;
+    permissionKey: string;
+    sharedDepartment?: boolean;
+  }): Promise<void>;
 }
 
 /** Structural view of a resolved work-schedule revision — the intraday fields
@@ -1126,6 +1133,40 @@ export class AttendanceService {
         sessionLocationTarget(companyId, session),
       );
 
+      // Separation of duties & tier/peer-approver hierarchy guard
+      const [callerEmp, targetEmp] =
+        (repos.employees as typeof repos.employees | undefined) !== undefined
+          ? await Promise.all([
+              repos.employees.findByPrincipal(companyId, actor.actorId),
+              repos.employees.findById(companyId, session.employeeId),
+            ])
+          : [null, null];
+      const isSelf =
+        (targetEmp?.principalId !== undefined &&
+          targetEmp.principalId !== null &&
+          targetEmp.principalId === actor.actorId) ||
+        (callerEmp !== null && callerEmp.id === session.employeeId);
+      if (isSelf) {
+        throw new AccessDeniedError('Employees cannot regularize their own attendance sessions');
+      }
+      if (this.authorizer.assertApprovalHierarchy !== undefined) {
+        const sharedDepartment =
+          callerEmp !== null && repos.memberships.haveSharedActiveDepartment !== undefined
+            ? await repos.memberships.haveSharedActiveDepartment(
+                companyId,
+                callerEmp.id,
+                session.employeeId,
+              )
+            : false;
+        await this.authorizer.assertApprovalHierarchy({
+          companyId,
+          actorPrincipalId: actor.actorId,
+          targetPrincipalId: targetEmp?.principalId ?? null,
+          permissionKey: ATTENDANCE_MANAGE,
+          sharedDepartment,
+        });
+      }
+
       const effectivePunchInAt = input.punchInAt ? new Date(input.punchInAt) : session.punchInAt;
       const effectivePunchOutAt = input.punchOutAt
         ? new Date(input.punchOutAt)
@@ -1471,26 +1512,56 @@ export class AttendanceService {
     });
   }
 
-  async getDailySummary(actor: ActorContext, companyId: string, filter: DailySummaryFilter) {
-    if (filter.siteId) {
+  private async assertSummaryOrMusterScope(
+    actorId: string,
+    companyId: string,
+    filter: {
+      siteId?: string | undefined;
+      headOfficeId?: string | undefined;
+      departmentId?: string | undefined;
+      employeeId?: string | undefined;
+    },
+  ): Promise<void> {
+    if (filter.siteId !== undefined) {
       await this.authorizer.assertPermission(
-        actor.actorId,
+        actorId,
         ATTENDANCE_READ,
         siteTarget(companyId, filter.siteId),
       );
-    } else if (filter.headOfficeId) {
+      return;
+    }
+    if (filter.headOfficeId !== undefined) {
       await this.authorizer.assertPermission(
-        actor.actorId,
+        actorId,
         ATTENDANCE_READ,
         headOfficeTarget(companyId, filter.headOfficeId),
       );
-    } else {
-      await this.authorizer.assertPermission(
-        actor.actorId,
-        ATTENDANCE_READ,
-        companyTarget(companyId),
-      );
+      return;
     }
+    if (filter.departmentId !== undefined) {
+      const target = await this.resolveScope(companyId, 'department', filter.departmentId);
+      await this.authorizer.assertPermission(actorId, ATTENDANCE_READ, target);
+      return;
+    }
+    if (filter.employeeId !== undefined) {
+      const callerEmp = await this.uow.run((repos) =>
+        (repos.employees as typeof repos.employees | undefined) !== undefined
+          ? repos.employees.findByPrincipal(companyId, actorId)
+          : Promise.resolve(null),
+      );
+      if (callerEmp?.id === filter.employeeId) {
+        await this.assertAnyScope(actorId, ATTENDANCE_READ, companyId);
+        return;
+      }
+      const target = await this.resolveScope(companyId, 'employee', filter.employeeId);
+      await this.authorizer.assertPermission(actorId, ATTENDANCE_READ, target);
+      return;
+    }
+    await this.authorizer.assertPermission(actorId, ATTENDANCE_READ, companyTarget(companyId));
+  }
+
+  async getDailySummary(actor: ActorContext, companyId: string, filter: DailySummaryFilter) {
+    await this.assertSummaryOrMusterScope(actor.actorId, companyId, filter);
     return this.uow.run((repos) => repos.sessions.getDailySummary(companyId, filter));
   }
 
@@ -2391,25 +2462,7 @@ export class AttendanceService {
   // -------------------------------------------------------------------------
 
   async getMusterRollRange(actor: ActorContext, companyId: string, filter: MusterRollRangeFilter) {
-    if (filter.siteId) {
-      await this.authorizer.assertPermission(
-        actor.actorId,
-        ATTENDANCE_READ,
-        siteTarget(companyId, filter.siteId),
-      );
-    } else if (filter.headOfficeId) {
-      await this.authorizer.assertPermission(
-        actor.actorId,
-        ATTENDANCE_READ,
-        headOfficeTarget(companyId, filter.headOfficeId),
-      );
-    } else {
-      await this.authorizer.assertPermission(
-        actor.actorId,
-        ATTENDANCE_READ,
-        companyTarget(companyId),
-      );
-    }
+    await this.assertSummaryOrMusterScope(actor.actorId, companyId, filter);
 
     const { from: resolvedFrom, to: resolvedTo } = resolveDateRangeForPeriod(
       filter.period,
@@ -3569,10 +3622,10 @@ export class AttendanceService {
             : [];
         for (const m of memberships) {
           if (m.department.siteId != null) return siteTarget(companyId, m.department.siteId);
-          if (m.department.baseHeadOfficeId != null)
-            return headOfficeTarget(companyId, m.department.baseHeadOfficeId);
           if (m.department.projectId != null)
             return { companyId, scopeType: 'PROJECT', scopeId: m.department.projectId };
+          if (m.department.baseHeadOfficeId != null)
+            return headOfficeTarget(companyId, m.department.baseHeadOfficeId);
         }
         return companyTarget(companyId);
       };

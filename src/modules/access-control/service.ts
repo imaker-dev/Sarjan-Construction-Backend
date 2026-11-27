@@ -2,7 +2,9 @@ import type { RoleAssignment, ScopeType } from '@prisma/client';
 import type { PrincipalRepository } from '../auth/repository.js';
 import type { AccessRepository, ScopeChain } from './repository.js';
 import { AccessDeniedError } from './errors.js';
-import { FINANCE_ROLE_KEYS } from '../setup/role-templates.js';
+import { FINANCE_ROLE_KEYS, HO_ADMIN_ROLE_KEY } from '../setup/role-templates.js';
+
+const TOP_APPROVER_ROLE_KEYS: ReadonlySet<string> = new Set(['COMPANY_OWNER', HO_ADMIN_ROLE_KEY]);
 
 export interface ScopeTarget {
   companyId: string;
@@ -60,7 +62,7 @@ export class AccessControlService {
   constructor(
     private readonly deps: AccessServiceDeps,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) { }
 
   /**
    * Deny-by-default permission evaluation. Resolves the target's ancestor
@@ -204,6 +206,60 @@ export class AccessControlService {
       projectIds: Array.from(projectIds),
       siteIds: Array.from(siteIds),
     };
+  }
+
+  /**
+   * Enforces approval/regularization hierarchy beyond scope coverage:
+   * - Top-tier company admins (COMPANY_OWNER, HO_ADMIN) may approve any non-self target.
+   * - Targets holding FINANCE_MANAGER require COMPANY_OWNER or HO_ADMIN.
+   * - Peer approvers (target also holds `permissionKey`) sharing a role or active
+   *   department with the actor cannot approve each other.
+   */
+  async assertApprovalHierarchy(params: {
+    companyId: string;
+    actorPrincipalId: string;
+    targetPrincipalId: string | null;
+    permissionKey: string;
+    sharedDepartment?: boolean;
+  }): Promise<void> {
+    const { companyId, actorPrincipalId, targetPrincipalId, permissionKey, sharedDepartment } =
+      params;
+    const now = this.now();
+    const actorAssignments = await this.deps.access.assignmentsForPrincipal(
+      actorPrincipalId,
+      companyId,
+      now,
+    );
+    const actorRoleKeys = new Set(actorAssignments.map((a) => a.role.key));
+    if (Array.from(actorRoleKeys).some((k) => TOP_APPROVER_ROLE_KEYS.has(k))) {
+      return;
+    }
+
+    if (targetPrincipalId === null) return;
+
+    const targetAssignments = await this.deps.access.assignmentsForPrincipal(
+      targetPrincipalId,
+      companyId,
+      now,
+    );
+    const targetRoleKeys = new Set(targetAssignments.map((a) => a.role.key));
+    if (targetRoleKeys.has('FINANCE_MANAGER')) {
+      throw new AccessDeniedError(
+        'Finance Manager requests require Company Owner or Head Office Admin approval',
+      );
+    }
+
+    const targetIsApprover = targetAssignments.some((a) =>
+      a.role.permissions.some((rp) => rp.permission.key === permissionKey),
+    );
+    if (!targetIsApprover) return;
+
+    if (Array.from(targetRoleKeys).some((k) => actorRoleKeys.has(k))) {
+      throw new AccessDeniedError('Peer approvers with the same role cannot approve each other');
+    }
+    if (sharedDepartment === true) {
+      throw new AccessDeniedError('Approvers in the same department cannot approve each other');
+    }
   }
 
   private resolveChain(target: ScopeTarget): Promise<ScopeChain | null> {

@@ -1634,6 +1634,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           accessControl.assertAnyScopePermission(pid, key, cid),
         resolveReadableScopes: (pid: string, key: string, cid: string) =>
           accessControl.resolveReadableScopes(pid, key, cid),
+        assertApprovalHierarchy: (params) => accessControl.assertApprovalHierarchy(params),
       },
       { scheduleResolver: scheduleService },
     );
@@ -1665,6 +1666,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
               accessControl.hasPermission(pid, key, target),
             assertAnyScopePermission: (pid: string, key: string, cid: string) =>
               accessControl.assertAnyScopePermission(pid, key, cid),
+            assertApprovalHierarchy: (params) => accessControl.assertApprovalHierarchy(params),
           },
           roleDispatcher,
           (companyId: string, flag: 'leavePolicyManage') =>

@@ -73,6 +73,13 @@ interface Authorizer {
     permissionKey: string,
     companyId: string,
   ): Promise<void>;
+  assertApprovalHierarchy?(params: {
+    companyId: string;
+    actorPrincipalId: string;
+    targetPrincipalId: string | null;
+    permissionKey: string;
+    sharedDepartment?: boolean;
+  }): Promise<void>;
 }
 
 const auditEntry = (
@@ -1580,6 +1587,28 @@ export class LeaveService {
           LEAVE_APPROVE,
           companyTarget(companyId),
         );
+      }
+
+      // Tier / peer-approver hierarchy guard:
+      // - FINANCE_MANAGER requests require COMPANY_OWNER / HO_ADMIN
+      // - Same-role or same-department approvers cannot approve each other
+      if (this.authorizer.assertApprovalHierarchy !== undefined) {
+        let sharedDepartment = false;
+        if (callerEmp !== null) {
+          const [actorDepts, targetDepts] = await Promise.all([
+            repos.memberships.findActiveByEmployee(companyId, callerEmp.id),
+            repos.memberships.findActiveByEmployee(companyId, existing.employeeId),
+          ]);
+          const actorDeptIds = new Set(actorDepts.map((m) => m.departmentId));
+          sharedDepartment = targetDepts.some((m) => actorDeptIds.has(m.departmentId));
+        }
+        await this.authorizer.assertApprovalHierarchy({
+          companyId,
+          actorPrincipalId: actor.actorId,
+          targetPrincipalId: existing.employee.principalId,
+          permissionKey: LEAVE_APPROVE,
+          sharedDepartment,
+        });
       }
 
       if (

@@ -304,6 +304,12 @@ export interface AttendanceRepos {
     hasActiveAtSite(companyId: string, employeeId: string, siteId: string): Promise<boolean>;
     /** Effective membership in a PROJECT-scoped department (e.g. Project Incharge / Director). */
     hasActiveAtProject?(companyId: string, employeeId: string, projectId: string): Promise<boolean>;
+    /** True when both employees currently share at least one ACTIVE department membership. */
+    haveSharedActiveDepartment?(
+      companyId: string,
+      employeeAId: string,
+      employeeBId: string,
+    ): Promise<boolean>;
     /** Active membership anchors for scope resolution — the employee's
      *  departments with their location fields. */
     findActiveByEmployee?(
@@ -328,7 +334,7 @@ export interface AttendanceRepos {
     findById(
       companyId: string,
       id: string,
-    ): Promise<{ id: string; displayName: string; status: string } | null>;
+    ): Promise<{ id: string; displayName: string; status: string; principalId?: string | null } | null>;
     findManyByIds?(
       companyId: string,
       ids: string[],
@@ -1359,6 +1365,22 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             department: { scopeType: 'PROJECT', projectId, status: 'ACTIVE' },
           },
         })) > 0,
+      haveSharedActiveDepartment: async (companyId, employeeAId, employeeBId) => {
+        const aDepts = await tx.departmentMembership.findMany({
+          where: { companyId, employeeId: employeeAId, endedAt: null },
+          select: { departmentId: true },
+        });
+        if (aDepts.length === 0) return false;
+        const count = await tx.departmentMembership.count({
+          where: {
+            companyId,
+            employeeId: employeeBId,
+            endedAt: null,
+            departmentId: { in: aDepts.map((d) => d.departmentId) },
+          },
+        });
+        return count > 0;
+      },
       findActiveByEmployee: (companyId, employeeId) =>
         tx.departmentMembership.findMany({
           where: { companyId, employeeId, endedAt: null },
@@ -1384,7 +1406,7 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
       findById: (companyId, id) =>
         tx.employee.findFirst({
           where: { id, companyId },
-          select: { id: true, displayName: true, status: true },
+          select: { id: true, displayName: true, status: true, principalId: true },
         }),
       findManyByIds: (companyId, ids) =>
         tx.employee.findMany({

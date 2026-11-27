@@ -343,4 +343,98 @@ describe('AccessControlService.hasPermission', () => {
       await expect(svc.resolveReadableScopes('p1', 'ORG_COMPANY_READ', 'co-1')).resolves.toBeNull();
     });
   });
+
+  describe('assertApprovalHierarchy', () => {
+    function svcWithAssignments(byPrincipal: Record<string, ReturnType<typeof assignment>[]>) {
+      return new AccessControlService({
+        principals: { findById: async () => ({ status: 'ACTIVE' }) } as never,
+        access: {
+          companyExists: async () => true,
+          assignmentsForPrincipal: async (pid: string) => byPrincipal[pid] ?? [],
+          hasActiveFinanceMembership: async () => true,
+          resolveSiteChain: async () => siteChain,
+          resolveProjectChain: async () => siteChain,
+          resolveHeadOfficeChain: async () => siteChain,
+        },
+      });
+    }
+
+    it('allows COMPANY_OWNER / HO_ADMIN to approve FINANCE_MANAGER requests', async () => {
+      const svc = svcWithAssignments({
+        owner: [
+          assignment({
+            scopeType: 'COMPANY',
+            role: { key: 'COMPANY_OWNER', permissions: [{ permission: { key: 'LEAVE_APPROVE' } }] },
+          }),
+        ],
+        fm: [
+          assignment({
+            scopeType: 'COMPANY',
+            role: { key: 'FINANCE_MANAGER', permissions: [{ permission: { key: 'LEAVE_APPROVE' } }] },
+          }),
+        ],
+      });
+      await expect(
+        svc.assertApprovalHierarchy({
+          companyId: 'co-1',
+          actorPrincipalId: 'owner',
+          targetPrincipalId: 'fm',
+          permissionKey: 'LEAVE_APPROVE',
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('blocks FINANCE_MANAGER from approving another FINANCE_MANAGER', async () => {
+      const svc = svcWithAssignments({
+        fm1: [
+          assignment({
+            scopeType: 'COMPANY',
+            role: { key: 'FINANCE_MANAGER', permissions: [{ permission: { key: 'LEAVE_APPROVE' } }] },
+          }),
+        ],
+        fm2: [
+          assignment({
+            scopeType: 'COMPANY',
+            role: { key: 'FINANCE_MANAGER', permissions: [{ permission: { key: 'LEAVE_APPROVE' } }] },
+          }),
+        ],
+      });
+      await expect(
+        svc.assertApprovalHierarchy({
+          companyId: 'co-1',
+          actorPrincipalId: 'fm1',
+          targetPrincipalId: 'fm2',
+          permissionKey: 'LEAVE_APPROVE',
+        }),
+      ).rejects.toThrow(AccessDeniedError);
+    });
+
+    it('blocks peer approvers in the same department from approving each other', async () => {
+      const svc = svcWithAssignments({
+        pi: [
+          assignment({
+            scopeType: 'PROJECT',
+            projectId: 'proj-1',
+            role: { key: 'PROJECT_INCHARGE', permissions: [{ permission: { key: 'LEAVE_APPROVE' } }] },
+          }),
+        ],
+        dh: [
+          assignment({
+            scopeType: 'SITE',
+            siteId: 'site-1',
+            role: { key: 'DEPT_HEAD', permissions: [{ permission: { key: 'LEAVE_APPROVE' } }] },
+          }),
+        ],
+      });
+      await expect(
+        svc.assertApprovalHierarchy({
+          companyId: 'co-1',
+          actorPrincipalId: 'pi',
+          targetPrincipalId: 'dh',
+          permissionKey: 'LEAVE_APPROVE',
+          sharedDepartment: true,
+        }),
+      ).rejects.toThrow(AccessDeniedError);
+    });
+  });
 });
