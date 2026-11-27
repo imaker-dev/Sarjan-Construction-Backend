@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ScopeTarget } from '../access-control/service.js';
+import { scopedOrAnyScope } from '../../common/auth/route-guards.js';
 import type { ActorContext } from '../organization/types.js';
 import {
   ATTENDANCE_MANAGE,
@@ -642,18 +643,7 @@ export function attendanceRoutes(service: AttendanceService) {
       '/attendance/daily-reports',
       {
         schema: { querystring: ListDailyReportsQuery },
-        preHandler: [
-          app.authenticate,
-          app.tenantCompanyGuard,
-          async (req) => {
-            const q = req.query as { siteId?: string; projectId?: string };
-            const guard =
-              q.siteId !== undefined || q.projectId !== undefined
-                ? app.requirePermission(ATTENDANCE_READ, queryScope)
-                : app.requireAnyScopePermission(ATTENDANCE_READ, companyIdOf);
-            return guard(req);
-          },
-        ],
+        ...scopedOrAnyScope(app, ATTENDANCE_READ, companyIdOf, queryScope),
       },
       async (req) => {
         return service.getDailyReports(

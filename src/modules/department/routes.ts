@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { DepartmentService } from './service.js';
 import type { ScopeTarget } from '../access-control/service.js';
+import { scopedOrAnyScope } from '../../common/auth/route-guards.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ActorContext } from '../organization/types.js';
 
@@ -119,20 +120,7 @@ export function departmentRoutes(service: DepartmentService) {
       '/departments',
       {
         schema: { querystring: ListQuery },
-        preHandler: [
-          app.authenticate,
-          app.tenantCompanyGuard,
-          async (req) => {
-            const q = req.query as { projectId?: string; siteId?: string };
-            const guard =
-              q.siteId !== undefined || q.projectId !== undefined
-                ? app.requirePermission('DEPARTMENT_READ', atListScope)
-                : typeof app.requireAnyScopePermission === 'function'
-                  ? app.requireAnyScopePermission('DEPARTMENT_READ', companyIdOf)
-                  : app.requirePermission('DEPARTMENT_READ', atCompany);
-            return guard.call(app, req);
-          },
-        ],
+        ...scopedOrAnyScope(app, 'DEPARTMENT_READ', companyIdOf, atListScope),
       },
       async (req) => {
         const q = req.query as { status?: never; projectId?: string; siteId?: string };

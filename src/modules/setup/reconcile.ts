@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import type { LeaveType } from '@prisma/client';
 import { SYSTEM_PRINCIPAL_ID } from './bootstrap.js';
 import { FINANCE_API_PERMISSIONS, TENANT_ROLE_TEMPLATES } from './role-templates.js';
+import { DEFAULT_LEAVE_TYPES } from './leave-defaults.js';
 
 /**
  * Additive owner-permission reconcile: grants only the employee keys to
@@ -196,4 +198,61 @@ async function provisionRoleTemplate(
     });
   }
   return changed;
+}
+
+export interface LeaveReconcileTx {
+  company: {
+    findMany(args: { where: { isPlatform: boolean } }): Promise<{ id: string }[]>;
+  };
+  leaveTypeDef: {
+    findMany(args: {
+      where: { companyId: string };
+      select: { code: true; leaveType: true };
+    }): Promise<{ code: string; leaveType: string | null }[]>;
+    createMany(args: {
+      data: {
+        companyId: string;
+        code: string;
+        name: string;
+        description: string;
+        leaveType: LeaveType;
+      }[];
+      skipDuplicates: boolean;
+    }): Promise<{ count: number }>;
+  };
+}
+
+/**
+ * Idempotently provisions DEFAULT_LEAVE_TYPES for existing customer companies
+ * that are missing them (skipping any code or leaveType already present).
+ */
+export async function reconcileDefaultLeaveTypes(tx: LeaveReconcileTx): Promise<number> {
+  const companies = await tx.company.findMany({ where: { isPlatform: false } });
+  let added = 0;
+  for (const { id: companyId } of companies) {
+    const existing = await tx.leaveTypeDef.findMany({
+      where: { companyId },
+      select: { code: true, leaveType: true },
+    });
+    const usedCodes = new Set(existing.map((e) => e.code));
+    const usedTypes = new Set(
+      existing.map((e) => e.leaveType).filter((t): t is string => t !== null),
+    );
+    const missing = DEFAULT_LEAVE_TYPES.filter(
+      (t) => !usedCodes.has(t.code) && !usedTypes.has(t.leaveType),
+    );
+    if (missing.length === 0) continue;
+    const res = await tx.leaveTypeDef.createMany({
+      data: missing.map((item) => ({
+        companyId,
+        code: item.code,
+        name: item.name,
+        description: item.description,
+        leaveType: item.leaveType,
+      })),
+      skipDuplicates: true,
+    });
+    added += res.count;
+  }
+  return added;
 }

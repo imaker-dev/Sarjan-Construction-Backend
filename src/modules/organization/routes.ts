@@ -3,6 +3,7 @@ import { Type } from '@sinclair/typebox';
 import type { OrganizationService } from './service.js';
 import type { DocumentService } from '../document/service.js';
 import type { ScopeTarget } from '../access-control/service.js';
+import { scopedOrAnyScope } from '../../common/auth/route-guards.js';
 import { AppError, UnauthorizedError } from '../../common/errors/app-error.js';
 import { OrgValidationError } from './errors.js';
 import type { ActorContext } from './types.js';
@@ -815,24 +816,17 @@ export function organizationRoutes(
       '/org/sites',
       {
         schema: { querystring: ListQuery },
-        preHandler: [
-          app.authenticate,
-          app.tenantCompanyGuard,
-          async (req) => {
-            const { projectId } = req.query as { projectId?: string };
-            const guard =
-              projectId !== undefined
-                ? app.requirePermission('ORG_SITE_READ', (r) => ({
-                    companyId: companyIdOf(r),
-                    scopeType: 'PROJECT',
-                    scopeId: (r.query as { projectId?: string }).projectId ?? '',
-                  }))
-                : typeof app.requireAnyScopePermission === 'function'
-                  ? app.requireAnyScopePermission('ORG_SITE_READ', companyIdOf)
-                  : app.requirePermission('ORG_SITE_READ', atCompany);
-            return guard(req);
-          },
-        ],
+        ...scopedOrAnyScope(
+          app,
+          'ORG_SITE_READ',
+          companyIdOf,
+          (r) => ({
+            companyId: companyIdOf(r),
+            scopeType: 'PROJECT',
+            scopeId: (r.query as { projectId?: string }).projectId ?? '',
+          }),
+          (r) => (r.query as { projectId?: string }).projectId !== undefined,
+        ),
       },
       async (req) => {
         const q = req.query as { status?: never; projectId?: string };

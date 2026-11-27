@@ -10,6 +10,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 import {
+  reconcileDefaultLeaveTypes,
   reconcileHoAdminRoles,
   reconcileOwnerPermissions,
 } from '../src/modules/setup/reconcile.js';
@@ -24,9 +25,12 @@ const pool = new pg.Pool({ connectionString: DATABASE_URL });
 const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 
 prisma
-  .$transaction((tx) =>
-    reconcileOwnerPermissions(tx).then(async (a) => a + (await reconcileHoAdminRoles(tx))),
-  )
+  .$transaction(async (tx) => {
+    const a = await reconcileOwnerPermissions(tx);
+    const b = await reconcileHoAdminRoles(tx);
+    const c = await reconcileDefaultLeaveTypes(tx);
+    return a + b + c;
+  })
   .then((changed) => {
     console.log(`reconcile complete — ${changed} grant(s) added`);
   })
