@@ -699,6 +699,78 @@ GET /api/v1/attendance/sessions?employeeId=<ownEmpId>&businessDate=2026-11-10
 GET /api/v1/leave/requests?status=APPROVED&from=2026-11-10&to=2026-11-10
 ```
 
+## Leave notifications — in-app, realtime, email
+
+Every lifecycle change emits a durable notification to three channels. A user
+sees and receives **only** notifications addressed to their own authenticated
+principal — the recipient is always derived from the verified token, never
+from a request field or socket room.
+
+### Events and recipients
+
+| Action   | `eventType`                 | Requester         | Approvers                                                                                                              | Email                   |
+| -------- | --------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| Submit   | `LEAVE_REQUEST_SUBMITTED`   | confirmation      | PI / PD / PM / SE / DEPT_HEAD at the requester's site + project scope, plus HO_ADMIN / COMPANY_OWNER / FINANCE_MANAGER | requester + approvers   |
+| Approve  | `LEAVE_REQUEST_APPROVED`    | decision          | —                                                                                                                      | requester               |
+| Reject   | `LEAVE_REQUEST_REJECTED`    | decision          | —                                                                                                                      | requester               |
+| Return   | `LEAVE_REQUEST_RETURNED`    | correction prompt | —                                                                                                                      | requester               |
+| Resubmit | `LEAVE_REQUEST_RESUBMITTED` | confirmation      | same fanout as submit                                                                                                  | requester + approvers   |
+| Cancel   | `LEAVE_REQUEST_CANCELLED`   | —                 | same fanout as submit                                                                                                  | **no email by default** |
+
+- A requester who is themselves a scoped approver (e.g. a PI filing personal
+  leave) follows company-authority routing — site approvers are skipped and
+  only company-level approvers are notified. The requester is never notified
+  as their own approver, and sibling-site approvers never see the request.
+- **Privacy:** payloads and emails carry only leave type, dates, day count,
+  status, and the request id — never the free-text reason, decision remarks,
+  medical details, or document ids.
+
+### Reading notifications (inbox)
+
+```bash
+GET  /api/v1/notifications?limit=50&unreadOnly=true   # own inbox, cursor-paged
+GET  /api/v1/notifications/unread-count               # own unread badge count
+POST /api/v1/notifications/:id/read                   # mark one read
+```
+
+All require `Authorization: Bearer` + `x-company-id`; the recipient is the
+authenticated principal — a `GET` can never return another user's rows.
+
+### Realtime (WebSocket)
+
+```bash
+POST /api/v1/notifications/ticket          # {companyId} → 30s single-use ticket
+# native:  ws://host/api/v1/notifications/stream   (Authorization: Bearer)
+# browser: same URL, Sec-WebSocket-Protocol: sarjan-ticket.<ticket>
+```
+
+Frames: `{notificationId, eventType, title, resourceType, resourceId}` —
+`resourceId` is the leave request id for `router.push`. Delivery is
+per-principal (`notif:<companyId>:<principalId>`); reconnects catch up from
+the persisted inbox, which is the source of truth — the stream is a push
+hint, not the record.
+
+### Email
+
+- Sent only to a **verified** address: the principal's `EMAIL`-type `loginId`
+  (OTP-verified at login). `contactEmail` is profile data and is **not**
+  used — principals without a verified address get a durable `SKIPPED` record
+  with `NO_VERIFIED_ADDRESS` while in-app + realtime still deliver.
+- Content: minimal status, leave type, dates, and a link built from
+  `APP_BASE_URL` + `/leave/requests/<id>` — never from a `Host` header.
+- Delivery is durable and retryable: a `NotificationEmailDelivery` row is
+  created in the same relay transaction as the inbox row, claimed by the
+  worker, retried with backoff (max 5 attempts → `DEAD`), and deduped per
+  `(companyId, recipientPrincipalId, eventKey)` — an SMTP failure never rolls
+  back the leave decision and replays never double-send.
+
+### Ordering guarantee
+
+The leave mutation, audit record, and `OutboxEvent` commit in **one**
+transaction; inbox rows, realtime publishes, and email sends happen only
+after commit via the relay worker. A rolled-back request can therefore never
+produce a notification, a socket frame, or an email.
+
 ## Deferred to later milestones (not in 2A)
 
 - Balance ledger + annual carry-forward jobs (balances remain admin-managed

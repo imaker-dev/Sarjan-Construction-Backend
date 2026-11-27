@@ -12,6 +12,7 @@ import {
 } from '@prisma/client';
 import { scopedUpdate, type AuditRepository } from '../organization/repository.js';
 import type { AuditRecord } from '../organization/types.js';
+import type { OutboxEmitInput } from '../notification/types.js';
 import {
   InsufficientLeaveBalanceError,
   LeaveDateConflictError,
@@ -284,6 +285,21 @@ export interface LeaveRepos {
       principalId?: string | null;
     } | null>;
     lockForUpdate?(companyId: string, id: string): Promise<void>;
+  };
+  /** Principals holding any of the role keys at the given scope — the same
+   *  membership/scope rule the leave decision API uses. Omitted scope =
+   *  company-wide (HO Admin / Company Owner / Finance authority). */
+  assignments: {
+    findActivePrincipals(
+      companyId: string,
+      roleKeys: string[],
+      scope?: { scopeType: 'HEAD_OFFICE' | 'PROJECT' | 'SITE'; scopeId: string },
+    ): Promise<string[]>;
+  };
+  /** Durable notification event — recorded inside the source transaction so
+   *  a committed leave change can never lose its notification intent. */
+  outbox: {
+    record(entry: OutboxEmitInput): Promise<void>;
   };
   audit: AuditRepository;
 }
@@ -1013,6 +1029,47 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
     employees,
     departments,
     memberships,
+    assignments: {
+      findActivePrincipals: async (companyId, roleKeys, scope) => {
+        if (roleKeys.length === 0) return [];
+        const rows = await tx.roleAssignment.findMany({
+          where: {
+            companyId,
+            role: { key: { in: roleKeys } },
+            revokedAt: null,
+            ...(scope?.scopeType === 'HEAD_OFFICE' && scope.scopeId
+              ? { headOfficeId: scope.scopeId }
+              : {}),
+            ...(scope?.scopeType === 'PROJECT' && scope.scopeId
+              ? { projectId: scope.scopeId }
+              : {}),
+            ...(scope?.scopeType === 'SITE' && scope.scopeId ? { siteId: scope.scopeId } : {}),
+          },
+          select: { principalId: true },
+          distinct: ['principalId'],
+        });
+        return rows.map((r) => r.principalId);
+      },
+    },
+    outbox: {
+      record: async (entry) => {
+        await tx.outboxEvent.create({
+          data: {
+            companyId: entry.companyId,
+            eventType: entry.eventType,
+            aggregateType: entry.aggregateType,
+            aggregateId: entry.aggregateId,
+            eventKey: entry.eventKey,
+            payload: {
+              recipientPrincipalIds: entry.recipientPrincipalIds,
+              summary: entry.summary,
+              ...(entry.titles !== undefined ? { titles: entry.titles } : {}),
+              ...(entry.emails !== undefined ? { emails: entry.emails } : {}),
+            },
+          },
+        });
+      },
+    },
     audit,
   };
 }

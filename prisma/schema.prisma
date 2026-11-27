@@ -104,6 +104,7 @@ model Company {
   documentLinks          DocumentLink[]
   outboxEvents           OutboxEvent[]
   notifications          Notification[]
+  notificationEmails     NotificationEmailDelivery[]
   complianceRecords      ComplianceRecord[]
   departmentOperations   DepartmentOperation[]
   employeeOperations     EmployeeOperation[]
@@ -611,6 +612,7 @@ model Principal {
   linkedDocuments           DocumentLink[]          @relation("DocumentLinker")
   unlinkedDocuments         DocumentLink[]          @relation("DocumentUnlinker")
   notifications             Notification[]
+  notificationEmails        NotificationEmailDelivery[]
   submittedBudgetRevisions  BudgetRevision[]        @relation("BudgetRevisionSubmitter")
   decidedBudgetRevisions    BudgetRevision[]        @relation("BudgetRevisionDecider")
   workforceExitsRecorded    SiteWorkforceExit[]     @relation("SiteWorkforceExitActor")
@@ -1773,6 +1775,50 @@ model Notification {
   // Inbox + cursor paging: WHERE recipient=? AND companyId=? ORDER BY createdAt,id.
   @@index([recipientPrincipalId, companyId, createdAt, id])
   @@index([companyId, publishedAt])
+}
+
+enum EmailDeliveryStatus {
+  PENDING // awaiting send (possibly waiting for backoff)
+  SENDING // claimed/leased by a worker pass — lease expiry returns to PENDING
+  SENT
+  SKIPPED // never sendable — e.g. recipient has no verified email address
+  DEAD    // exhausted attempts
+}
+
+/**
+ * Durable per-recipient email queue. Rows are created in the SAME transaction
+ * as the inbox Notification rows (outbox relay tx2) so a crash can never lose
+ * a committed email intent. Send happens after commit by the relay worker;
+ * every attempt is recorded. Dedupe = company + recipient + eventKey, so
+ * outbox replays can never enqueue a second email.
+ */
+model NotificationEmailDelivery {
+  id                   String              @id @default(uuid()) @db.Uuid
+  companyId            String              @db.Uuid
+  recipientPrincipalId String              @db.Uuid
+  eventKey             String // source outbox event key
+  toAddress            String? // verified loginId email — null on SKIPPED rows
+  subject              String
+  bodyText             String
+  appPath              String? // e.g. /leave/requests/<id> — trusted host prepended at send time
+  status               EmailDeliveryStatus @default(PENDING)
+  skipReason           String?
+  attempts             Int                 @default(0)
+  nextAttemptAt        DateTime            @default(now()) @db.Timestamptz
+  leaseUntil           DateTime?           @db.Timestamptz
+  lastError            String?
+  sentAt               DateTime?           @db.Timestamptz
+  createdAt            DateTime            @default(now()) @db.Timestamptz
+  updatedAt            DateTime            @updatedAt @db.Timestamptz
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  recipient Principal @relation(fields: [recipientPrincipalId], references: [id], onDelete: Restrict)
+
+  // Dedupe = company + recipient + occurrence.
+  @@unique([companyId, recipientPrincipalId, eventKey])
+  // Claim poll: due pending rows; lease-expiry sweep.
+  @@index([status, nextAttemptAt, id])
+  @@index([status, leaseUntil])
 }
 
 // Single-use account claim code — stores only a SHA-256 hash of the raw code.

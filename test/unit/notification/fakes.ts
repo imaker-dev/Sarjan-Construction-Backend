@@ -1,4 +1,4 @@
-import type { Notification, OutboxEvent } from '@prisma/client';
+import type { Notification, NotificationEmailDelivery, OutboxEvent } from '@prisma/client';
 import type {
   NotificationRepos,
   NotificationUnitOfWork,
@@ -14,6 +14,9 @@ import type { OutboxEmitInput } from '../../../src/modules/notification/types.js
 export interface NotificationStore extends DocumentStore {
   outboxEvents: OutboxEvent[];
   notifications: Notification[];
+  emailDeliveries: NotificationEmailDelivery[];
+  /** Verified sendable addresses — principalId → EMAIL-type loginId. */
+  verifiedEmails: Map<string, string>;
   roleAssignments: {
     principalId: string;
     companyId: string;
@@ -24,7 +27,13 @@ export interface NotificationStore extends DocumentStore {
 }
 
 export function emptyNotificationStore(): NotificationStore {
-  return { ...emptyDocumentStore(), notifications: [], roleAssignments: [] };
+  return {
+    ...emptyDocumentStore(),
+    notifications: [],
+    emailDeliveries: [],
+    verifiedEmails: new Map(),
+    roleAssignments: [],
+  };
 }
 
 let nextId = 0;
@@ -86,6 +95,8 @@ export function makeNotificationTestRepos(store: NotificationStore): Notificatio
             payload: {
               recipientPrincipalIds: input.recipientPrincipalIds,
               summary: input.summary,
+              ...(input.titles !== undefined ? { titles: input.titles } : {}),
+              ...(input.emails !== undefined ? { emails: input.emails } : {}),
             },
           }),
         );
@@ -201,6 +212,98 @@ export function makeNotificationTestRepos(store: NotificationStore): Notificatio
       },
       findById: async (companyId, id) =>
         store.notifications.find((n) => n.id === id && n.companyId === companyId) ?? null,
+      countUnread: async (companyId, recipientPrincipalId) =>
+        store.notifications.filter(
+          (n) =>
+            n.companyId === companyId &&
+            n.recipientPrincipalId === recipientPrincipalId &&
+            n.readAt === null,
+        ).length,
+    },
+    emailDeliveries: {
+      createManySkipping: async (rows) => {
+        for (const r of rows) {
+          const exists = store.emailDeliveries.some(
+            (d) =>
+              d.companyId === r.companyId &&
+              d.recipientPrincipalId === r.recipientPrincipalId &&
+              d.eventKey === r.eventKey,
+          );
+          if (!exists) {
+            store.emailDeliveries.push({
+              id: genId(),
+              companyId: r.companyId,
+              recipientPrincipalId: r.recipientPrincipalId,
+              eventKey: r.eventKey,
+              toAddress: r.toAddress,
+              subject: r.subject,
+              bodyText: r.bodyText,
+              appPath: r.appPath,
+              status: r.status,
+              skipReason: r.skipReason,
+              attempts: 0,
+              nextAttemptAt: new Date(0),
+              leaseUntil: null,
+              lastError: null,
+              sentAt: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+          }
+        }
+      },
+      claim: async (now, leaseUntil, limit) => {
+        const rows = store.emailDeliveries
+          .filter((d) => d.status === 'PENDING' && d.nextAttemptAt <= now)
+          .slice(0, limit);
+        for (const r of rows) {
+          r.status = 'SENDING';
+          r.leaseUntil = leaseUntil;
+        }
+        return rows;
+      },
+      markSent: async (id, sentAt) => {
+        const d = store.emailDeliveries.find((x) => x.id === id);
+        if (d) {
+          d.status = 'SENT';
+          d.sentAt = sentAt;
+          d.leaseUntil = null;
+        }
+      },
+      recordFailure: async (id, data) => {
+        const d = store.emailDeliveries.find((x) => x.id === id);
+        if (!d) return;
+        d.attempts += 1;
+        d.lastError = data.lastError;
+        d.leaseUntil = null;
+        if (data.dead) d.status = 'DEAD';
+        else {
+          d.status = 'PENDING';
+          d.nextAttemptAt = data.nextAttemptAt ?? new Date();
+        }
+      },
+      reclaimExpiredLeases: async (now) => {
+        let n = 0;
+        for (const d of store.emailDeliveries) {
+          if (d.status === 'SENDING' && d.leaseUntil !== null && d.leaseUntil < now) {
+            d.status = 'PENDING';
+            d.leaseUntil = null;
+            d.attempts += 1;
+            n += 1;
+          }
+        }
+        return n;
+      },
+    },
+    principals: {
+      findVerifiedEmailAddresses: async (principalIds) => {
+        const map = new Map<string, string>();
+        for (const id of principalIds) {
+          const addr = store.verifiedEmails.get(id);
+          if (addr !== undefined) map.set(id, addr);
+        }
+        return map;
+      },
     },
     assignments: {
       countActive: async (principalId, companyId, now) =>

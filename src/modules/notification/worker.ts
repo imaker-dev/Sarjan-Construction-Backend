@@ -29,9 +29,20 @@ export class NotificationWorker {
     this.worker = new Worker(
       RELAY_QUEUE,
       async (job) => {
-        const result =
-          job.name === SWEEP_JOB ? await this.service.sweep() : await this.service.processBatch();
-        this.log('notification relay tick', { job: job.name, ...result });
+        if (job.name === SWEEP_JOB) {
+          const result = await this.service.sweep();
+          this.log('notification relay tick', { job: job.name, ...result });
+          return;
+        }
+        const batch = await this.service.processBatch();
+        const emails = await this.service.processEmailBatch();
+        this.log('notification relay tick', {
+          job: job.name,
+          ...batch,
+          emailClaimed: emails.claimed,
+          emailSent: emails.sent,
+          emailFailed: emails.failed,
+        });
       },
       { connection: this.connection, concurrency: 1 },
     );
