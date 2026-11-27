@@ -3,6 +3,7 @@ import { Type } from '@sinclair/typebox';
 import type { OrganizationService } from './service.js';
 import type { DocumentService } from '../document/service.js';
 import type { ScopeTarget } from '../access-control/service.js';
+import { scopedOrAnyScope } from '../../common/auth/route-guards.js';
 import { AppError, UnauthorizedError } from '../../common/errors/app-error.js';
 import { OrgValidationError } from './errors.js';
 import type { ActorContext } from './types.js';
@@ -509,6 +510,15 @@ export function organizationRoutes(
     const perm = (key: string, scope: (r: FastifyRequest) => ScopeTarget) => ({
       preHandler: [app.authenticate, app.tenantCompanyGuard, app.requirePermission(key, scope)],
     });
+    const anyScopePerm = (key: string) => ({
+      preHandler: [
+        app.authenticate,
+        app.tenantCompanyGuard,
+        typeof app.requireAnyScopePermission === 'function'
+          ? app.requireAnyScopePermission(key, companyIdOf)
+          : app.requirePermission(key, atCompany),
+      ],
+    });
     const param = (req: FastifyRequest, key: string): string =>
       (req.params as Record<string, string>)[key] ?? '';
     /** Multipart upload → Document row at the given scope + register link. */
@@ -635,10 +645,10 @@ export function organizationRoutes(
     );
     app.get(
       '/org/projects',
-      { schema: { querystring: ListQuery }, ...perm('ORG_PROJECT_READ', atCompany) },
+      { schema: { querystring: ListQuery }, ...anyScopePerm('ORG_PROJECT_READ') },
       async (req) => {
         const q = req.query as { status?: never; headOfficeId?: string };
-        return service.listProjects(companyIdOf(req), q);
+        return service.listProjects(actorOf(req), companyIdOf(req), q);
       },
     );
     app.get('/org/projects/:id', perm('ORG_PROJECT_READ', atProject), async (req) =>
@@ -806,17 +816,21 @@ export function organizationRoutes(
       '/org/sites',
       {
         schema: { querystring: ListQuery },
-        ...perm('ORG_SITE_READ', (r) => {
-          const companyId = companyIdOf(r);
-          const { projectId } = r.query as { projectId?: string };
-          return projectId !== undefined
-            ? { companyId, scopeType: 'PROJECT', scopeId: projectId }
-            : atCompany(r);
-        }),
+        ...scopedOrAnyScope(
+          app,
+          'ORG_SITE_READ',
+          companyIdOf,
+          (r) => ({
+            companyId: companyIdOf(r),
+            scopeType: 'PROJECT',
+            scopeId: (r.query as { projectId?: string }).projectId ?? '',
+          }),
+          (r) => (r.query as { projectId?: string }).projectId !== undefined,
+        ),
       },
       async (req) => {
         const q = req.query as { status?: never; projectId?: string };
-        return service.listSites(companyIdOf(req), q);
+        return service.listSites(actorOf(req), companyIdOf(req), q);
       },
     );
     app.get('/org/sites/:id', perm('ORG_SITE_READ', atSite), async (req) =>

@@ -1,4 +1,5 @@
 import type { Company, Prisma, PrismaClient } from '@prisma/client';
+import type { DefaultLeaveTypeTemplate } from '../setup/leave-defaults.js';
 import { AppError } from '../../common/errors/app-error.js';
 import type { AuditRepository } from '../organization/repository.js';
 import type { AuditRecord } from '../organization/types.js';
@@ -99,6 +100,9 @@ export interface PlatformRepos {
     isInUse(key: string): Promise<boolean>;
   };
   audit: AuditRepository;
+  leaveTypeDefs?: {
+    createMany(companyId: string, items: readonly DefaultLeaveTypeTemplate[]): Promise<void>;
+  };
 }
 
 export interface PlatformUnitOfWork {
@@ -312,6 +316,20 @@ export function makePlatformRepos(tx: Tx): PlatformRepos {
     audit: {
       record: async (entry: AuditRecord) => {
         await tx.auditLog.create({ data: entry as never });
+      },
+    },
+    leaveTypeDefs: {
+      createMany: async (companyId, items) => {
+        await tx.leaveTypeDef.createMany({
+          data: items.map((item) => ({
+            companyId,
+            code: item.code,
+            name: item.name,
+            description: item.description,
+            leaveType: item.leaveType,
+          })),
+          skipDuplicates: true,
+        });
       },
     },
   };

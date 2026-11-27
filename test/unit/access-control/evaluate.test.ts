@@ -273,4 +273,74 @@ describe('AccessControlService.hasPermission', () => {
       );
     });
   });
+
+  describe('resolveReadableScopes', () => {
+    it('returns companyWide=true when principal holds a COMPANY grant', async () => {
+      const svc = serviceWith(
+        [
+          assignment({
+            scopeType: 'COMPANY',
+            role: {
+              key: 'COMPANY_OWNER',
+              permissions: [{ permission: { key: 'ORG_PROJECT_READ' } }],
+            },
+          }),
+        ],
+        siteChain,
+      );
+      await expect(svc.resolveReadableScopes('p1', 'ORG_PROJECT_READ', 'co-1')).resolves.toEqual({
+        companyWide: true,
+        headOfficeIds: [],
+        projectIds: [],
+        siteIds: [],
+      });
+    });
+
+    it('collects unique projectIds, siteIds, and headOfficeIds for scoped roles', async () => {
+      const svc = serviceWith(
+        [
+          assignment({
+            scopeType: 'PROJECT',
+            projectId: 'proj-1',
+            role: {
+              key: 'PROJECT_INCHARGE',
+              permissions: [{ permission: { key: 'ORG_SITE_READ' } }],
+            },
+          }),
+          assignment({
+            scopeType: 'SITE',
+            siteId: 'site-2',
+            role: {
+              key: 'SITE_ENGINEER',
+              permissions: [{ permission: { key: 'ORG_SITE_READ' } }],
+            },
+          }),
+        ],
+        siteChain,
+      );
+      await expect(svc.resolveReadableScopes('p1', 'ORG_SITE_READ', 'co-1')).resolves.toEqual({
+        companyWide: false,
+        headOfficeIds: [],
+        projectIds: ['proj-1'],
+        siteIds: ['site-2'],
+      });
+    });
+
+    it('returns null when principal lacks the permission', async () => {
+      const svc = serviceWith(
+        [
+          assignment({
+            scopeType: 'PROJECT',
+            projectId: 'proj-1',
+            role: {
+              key: 'PROJECT_INCHARGE',
+              permissions: [{ permission: { key: 'ORG_SITE_READ' } }],
+            },
+          }),
+        ],
+        siteChain,
+      );
+      await expect(svc.resolveReadableScopes('p1', 'ORG_COMPANY_READ', 'co-1')).resolves.toBeNull();
+    });
+  });
 });

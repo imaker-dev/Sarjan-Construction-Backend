@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ScopeTarget } from '../access-control/service.js';
+import { scopedOrAnyScope } from '../../common/auth/route-guards.js';
 import type { ActorContext } from '../organization/types.js';
 import {
   LEAVE_APPLY,
@@ -256,7 +257,7 @@ export function leaveRoutes(service: LeaveService) {
             'List leave policies. siteId/projectId/departmentId/employeeId filters resolve to their ' +
             'permission target — scoped callers (PI/PD) may filter only inside their grant.',
         },
-        ...perm(LEAVE_READ, queryScope),
+        ...scopedOrAnyScope(app, LEAVE_READ, companyIdOf, queryScope),
       },
       async (req) => {
         return service.listPolicies(
@@ -276,7 +277,7 @@ export function leaveRoutes(service: LeaveService) {
             'Preview the effective policy for an employee/type/date. Previewing another employee ' +
             'resolves their department scope — scoped approvers see only in-scope employees.',
         },
-        ...perm(LEAVE_READ, queryScope),
+        ...scopedOrAnyScope(app, LEAVE_READ, companyIdOf, queryScope),
       },
       async (req) => {
         return service.resolveEffectiveConfig(
@@ -421,7 +422,7 @@ export function leaveRoutes(service: LeaveService) {
             'List leave balances. Unfiltered lists show the caller’s own balance; employeeId or ' +
             'siteId/projectId/departmentId filters require approver authority at the resolved scope.',
         },
-        ...perm(LEAVE_READ, queryScope),
+        ...scopedOrAnyScope(app, LEAVE_READ, companyIdOf, queryScope),
       },
       async (req) => {
         return service.listBalances(
@@ -486,7 +487,7 @@ export function leaveRoutes(service: LeaveService) {
             'siteId/projectId/departmentId filters require approver authority at the resolved scope ' +
             '(PI/PD see only their site/project workforce).',
         },
-        ...perm(LEAVE_READ, queryScope),
+        ...scopedOrAnyScope(app, LEAVE_READ, companyIdOf, queryScope),
       },
       async (req) => {
         return service.listRequests(

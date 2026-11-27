@@ -421,7 +421,7 @@ describe('site profile and sensitive fields', () => {
       name: 'S',
       accessInstructions: 'secret gate info',
     });
-    const listed = await service.listSites(companyId, { projectId: project.id });
+    const listed = await service.listSites(actor, companyId, { projectId: project.id });
     expect(listed).toHaveLength(1);
     expect('accessInstructions' in (listed[0] ?? {})).toBe(false);
   });

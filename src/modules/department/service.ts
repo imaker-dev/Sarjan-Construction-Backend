@@ -7,7 +7,8 @@ import { assertTransition } from '../organization/lifecycle.js';
 import { DEPARTMENT_TRANSITIONS } from './lifecycle.js';
 import type { DepartmentRepos, DepartmentUnitOfWork } from './repository.js';
 import type { CreateDepartmentInput, UpdateDepartmentInput } from './types.js';
-import type { ScopeTarget } from '../access-control/service.js';
+import type { ReadableScopes, ScopeTarget } from '../access-control/service.js';
+import { AccessDeniedError } from '../access-control/errors.js';
 
 import { ForbiddenError } from '../../common/errors/app-error.js';
 
@@ -32,6 +33,12 @@ export interface Authorizer {
     companyId: string,
     flag: 'siteCreate' | 'siteUpdate' | 'deptManage',
   ) => Promise<boolean>;
+  /** Resolves all readable scopes for auto-scoped list endpoints. */
+  resolveReadableScopes?: (
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ) => Promise<ReadableScopes | null>;
 }
 
 export const DEPT_CONFIGURE = 'DEPARTMENT_CONFIGURE';
@@ -272,11 +279,37 @@ export class DepartmentService {
           scopeId: filter.projectId,
         });
       } else {
-        await this.authorizer.assertPermission(actor.actorId, DEPT_READ, {
-          companyId,
-          scopeType: 'COMPANY',
-          scopeId: companyId,
-        });
+        if (this.authorizer.resolveReadableScopes !== undefined) {
+          const scopes = await this.authorizer.resolveReadableScopes(
+            actor.actorId,
+            DEPT_READ,
+            companyId,
+          );
+          if (scopes === null) throw new AccessDeniedError();
+          if (!scopes.companyWide) {
+            if (
+              scopes.projectIds.length === 0 &&
+              scopes.headOfficeIds.length === 0 &&
+              scopes.siteIds.length === 0
+            ) {
+              return [];
+            }
+            return departments.list(companyId, {
+              ...filter,
+              scopeFilter: {
+                projectIds: scopes.projectIds,
+                headOfficeIds: scopes.headOfficeIds,
+                siteIds: scopes.siteIds,
+              },
+            });
+          }
+        } else {
+          await this.authorizer.assertPermission(actor.actorId, DEPT_READ, {
+            companyId,
+            scopeType: 'COMPANY',
+            scopeId: companyId,
+          });
+        }
       }
       return departments.list(companyId, filter);
     });

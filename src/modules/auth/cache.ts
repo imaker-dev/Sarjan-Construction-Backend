@@ -1,4 +1,5 @@
 import type { Redis } from 'ioredis';
+import type { DelegationPolicyDto } from '../organization/delegation.js';
 
 export interface UserProfileResponse {
   id: string;
@@ -22,6 +23,8 @@ export interface UserProfileResponse {
   role: string | null;
   roles: string[];
   permissions: string[];
+  isCompanyScoped?: boolean;
+  delegations?: DelegationPolicyDto;
   operations?: string[];
   assignments: {
     id: string;

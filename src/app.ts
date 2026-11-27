@@ -1419,6 +1419,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     (companyId, employeeId) => opAssignment.getEffectiveOperations(companyId, employeeId),
     userProfileCache,
     mfaService,
+    (companyId) => delegationService.getFlagsForCompany(companyId),
   );
   accessControl ??= new AccessControlService({
     principals: makeAuthRepos(app.prisma).principals,
@@ -1522,6 +1523,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
             accessControl.hasPermission(pid, key, target),
           assertPermission: (pid: string, key: string, target: ScopeTarget) =>
             accessControl.assertPermission(pid, key, target),
+          resolveReadableScopes: (pid: string, key: string, cid: string) =>
+            accessControl.resolveReadableScopes(pid, key, cid),
           delegationEnabled: (companyId: string, flag) =>
             delegationService.isEnabled(companyId, flag),
           assertInitialBudgetAuthority: (actor, companyId) =>
@@ -1541,6 +1544,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
             accessControl.assertPermission(pid, key, target),
           hasPermission: (pid: string, key: string, target: ScopeTarget) =>
             accessControl.hasPermission(pid, key, target),
+          resolveReadableScopes: (pid: string, key: string, cid: string) =>
+            accessControl.resolveReadableScopes(pid, key, cid),
           delegationEnabled: (companyId: string, flag) =>
             delegationService.isEnabled(companyId, flag),
         }),
@@ -1628,6 +1633,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           accessControl.assertPermission(pid, key, target),
         assertAnyScopePermission: (pid: string, key: string, cid: string) =>
           accessControl.assertAnyScopePermission(pid, key, cid),
+        resolveReadableScopes: (pid: string, key: string, cid: string) =>
+          accessControl.resolveReadableScopes(pid, key, cid),
       },
       { scheduleResolver: scheduleService },
     );

@@ -107,12 +107,11 @@ export class DelegationService {
     return row?.[flag] ?? false;
   }
 
-  async getPolicy(actor: ActorContext, companyId: string): Promise<DelegationPolicyDto> {
-    await this.authorizer.assertPermission(
-      actor.actorId,
-      'ORG_COMPANY_READ',
-      COMPANY_TARGET(companyId),
-    );
+  /**
+   * Internal probe used by domain services and /auth/me — NO authorization
+   * here; callers are trusted boundaries. Missing row -> all false (fail closed).
+   */
+  async getFlagsForCompany(companyId: string): Promise<DelegationPolicyDto> {
     const row = await this.prisma.companyDelegationPolicy.findUnique({
       where: { companyId },
     });
@@ -141,6 +140,15 @@ export class DelegationService {
           leavePolicyManage: row.leavePolicyManage,
           version: row.version,
         };
+  }
+
+  async getPolicy(actor: ActorContext, companyId: string): Promise<DelegationPolicyDto> {
+    await this.authorizer.assertPermission(
+      actor.actorId,
+      'ORG_COMPANY_READ',
+      COMPANY_TARGET(companyId),
+    );
+    return this.getFlagsForCompany(companyId);
   }
 
   async updatePolicy(

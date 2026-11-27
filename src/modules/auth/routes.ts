@@ -137,6 +137,20 @@ const UserMeResponseSchema = Type.Object({
   role: Type.Union([Type.String(), Type.Null()]),
   roles: Type.Array(Type.String()),
   permissions: Type.Array(Type.String()),
+  isCompanyScoped: Type.Optional(Type.Boolean()),
+  delegations: Type.Optional(
+    Type.Object({
+      siteCreate: Type.Boolean(),
+      siteUpdate: Type.Boolean(),
+      deptManage: Type.Boolean(),
+      placement: Type.Boolean(),
+      employeeOnboard: Type.Boolean(),
+      memberSuspend: Type.Boolean(),
+      memberExit: Type.Boolean(),
+      scheduleManage: Type.Boolean(),
+      version: Type.Integer(),
+    }),
+  ),
   operations: Type.Optional(Type.Array(Type.String())),
   assignments: Type.Array(
     Type.Object({

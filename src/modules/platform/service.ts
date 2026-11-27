@@ -6,6 +6,7 @@ import {
   HO_ADMIN_ROLE_KEY,
   TENANT_ROLE_TEMPLATES,
 } from '../setup/role-templates.js';
+import { DEFAULT_LEAVE_TYPES } from '../setup/leave-defaults.js';
 import {
   OrgEntityNotFoundError,
   OrgValidationError,
@@ -172,6 +173,11 @@ export class PlatformService {
           const permission = await repos.permissions.upsert(key);
           await repos.rolePermissions.create(tRole.id, permission.id);
         }
+      }
+
+      // Default leave type definitions (CL, SL, EL, LOP) for the new tenant.
+      if (repos.leaveTypeDefs !== undefined) {
+        await repos.leaveTypeDefs.createMany(company.id, DEFAULT_LEAVE_TYPES);
       }
 
       // Pending admin: suspended until claim completes; placeholder hash is a

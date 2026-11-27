@@ -21,7 +21,8 @@ import type {
 } from './types.js';
 import type { OrgDocumentScopeInfo, OrgRepos, OrgUnitOfWork } from './repository.js';
 import type { OrgNodeStatus, ProjectStatus } from '@prisma/client';
-import type { ScopeTarget } from '../access-control/service.js';
+import type { ReadableScopes, ScopeTarget } from '../access-control/service.js';
+import { AccessDeniedError } from '../access-control/errors.js';
 import { OrgEntityNotFoundError, OrgValidationError } from './errors.js';
 import { ForbiddenError } from '../../common/errors/app-error.js';
 import {
@@ -59,6 +60,12 @@ export interface OrganizationServiceDeps {
     permissionKey: string,
     target: ScopeTarget,
   ) => Promise<void>;
+  /** Resolves all readable scopes for auto-scoped list endpoints. */
+  resolveReadableScopes?: (
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ) => Promise<ReadableScopes | null>;
   /**
    * Company-controlled delegation switches (all default OFF). Scoped holders
    * may act only when the company enabled the matching flag; absent probe →
@@ -910,15 +917,69 @@ export class OrganizationService {
     return this.uow.run(({ headOffices }) => headOffices.list(companyId, filter));
   }
 
-  listProjects(companyId: string, filter?: { status?: ProjectStatus; headOfficeId?: string }) {
-    return this.uow.run(({ projects }) => projects.list(companyId, filter));
+  async listProjects(
+    actor: ActorContext,
+    companyId: string,
+    filter?: { status?: ProjectStatus; headOfficeId?: string },
+  ) {
+    const scopeFilter = await this.resolveListScopeFilter(
+      actor.actorId,
+      'ORG_PROJECT_READ',
+      companyId,
+    );
+    if (scopeFilter === 'EMPTY') return [];
+    return this.uow.run(({ projects }) =>
+      projects.list(companyId, {
+        ...filter,
+        ...(scopeFilter !== null ? { scopeFilter } : {}),
+      }),
+    );
   }
 
-  listSites(companyId: string, filter?: { status?: OrgNodeStatus; projectId?: string }) {
+  async listSites(
+    actor: ActorContext,
+    companyId: string,
+    filter?: { status?: OrgNodeStatus; projectId?: string },
+  ) {
+    // When a specific projectId is requested, the route already enforced
+    // ORG_SITE_READ @ PROJECT(projectId); otherwise auto-scope to caller's grants.
+    const scopeFilter =
+      filter?.projectId !== undefined
+        ? null
+        : await this.resolveListScopeFilter(actor.actorId, 'ORG_SITE_READ', companyId);
+    if (scopeFilter === 'EMPTY') return [];
     // Broad list responses never expose security-sensitive site fields.
     return this.uow.run(async ({ sites }) =>
-      (await sites.list(companyId, filter)).map((s) => stripSiteSensitive(s)),
+      (
+        await sites.list(companyId, {
+          ...filter,
+          ...(scopeFilter !== null ? { scopeFilter } : {}),
+        })
+      ).map((s) => stripSiteSensitive(s)),
     );
+  }
+
+  private async resolveListScopeFilter(
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<{ projectIds: string[]; headOfficeIds: string[]; siteIds: string[] } | null | 'EMPTY'> {
+    if (this.deps?.resolveReadableScopes === undefined) return null;
+    const scopes = await this.deps.resolveReadableScopes(principalId, permissionKey, companyId);
+    if (scopes === null) throw new AccessDeniedError();
+    if (scopes.companyWide) return null;
+    if (
+      scopes.projectIds.length === 0 &&
+      scopes.headOfficeIds.length === 0 &&
+      scopes.siteIds.length === 0
+    ) {
+      return 'EMPTY';
+    }
+    return {
+      projectIds: scopes.projectIds,
+      headOfficeIds: scopes.headOfficeIds,
+      siteIds: scopes.siteIds,
+    };
   }
 
   /** Full project profile + its registers (parcels, documents, approvals). */

@@ -933,6 +933,7 @@ export const LabourCategoryEnum = Type.Union([
 ]);
 
 export const ListDailyReportsQuery = Type.Object({
+  projectId: Type.Optional(Type.String({ format: 'uuid' })),
   siteId: Type.Optional(Type.String({ format: 'uuid' })),
   fromDate: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
   toDate: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),

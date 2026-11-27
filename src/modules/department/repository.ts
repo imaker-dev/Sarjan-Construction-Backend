@@ -25,13 +25,24 @@ export interface DepartmentDetail extends Department {
   baseHeadOffice: { id: string; code: string; name: string; isPrimary: boolean } | null;
 }
 
+export interface DepartmentScopeFilter {
+  projectIds: string[];
+  headOfficeIds: string[];
+  siteIds: string[];
+}
+
 export interface DepartmentRepository {
   findById(companyId: string, id: string): Promise<Department | null>;
   /** Detail read: the row plus a slim baseHeadOffice embed. */
   findDetail(companyId: string, id: string): Promise<DepartmentDetail | null>;
   list(
     companyId: string,
-    filter?: { status?: DepartmentStatus; projectId?: string; siteId?: string },
+    filter?: {
+      status?: DepartmentStatus;
+      projectId?: string;
+      siteId?: string;
+      scopeFilter?: DepartmentScopeFilter;
+    },
   ): Promise<DepartmentDetail[]>;
   create(
     companyId: string,
@@ -114,8 +125,20 @@ export function makeDepartmentRepos(tx: Tx): DepartmentRepos {
             baseHeadOffice: { select: { id: true, code: true, name: true, isPrimary: true } },
           },
         }),
-      list: (companyId, filter) =>
-        tx.department.findMany({
+      list: (companyId, filter) => {
+        const sf = filter?.scopeFilter;
+        const scopeOr = sf
+          ? [
+              ...(sf.siteIds.length > 0 ? [{ siteId: { in: sf.siteIds } }] : []),
+              ...(sf.projectIds.length > 0
+                ? [{ projectId: { in: sf.projectIds } }, { site: { projectId: { in: sf.projectIds } } }]
+                : []),
+              ...(sf.headOfficeIds.length > 0
+                ? [{ baseHeadOfficeId: { in: sf.headOfficeIds } }]
+                : []),
+            ]
+          : null;
+        return tx.department.findMany({
           where: {
             companyId,
             ...(filter?.status ? { status: filter.status } : {}),
@@ -125,12 +148,14 @@ export function makeDepartmentRepos(tx: Tx): DepartmentRepos {
               ? { OR: [{ projectId: filter.projectId }, { site: { projectId: filter.projectId } }] }
               : {}),
             ...(filter?.siteId ? { siteId: filter.siteId } : {}),
+            ...(scopeOr !== null ? { OR: scopeOr } : {}),
           },
           include: {
             baseHeadOffice: { select: { id: true, code: true, name: true, isPrimary: true } },
           },
           orderBy: { id: 'asc' },
-        }),
+        });
+      },
       create: async (companyId, data) => {
         try {
           return await tx.department.create({ data: { ...data, companyId } });

@@ -208,7 +208,7 @@ describe('LeaveService — notification outbox emission', () => {
             leaveType: data.leaveType,
             startDate: data.startDate as Date,
             endDate: data.endDate as Date,
-            reason: data.reason ?? null,
+            reason: data.reason,
             documentId: typeof data.documentId === 'string' ? data.documentId : null,
           }),
         ),

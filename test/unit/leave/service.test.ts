@@ -1492,7 +1492,7 @@ describe('LeaveService — types, versions, resolution', () => {
             endDate: data.endDate as Date,
             isHalfDay: data.isHalfDay ?? false,
             halfDayPortion: null,
-            totalDays: data.totalDays ?? new Prisma.Decimal(1),
+            totalDays: data.totalDays,
             reason: null,
             documentId: null,
             status: 'PENDING',

@@ -54,6 +54,11 @@ async function makeApp(opts: { allow?: boolean; delegationError?: Error } = {}) 
       calls.targets.push(target);
       if (opts.allow === false) throw new AccessDeniedError();
     },
+    assertAnyScopePermission: async (_pid: string, key: string, companyId: string) => {
+      calls.keys.push(key);
+      calls.targets.push({ companyId, scopeType: 'COMPANY', scopeId: companyId });
+      if (opts.allow === false) throw new AccessDeniedError();
+    },
     hasPermission: async () => opts.allow !== false,
   } as unknown as AccessControlService;
   const delegationService = {
@@ -74,6 +79,7 @@ async function makeApp(opts: { allow?: boolean; delegationError?: Error } = {}) 
     updateSite: async () => ({ id: SID }),
     getSite: async () => ({ id: SID }),
     listSites: async () => ({ items: [], nextCursor: null }),
+    listProjects: async () => [],
   } as unknown as OrganizationService;
   const departmentService = {
     createDepartment: async () => ({ id: 'd1', name: 'Crew' }),
@@ -345,7 +351,7 @@ describe('scoped mutation targets', () => {
     }
   });
 
-  it('site list without projectId evaluates ORG_SITE_READ at COMPANY scope', async () => {
+  it('site list without projectId evaluates ORG_SITE_READ via any-scope permission', async () => {
     const { app, calls } = await makeApp();
     try {
       const res = await app.inject({
@@ -356,11 +362,29 @@ describe('scoped mutation targets', () => {
       expect(res.statusCode).toBe(200);
       const idx = calls.keys.indexOf('ORG_SITE_READ');
       expect(idx).toBeGreaterThanOrEqual(0);
-      expect(calls.targets[idx]).toEqual({
-        companyId: CID,
-        scopeType: 'COMPANY',
-        scopeId: CID,
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('project list and department list allow any-scope read without query filters', async () => {
+    const { app, calls } = await makeApp();
+    try {
+      const projRes = await app.inject({
+        method: 'GET',
+        url: '/api/v1/org/projects',
+        headers: authHeaders(app),
       });
+      expect(projRes.statusCode).toBe(200);
+      expect(calls.keys).toContain('ORG_PROJECT_READ');
+
+      const deptRes = await app.inject({
+        method: 'GET',
+        url: '/api/v1/departments',
+        headers: authHeaders(app),
+      });
+      expect(deptRes.statusCode).toBe(200);
+      expect(calls.keys).toContain('DEPARTMENT_READ');
     } finally {
       await app.close();
     }

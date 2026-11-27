@@ -10,6 +10,13 @@ export interface ScopeTarget {
   scopeId: string; // headOfficeId | projectId | siteId — equals companyId when COMPANY
 }
 
+export interface ReadableScopes {
+  companyWide: boolean;
+  headOfficeIds: string[];
+  projectIds: string[];
+  siteIds: string[];
+}
+
 type ScopedAssignment = Pick<
   RoleAssignment,
   'scopeType' | 'headOfficeId' | 'projectId' | 'siteId' | 'companyId'
@@ -136,6 +143,67 @@ export class AccessControlService {
   ): Promise<void> {
     const allowed = await this.hasAnyScopePermission(principalId, permissionKey, companyId);
     if (!allowed) throw new AccessDeniedError();
+  }
+
+  /**
+   * Resolves all active scopes at which an active principal holds `permissionKey`
+   * within `companyId`. Returns null when the principal has no valid grant
+   * (including Finance-role grants without an active FINANCE membership).
+   */
+  async resolveReadableScopes(
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<ReadableScopes | null> {
+    const principal = await this.deps.principals.findById(principalId);
+    if (principal?.status !== 'ACTIVE') return null;
+
+    const exists = await this.deps.access.companyExists(companyId);
+    if (!exists) return null;
+
+    const assignments = await this.deps.access.assignmentsForPrincipal(
+      principalId,
+      companyId,
+      this.now(),
+    );
+    const granted = assignments.filter((a) =>
+      a.role.permissions.some((rp) => rp.permission.key === permissionKey),
+    );
+    if (granted.length === 0) return null;
+
+    const hasNonFinance = granted.some((a) => !FINANCE_ROLE_KEYS.has(a.role.key));
+    const hasActiveFinance = hasNonFinance
+      ? false
+      : await this.deps.access.hasActiveFinanceMembership(principalId, companyId, this.now());
+
+    const effective = granted.filter((a) =>
+      FINANCE_ROLE_KEYS.has(a.role.key) ? hasNonFinance || hasActiveFinance : true,
+    );
+    if (effective.length === 0) return null;
+
+    if (effective.some((a) => a.scopeType === 'COMPANY')) {
+      return { companyWide: true, headOfficeIds: [], projectIds: [], siteIds: [] };
+    }
+
+    const headOfficeIds = new Set<string>();
+    const projectIds = new Set<string>();
+    const siteIds = new Set<string>();
+    for (const a of effective) {
+      if (a.scopeType === 'HEAD_OFFICE' && a.headOfficeId !== null) {
+        headOfficeIds.add(a.headOfficeId);
+      } else if (a.scopeType === 'PROJECT' && a.projectId !== null) {
+        projectIds.add(a.projectId);
+      } else if (a.scopeType === 'SITE' && a.siteId !== null) {
+        siteIds.add(a.siteId);
+      }
+    }
+
+    return {
+      companyWide: false,
+      headOfficeIds: Array.from(headOfficeIds),
+      projectIds: Array.from(projectIds),
+      siteIds: Array.from(siteIds),
+    };
   }
 
   private resolveChain(target: ScopeTarget): Promise<ScopeChain | null> {

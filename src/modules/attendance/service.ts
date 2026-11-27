@@ -9,7 +9,8 @@ import type {
   LabourCategory,
   Prisma,
 } from '@prisma/client';
-import type { ScopeTarget } from '../access-control/service.js';
+import type { ReadableScopes, ScopeTarget } from '../access-control/service.js';
+import { AccessDeniedError } from '../access-control/errors.js';
 import { SYSTEM_PRINCIPAL_ID } from '../setup/bootstrap.js';
 import type { ActorContext, AuditRecord } from '../organization/types.js';
 import {
@@ -100,6 +101,11 @@ interface Authorizer {
     permissionKey: string,
     companyId: string,
   ): Promise<void>;
+  resolveReadableScopes?(
+    principalId: string,
+    permissionKey: string,
+    companyId: string,
+  ): Promise<ReadableScopes | null>;
 }
 
 /** Structural view of a resolved work-schedule revision — the intraday fields
@@ -2695,12 +2701,43 @@ export class AttendanceService {
   }
 
   async getDailyReports(actor: ActorContext, companyId: string, filter: ListDailyReportsFilter) {
+    let scopeFilter:
+      | { projectIds: string[]; siteIds: string[]; headOfficeIds: string[] }
+      | undefined;
+
     if (filter.siteId) {
       await this.authorizer.assertPermission(
         actor.actorId,
         ATTENDANCE_READ,
         siteTarget(companyId, filter.siteId),
       );
+    } else if (filter.projectId) {
+      await this.authorizer.assertPermission(actor.actorId, ATTENDANCE_READ, {
+        companyId,
+        scopeType: 'PROJECT',
+        scopeId: filter.projectId,
+      });
+    } else if (this.authorizer.resolveReadableScopes !== undefined) {
+      const scopes = await this.authorizer.resolveReadableScopes(
+        actor.actorId,
+        ATTENDANCE_READ,
+        companyId,
+      );
+      if (scopes === null) throw new AccessDeniedError();
+      if (!scopes.companyWide) {
+        if (
+          scopes.projectIds.length === 0 &&
+          scopes.siteIds.length === 0 &&
+          scopes.headOfficeIds.length === 0
+        ) {
+          return { items: [], total: 0 };
+        }
+        scopeFilter = {
+          projectIds: scopes.projectIds,
+          siteIds: scopes.siteIds,
+          headOfficeIds: scopes.headOfficeIds,
+        };
+      }
     } else {
       await this.authorizer.assertPermission(
         actor.actorId,
@@ -2708,7 +2745,12 @@ export class AttendanceService {
         companyTarget(companyId),
       );
     }
-    return this.uow.run((repos) => repos.dailyReports.list(companyId, filter));
+    return this.uow.run((repos) =>
+      repos.dailyReports.list(companyId, {
+        ...filter,
+        ...(scopeFilter !== undefined ? { scopeFilter } : {}),
+      }),
+    );
   }
 
   async getDailyReportById(actor: ActorContext, companyId: string, id: string) {
