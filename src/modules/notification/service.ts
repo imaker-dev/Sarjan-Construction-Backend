@@ -214,6 +214,19 @@ export class NotificationService {
     });
   }
 
+  /** Marks all unread notifications for the authenticated recipient in this company as read. */
+  async markAllRead(
+    actor: ActorContext,
+    companyId: string,
+  ): Promise<{ updatedCount: number; readAt: Date }> {
+    const at = this.now();
+    return this.deps.uow.run(async (repos) => {
+      await this.assertMembership(repos, actor, companyId);
+      const updatedCount = await repos.notifications.markAllRead(companyId, actor.actorId, at);
+      return { updatedCount, readAt: at };
+    });
+  }
+
   // ------------------------------------------------------------ ticket flow
 
   /** Issue a 30s single-use ticket — binds the verified company at issue. */

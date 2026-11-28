@@ -33,11 +33,13 @@ const authHeaders = (app: {
 async function makeApp() {
   const list = vi.fn().mockResolvedValue({ notifications: [], nextCursor: null });
   const markRead = vi.fn().mockResolvedValue({ id: 'n1', readAt: new Date().toISOString() });
+  const markAllRead = vi.fn().mockResolvedValue({ updatedCount: 4, readAt: new Date('2026-11-28T10:00:00Z') });
   const unreadCount = vi.fn().mockResolvedValue(3);
   const issueTicket = vi.fn().mockResolvedValue({ ticket: 'tk.1', expiresInSeconds: 30 });
   const notificationService = {
     list,
     markRead,
+    markAllRead,
     unreadCount,
     issueTicket,
     revalidate: vi.fn().mockResolvedValue(true),
@@ -51,7 +53,7 @@ async function makeApp() {
     env,
     services: { authService, notificationService, platformCompanyId: null },
   });
-  return { app, list, markRead, unreadCount };
+  return { app, list, markRead, markAllRead, unreadCount };
 }
 
 describe('notification inbox routes', () => {
@@ -131,6 +133,25 @@ describe('notification inbox routes', () => {
         CID,
         '00000000-0000-4000-8000-0000000000a1',
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('mark-all-read binds the authenticated principal and returns updatedCount', async () => {
+    const { app, markAllRead } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/notifications/read-all',
+        headers: authHeaders(app),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        updatedCount: 4,
+        readAt: '2026-11-28T10:00:00.000Z',
+      });
+      expect(markAllRead).toHaveBeenCalledWith(expect.objectContaining({ actorId: 'p1' }), CID);
     } finally {
       await app.close();
     }

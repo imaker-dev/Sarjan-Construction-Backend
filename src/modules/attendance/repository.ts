@@ -385,6 +385,7 @@ export interface AttendanceRepos {
         project: { id: string; code: string; name: string };
       })[];
       total: number;
+      pagination?: { total: number; limit: number; offset: number };
     }>;
     upsert(
       companyId: string,
@@ -1605,12 +1606,27 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
                 : []),
             ]
           : null;
+        const q = filter.q?.trim();
         const where: Prisma.DailySiteReportWhereInput = {
           companyId,
           ...(filter.projectId ? { projectId: filter.projectId } : {}),
           ...(filter.siteId ? { siteId: filter.siteId } : {}),
           ...(filter.status ? { status: filter.status } : {}),
           ...(scopeOr !== null ? { OR: scopeOr } : {}),
+          ...(q !== undefined && q !== ''
+            ? {
+                AND: [
+                  {
+                    OR: [
+                      { site: { name: { contains: q, mode: 'insensitive' as const } } },
+                      { site: { code: { contains: q, mode: 'insensitive' as const } } },
+                      { project: { name: { contains: q, mode: 'insensitive' as const } } },
+                      { project: { code: { contains: q, mode: 'insensitive' as const } } },
+                    ],
+                  },
+                ],
+              }
+            : {}),
           ...(filter.fromDate || filter.toDate
             ? {
               businessDate: {
@@ -1621,6 +1637,9 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
             : {}),
         };
 
+        const limit = filter.limit ?? 20;
+        const offset =
+          filter.page !== undefined ? Math.max(0, (filter.page - 1) * limit) : (filter.offset ?? 0);
         const [items, total] = await Promise.all([
           tx.dailySiteReport.findMany({
             where,
@@ -1629,13 +1648,13 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
               project: { select: { id: true, code: true, name: true } },
             },
             orderBy: [{ businessDate: 'desc' }, { createdAt: 'desc' }],
-            take: filter.limit ?? 20,
-            skip: filter.offset ?? 0,
+            take: limit,
+            skip: offset,
           }),
           tx.dailySiteReport.count({ where }),
         ]);
 
-        return { items, total };
+        return { items, total, pagination: { total, limit, offset } };
       },
 
       upsert: async (companyId, data) => {

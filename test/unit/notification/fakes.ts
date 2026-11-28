@@ -219,6 +219,20 @@ export function makeNotificationTestRepos(store: NotificationStore): Notificatio
             n.recipientPrincipalId === recipientPrincipalId &&
             n.readAt === null,
         ).length,
+      markAllRead: async (companyId, recipientPrincipalId, at) => {
+        let count = 0;
+        for (const n of store.notifications) {
+          if (
+            n.companyId === companyId &&
+            n.recipientPrincipalId === recipientPrincipalId &&
+            n.readAt === null
+          ) {
+            n.readAt = at;
+            count += 1;
+          }
+        }
+        return count;
+      },
     },
     emailDeliveries: {
       createManySkipping: async (rows) => {

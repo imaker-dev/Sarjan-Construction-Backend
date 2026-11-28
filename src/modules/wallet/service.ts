@@ -63,6 +63,14 @@ const Decimal = Prisma.Decimal;
 const ZERO = new Decimal(0);
 const MAX_LIMIT = 100;
 
+function resolveOffset(filter: Page, limit: number): { useOffset: boolean; offset: number } {
+  if (filter.offset !== undefined) return { useOffset: true, offset: Math.max(0, filter.offset) };
+  if (filter.page !== undefined) {
+    return { useOffset: true, offset: Math.max(0, (filter.page - 1) * limit) };
+  }
+  return { useOffset: false, offset: 0 };
+}
+
 /** Convert Prisma `seq: bigint` to string so Fastify JSON serialization succeeds. */
 function serializeLedgerEntry<T extends { seq: bigint }>(
   entry: T,
@@ -380,15 +388,40 @@ export class WalletService {
     return this.uow.run(async (repos) => {
       await this.assertFinance(repos, actor, companyId, FINANCE_WALLET_READ, OPS.FUNDING_REVIEW);
       const limit = Math.min(page.limit ?? 50, MAX_LIMIT);
-      const rows = await repos.tx.siteWallet.findMany({
-        where: { companyId, ...(page.cursor !== undefined ? { id: { gt: page.cursor } } : {}) },
-        orderBy: { id: 'asc' },
-        take: limit + 1,
-        include: { site: { select: { id: true, code: true, name: true, projectId: true } } },
-      });
+      const { useOffset, offset } = resolveOffset(page, limit);
+      const q = page.q?.trim();
+      const baseWhere: Prisma.SiteWalletWhereInput = {
+        companyId,
+        ...(q !== undefined && q.length > 0
+          ? {
+              site: {
+                OR: [
+                  { name: { contains: q, mode: 'insensitive' } },
+                  { code: { contains: q, mode: 'insensitive' } },
+                ],
+              },
+            }
+          : {}),
+      };
+      const [rows, total] = await Promise.all([
+        repos.tx.siteWallet.findMany({
+          where: baseWhere,
+          ...(!useOffset && page.cursor !== undefined ? { cursor: { id: page.cursor } } : {}),
+          skip: useOffset ? offset : page.cursor !== undefined ? 1 : 0,
+          take: useOffset ? limit : limit + 1,
+          orderBy: { id: 'asc' },
+          include: { site: { select: { id: true, code: true, name: true, projectId: true } } },
+        }),
+        repos.tx.siteWallet.count({ where: baseWhere }),
+      ]);
       const items = rows.slice(0, limit);
-      const nextCursor = rows.length > limit ? items[items.length - 1]?.id : undefined;
-      return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
+      const nextCursor =
+        !useOffset && rows.length > limit ? items[items.length - 1]?.id : undefined;
+      return {
+        items,
+        ...(nextCursor !== undefined ? { nextCursor } : {}),
+        pagination: { total, limit, offset },
+      };
     });
   }
 
@@ -411,34 +444,52 @@ export class WalletService {
     filter: Page & { from?: string; to?: string; type?: string },
   ) {
     const limit = Math.min(filter.limit ?? 50, MAX_LIMIT);
-    const rows = await repos.tx.walletLedgerEntry.findMany({
-      where: {
-        companyId,
-        walletId,
-        ...(filter.type !== undefined ? { type: filter.type as WalletLedgerEntry['type'] } : {}),
-        ...(filter.from !== undefined || filter.to !== undefined
-          ? {
-              postedAt: {
-                ...(filter.from !== undefined ? { gte: new Date(filter.from) } : {}),
-                ...(filter.to !== undefined ? { lte: new Date(filter.to) } : {}),
-              },
-            }
-          : {}),
-        ...(filter.cursor !== undefined ? { seq: { lt: BigInt(filter.cursor) } } : {}),
-      },
-      orderBy: { seq: 'desc' },
-      take: limit + 1,
-      include: {
-        expense: {
-          select: {
-            id: true,
-            payee: true,
-            description: true,
-            cashVoucher: { select: { id: true, voucherNo: true } },
+    const { useOffset, offset } = resolveOffset(filter, limit);
+    const q = filter.q?.trim();
+    const baseWhere: Prisma.WalletLedgerEntryWhereInput = {
+      companyId,
+      walletId,
+      ...(filter.type !== undefined ? { type: filter.type as WalletLedgerEntry['type'] } : {}),
+      ...(filter.from !== undefined || filter.to !== undefined
+        ? {
+            postedAt: {
+              ...(filter.from !== undefined ? { gte: new Date(filter.from) } : {}),
+              ...(filter.to !== undefined ? { lte: new Date(filter.to) } : {}),
+            },
+          }
+        : {}),
+      ...(q !== undefined && q.length > 0
+        ? {
+            OR: [
+              { reason: { contains: q, mode: 'insensitive' } },
+              { expense: { description: { contains: q, mode: 'insensitive' } } },
+              { expense: { payee: { contains: q, mode: 'insensitive' } } },
+              { transfer: { reference: { contains: q, mode: 'insensitive' } } },
+            ],
+          }
+        : {}),
+    };
+    const [rows, total] = await Promise.all([
+      repos.tx.walletLedgerEntry.findMany({
+        where: {
+          ...baseWhere,
+          ...(!useOffset && filter.cursor !== undefined ? { seq: { lt: BigInt(filter.cursor) } } : {}),
+        },
+        orderBy: { seq: 'desc' },
+        ...(useOffset ? { skip: offset, take: limit } : { take: limit + 1 }),
+        include: {
+          expense: {
+            select: {
+              id: true,
+              payee: true,
+              description: true,
+              cashVoucher: { select: { id: true, voucherNo: true } },
+            },
           },
         },
-      },
-    });
+      }),
+      repos.tx.walletLedgerEntry.count({ where: baseWhere }),
+    ]);
     const items = rows.slice(0, limit).map((row) => {
       const { expense, ...entry } = row;
       const voucherId = expense?.cashVoucher?.id ?? null;
@@ -461,8 +512,13 @@ export class WalletService {
             : null,
       };
     });
-    const nextCursor = rows.length > limit ? items[items.length - 1]?.seq : undefined;
-    return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
+    const nextCursor =
+      !useOffset && rows.length > limit ? items[items.length - 1]?.seq : undefined;
+    return {
+      items,
+      ...(nextCursor !== undefined ? { nextCursor } : {}),
+      pagination: { total, limit, offset },
+    };
   }
 
   async listSiteLedger(
@@ -1124,21 +1180,36 @@ export class WalletService {
     return this.uow.run(async (repos) => {
       await this.assertSite(repos, actor, companyId, siteId, OPS.FUNDING_SUBMIT, SITE_WALLET_VIEW);
       const limit = Math.min(filter.limit ?? 50, MAX_LIMIT);
-      const rows = await repos.tx.walletFundingRequest.findMany({
-        where: {
-          companyId,
-          siteId,
-          ...(filter.status !== undefined
-            ? { status: filter.status as WalletFundingRequest['status'] }
-            : {}),
-          ...(filter.cursor !== undefined ? { id: { gt: filter.cursor } } : {}),
-        },
-        orderBy: { id: 'asc' },
-        take: limit + 1,
-      });
+      const { useOffset, offset } = resolveOffset(filter, limit);
+      const q = filter.q?.trim();
+      const baseWhere: Prisma.WalletFundingRequestWhereInput = {
+        companyId,
+        siteId,
+        ...(filter.status !== undefined
+          ? { status: filter.status as WalletFundingRequest['status'] }
+          : {}),
+        ...(q !== undefined && q.length > 0
+          ? { draftPurpose: { contains: q, mode: 'insensitive' } }
+          : {}),
+      };
+      const [rows, total] = await Promise.all([
+        repos.tx.walletFundingRequest.findMany({
+          where: baseWhere,
+          ...(!useOffset && filter.cursor !== undefined ? { cursor: { id: filter.cursor } } : {}),
+          skip: useOffset ? offset : filter.cursor !== undefined ? 1 : 0,
+          take: useOffset ? limit : limit + 1,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        }),
+        repos.tx.walletFundingRequest.count({ where: baseWhere }),
+      ]);
       const items = rows.slice(0, limit);
-      const nextCursor = rows.length > limit ? items[items.length - 1]?.id : undefined;
-      return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
+      const nextCursor =
+        !useOffset && rows.length > limit ? items[items.length - 1]?.id : undefined;
+      return {
+        items,
+        ...(nextCursor !== undefined ? { nextCursor } : {}),
+        pagination: { total, limit, offset },
+      };
     });
   }
 
@@ -1185,6 +1256,7 @@ export class WalletService {
     return this.uow.run(async (repos) => {
       await this.assertFinance(repos, actor, companyId, FINANCE_WALLET_READ, OPS.FUNDING_REVIEW);
       const limit = Math.min(filter.limit ?? 50, MAX_LIMIT);
+      const { useOffset, offset } = resolveOffset(filter, limit);
       let siteIds: string[] | undefined;
       if (filter.projectId !== undefined) {
         const sites = await repos.tx.site.findMany({
@@ -1193,26 +1265,46 @@ export class WalletService {
         });
         siteIds = sites.map((s) => s.id);
         if (filter.siteId !== undefined && !siteIds.includes(filter.siteId)) {
-          return { items: [] };
+          return { items: [], pagination: { total: 0, limit, offset } };
         }
       }
-      const rows = await repos.tx.walletFundingRequest.findMany({
-        where: {
-          companyId,
-          ...(filter.siteId !== undefined ? { siteId: filter.siteId } : {}),
-          ...(siteIds !== undefined ? { siteId: { in: siteIds } } : {}),
-          ...(filter.status !== undefined
-            ? { status: filter.status as WalletFundingRequest['status'] }
-            : {}),
-          ...(filter.cursor !== undefined ? { id: { gt: filter.cursor } } : {}),
-        },
-        orderBy: { id: 'asc' },
-        take: limit + 1,
-        include: { site: { select: { id: true, code: true, name: true, projectId: true } } },
-      });
+      const q = filter.q?.trim();
+      const baseWhere: Prisma.WalletFundingRequestWhereInput = {
+        companyId,
+        ...(filter.siteId !== undefined ? { siteId: filter.siteId } : {}),
+        ...(siteIds !== undefined ? { siteId: { in: siteIds } } : {}),
+        ...(filter.status !== undefined
+          ? { status: filter.status as WalletFundingRequest['status'] }
+          : {}),
+        ...(q !== undefined && q.length > 0
+          ? {
+              OR: [
+                { draftPurpose: { contains: q, mode: 'insensitive' } },
+                { site: { name: { contains: q, mode: 'insensitive' } } },
+                { site: { code: { contains: q, mode: 'insensitive' } } },
+              ],
+            }
+          : {}),
+      };
+      const [rows, total] = await Promise.all([
+        repos.tx.walletFundingRequest.findMany({
+          where: baseWhere,
+          ...(!useOffset && filter.cursor !== undefined ? { cursor: { id: filter.cursor } } : {}),
+          skip: useOffset ? offset : filter.cursor !== undefined ? 1 : 0,
+          take: useOffset ? limit : limit + 1,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          include: { site: { select: { id: true, code: true, name: true, projectId: true } } },
+        }),
+        repos.tx.walletFundingRequest.count({ where: baseWhere }),
+      ]);
       const items = rows.slice(0, limit);
-      const nextCursor = rows.length > limit ? items[items.length - 1]?.id : undefined;
-      return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
+      const nextCursor =
+        !useOffset && rows.length > limit ? items[items.length - 1]?.id : undefined;
+      return {
+        items,
+        ...(nextCursor !== undefined ? { nextCursor } : {}),
+        pagination: { total, limit, offset },
+      };
     });
   }
 
@@ -2087,29 +2179,50 @@ export class WalletService {
       await this.assertSite(repos, actor, companyId, siteId, OPS.LEDGER_VIEW, SITE_WALLET_VIEW);
       const wallet = await this.walletForSite(repos, companyId, siteId);
       const limit = Math.min(filter.limit ?? 50, MAX_LIMIT);
-      const rows = await repos.tx.walletExpense.findMany({
-        where: {
-          companyId,
-          walletId: wallet.id,
-          ...(filter.from !== undefined || filter.to !== undefined
-            ? {
-                expenseDate: {
-                  ...(filter.from !== undefined ? { gte: new Date(filter.from) } : {}),
-                  ...(filter.to !== undefined ? { lte: new Date(filter.to) } : {}),
-                },
-              }
-            : {}),
-          ...(filter.accountHeadId !== undefined
-            ? { cashVoucher: { lines: { some: { accountHeadId: filter.accountHeadId } } } }
-            : {}),
-          ...(filter.cursor !== undefined ? { id: { gt: filter.cursor } } : {}),
-        },
-        orderBy: { id: 'asc' },
-        take: limit + 1,
-      });
+      const { useOffset, offset } = resolveOffset(filter, limit);
+      const q = filter.q?.trim();
+      const baseWhere: Prisma.WalletExpenseWhereInput = {
+        companyId,
+        walletId: wallet.id,
+        ...(filter.from !== undefined || filter.to !== undefined
+          ? {
+              expenseDate: {
+                ...(filter.from !== undefined ? { gte: new Date(filter.from) } : {}),
+                ...(filter.to !== undefined ? { lte: new Date(filter.to) } : {}),
+              },
+            }
+          : {}),
+        ...(filter.accountHeadId !== undefined
+          ? { cashVoucher: { lines: { some: { accountHeadId: filter.accountHeadId } } } }
+          : {}),
+        ...(q !== undefined && q.length > 0
+          ? {
+              OR: [
+                { description: { contains: q, mode: 'insensitive' } },
+                { payee: { contains: q, mode: 'insensitive' } },
+                { reference: { contains: q, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      };
+      const [rows, total] = await Promise.all([
+        repos.tx.walletExpense.findMany({
+          where: baseWhere,
+          ...(!useOffset && filter.cursor !== undefined ? { cursor: { id: filter.cursor } } : {}),
+          skip: useOffset ? offset : filter.cursor !== undefined ? 1 : 0,
+          take: useOffset ? limit : limit + 1,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        }),
+        repos.tx.walletExpense.count({ where: baseWhere }),
+      ]);
       const items = rows.slice(0, limit);
-      const nextCursor = rows.length > limit ? items[items.length - 1]?.id : undefined;
-      return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
+      const nextCursor =
+        !useOffset && rows.length > limit ? items[items.length - 1]?.id : undefined;
+      return {
+        items,
+        ...(nextCursor !== undefined ? { nextCursor } : {}),
+        pagination: { total, limit, offset },
+      };
     });
   }
 
@@ -2592,20 +2705,35 @@ table.lines td.r, table.lines th.r { text-align: right; }
     return this.uow.run(async (repos) => {
       await this.assertFinance(repos, actor, companyId, FINANCE_WALLET_READ, OPS.RECONCILE);
       const limit = Math.min(filter.limit ?? 50, MAX_LIMIT);
-      const rows = await repos.tx.walletReversalRequest.findMany({
-        where: {
-          companyId,
-          ...(filter.status !== undefined
-            ? { status: filter.status as 'REQUESTED' | 'EXECUTED' | 'REJECTED' }
-            : {}),
-          ...(filter.cursor !== undefined ? { id: { gt: filter.cursor } } : {}),
-        },
-        orderBy: { id: 'asc' },
-        take: limit + 1,
-      });
+      const { useOffset, offset } = resolveOffset(filter, limit);
+      const q = filter.q?.trim();
+      const baseWhere: Prisma.WalletReversalRequestWhereInput = {
+        companyId,
+        ...(filter.status !== undefined
+          ? { status: filter.status as 'REQUESTED' | 'EXECUTED' | 'REJECTED' }
+          : {}),
+        ...(q !== undefined && q.length > 0
+          ? { reason: { contains: q, mode: 'insensitive' } }
+          : {}),
+      };
+      const [rows, total] = await Promise.all([
+        repos.tx.walletReversalRequest.findMany({
+          where: baseWhere,
+          ...(!useOffset && filter.cursor !== undefined ? { cursor: { id: filter.cursor } } : {}),
+          skip: useOffset ? offset : filter.cursor !== undefined ? 1 : 0,
+          take: useOffset ? limit : limit + 1,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        }),
+        repos.tx.walletReversalRequest.count({ where: baseWhere }),
+      ]);
       const items = rows.slice(0, limit);
-      const nextCursor = rows.length > limit ? items[items.length - 1]?.id : undefined;
-      return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
+      const nextCursor =
+        !useOffset && rows.length > limit ? items[items.length - 1]?.id : undefined;
+      return {
+        items,
+        ...(nextCursor !== undefined ? { nextCursor } : {}),
+        pagination: { total, limit, offset },
+      };
     });
   }
 

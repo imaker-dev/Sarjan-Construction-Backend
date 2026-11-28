@@ -5,6 +5,7 @@ import type { DocumentService } from '../document/service.js';
 import type { ScopeTarget } from '../access-control/service.js';
 import { scopedOrAnyScope } from '../../common/auth/route-guards.js';
 import { AppError, UnauthorizedError } from '../../common/errors/app-error.js';
+import { paginateArray, type OffsetQuery } from '../../common/http/pagination.js';
 import { OrgValidationError } from './errors.js';
 import type { ActorContext } from './types.js';
 
@@ -423,6 +424,11 @@ const ListQuery = Type.Object({
   status: Type.Optional(Type.String()),
   headOfficeId: Type.Optional(Type.String({ format: 'uuid' })),
   projectId: Type.Optional(Type.String({ format: 'uuid' })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
+  page: Type.Optional(Type.Integer({ minimum: 1 })),
+  paginated: Type.Optional(Type.Boolean()),
+  q: Type.Optional(Type.String({ maxLength: 100 })),
 });
 
 /** Company scope comes from the header + permission check, never the body. */
@@ -647,8 +653,13 @@ export function organizationRoutes(
       '/org/projects',
       { schema: { querystring: ListQuery }, ...anyScopePerm('ORG_PROJECT_READ') },
       async (req) => {
-        const q = req.query as { status?: never; headOfficeId?: string };
-        return service.listProjects(actorOf(req), companyIdOf(req), q);
+        const q = req.query as { status?: never; headOfficeId?: string } & OffsetQuery;
+        const rows = await service.listProjects(actorOf(req), companyIdOf(req), q);
+        return paginateArray(
+          rows,
+          q,
+          (r, term) => r.name.toLowerCase().includes(term) || r.code.toLowerCase().includes(term),
+        );
       },
     );
     app.get('/org/projects/:id', perm('ORG_PROJECT_READ', atProject), async (req) =>
@@ -829,8 +840,15 @@ export function organizationRoutes(
         ),
       },
       async (req) => {
-        const q = req.query as { status?: never; projectId?: string };
-        return service.listSites(actorOf(req), companyIdOf(req), q);
+        const q = req.query as { status?: never; projectId?: string } & OffsetQuery;
+        const rows = await service.listSites(actorOf(req), companyIdOf(req), q);
+        return paginateArray(
+          rows,
+          q,
+          (r, term) =>
+            (typeof r.name === 'string' && r.name.toLowerCase().includes(term)) ||
+            (typeof r.code === 'string' && r.code.toLowerCase().includes(term)),
+        );
       },
     );
     app.get('/org/sites/:id', perm('ORG_SITE_READ', atSite), async (req) =>

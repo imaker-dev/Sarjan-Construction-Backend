@@ -687,7 +687,7 @@ export function makeLeaveRepos(tx: Tx): LeaveRepos {
             },
           },
         },
-        orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: filter?.limit ?? 50,
       }),
     create: async (companyId: string, data: Omit<Prisma.LeaveRequestCreateInput, 'company'>) => {

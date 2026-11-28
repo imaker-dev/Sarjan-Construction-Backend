@@ -4,6 +4,7 @@ import type { DepartmentService } from './service.js';
 import type { ScopeTarget } from '../access-control/service.js';
 import { scopedOrAnyScope } from '../../common/auth/route-guards.js';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
+import { paginateArray, type OffsetQuery } from '../../common/http/pagination.js';
 import type { ActorContext } from '../organization/types.js';
 
 const CreateDepartment = Type.Object({
@@ -51,6 +52,11 @@ const ListQuery = Type.Object({
   status: Type.Optional(Type.String()),
   projectId: Type.Optional(Type.String({ format: 'uuid' })),
   siteId: Type.Optional(Type.String({ format: 'uuid' })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
+  page: Type.Optional(Type.Integer({ minimum: 1 })),
+  paginated: Type.Optional(Type.Boolean()),
+  q: Type.Optional(Type.String({ maxLength: 100 })),
 });
 const Params = Type.Object({
   id: Type.String({ format: 'uuid' }),
@@ -123,8 +129,14 @@ export function departmentRoutes(service: DepartmentService) {
         ...scopedOrAnyScope(app, 'DEPARTMENT_READ', companyIdOf, atListScope),
       },
       async (req) => {
-        const q = req.query as { status?: never; projectId?: string; siteId?: string };
-        return service.listDepartments(actorOf(req), companyIdOf(req), q);
+        const q = req.query as { status?: never; projectId?: string; siteId?: string } & OffsetQuery;
+        const rows = await service.listDepartments(actorOf(req), companyIdOf(req), q);
+        return paginateArray(
+          rows,
+          q,
+          (r, term) =>
+            r.name.toLowerCase().includes(term) || r.code.toLowerCase().includes(term),
+        );
       },
     );
     // Detail uses auth() only — the service applies the per-department scope

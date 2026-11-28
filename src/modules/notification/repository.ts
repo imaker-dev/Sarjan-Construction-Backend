@@ -56,6 +56,8 @@ export interface NotificationRowRepository {
   findById(companyId: string, id: string): Promise<Notification | null>;
   /** Unread inbox count for the authenticated recipient only. */
   countUnread(companyId: string, recipientPrincipalId: string): Promise<number>;
+  /** Mark every unread notification for this recipient in this company as read. */
+  markAllRead(companyId: string, recipientPrincipalId: string, at: Date): Promise<number>;
 }
 
 export interface EmailDeliveryRepository {
@@ -218,6 +220,13 @@ export function makeNotificationRepos(tx: Tx): NotificationRepos {
       findById: (companyId, id) => tx.notification.findFirst({ where: { id, companyId } }),
       countUnread: (companyId, recipientPrincipalId) =>
         tx.notification.count({ where: { companyId, recipientPrincipalId, readAt: null } }),
+      markAllRead: async (companyId, recipientPrincipalId, at) => {
+        const r = await tx.notification.updateMany({
+          where: { companyId, recipientPrincipalId, readAt: null },
+          data: { readAt: at, version: { increment: 1 } },
+        });
+        return r.count;
+      },
     },
     emailDeliveries: {
       createManySkipping: async (rows) => {

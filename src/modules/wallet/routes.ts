@@ -50,6 +50,9 @@ const IdemKey = Type.String({ minLength: 1, maxLength: 80 });
 const PageQuery = {
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
   cursor: Type.Optional(Type.String({ maxLength: 64 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
+  page: Type.Optional(Type.Integer({ minimum: 1 })),
+  q: Type.Optional(Type.String({ maxLength: 100 })),
 };
 
 const SiteParams = Type.Object({ siteId: Uuid });

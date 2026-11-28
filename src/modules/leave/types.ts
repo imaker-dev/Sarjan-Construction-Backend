@@ -241,6 +241,10 @@ export const ListLeaveRequestsQuery = Type.Object({
   from: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
   to: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 50 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
+  page: Type.Optional(Type.Integer({ minimum: 1 })),
+  paginated: Type.Optional(Type.Boolean()),
+  q: Type.Optional(Type.String({ maxLength: 100 })),
   cursor: Type.Optional(Type.String()),
 });
 

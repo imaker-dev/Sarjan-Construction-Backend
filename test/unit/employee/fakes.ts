@@ -112,6 +112,12 @@ export function makeEmployeeTestRepos(store: EmpStore): EmployeeRepos {
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
           .slice(0, filter.limit);
       },
+      count: async (companyId, filter) =>
+        store.employees.filter(
+          (e) =>
+            e.companyId === companyId &&
+            (filter.status === undefined || e.status === filter.status),
+        ).length,
       create: async (companyId, data) => {
         if (
           store.employees.some(

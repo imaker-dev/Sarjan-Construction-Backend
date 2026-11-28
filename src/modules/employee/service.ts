@@ -464,23 +464,51 @@ export class EmployeeService {
   async list(
     actor: ActorContext,
     companyId: string,
-    filter?: { status?: string; cursor?: string; limit?: number },
-  ): Promise<{ employees: Employee[]; nextCursor: string | null }> {
+    filter?: {
+      status?: string;
+      q?: string;
+      cursor?: string;
+      limit?: number;
+      offset?: number;
+      page?: number;
+    },
+  ): Promise<{
+    employees: Employee[];
+    items: Employee[];
+    nextCursor: string | null;
+    pagination: { total: number; limit: number; offset: number };
+  }> {
     await this.authorizer.assertPermission(actor.actorId, EMPLOYEE_READ, companyTarget(companyId));
     const limit = Math.min(filter?.limit ?? 50, MAX_LIMIT);
-    const cursor = filter?.cursor !== undefined ? decodeEmpCursor(filter.cursor) : null;
-    const rows = await this.uow.run(({ employees }) =>
-      employees.list(companyId, {
+    const useOffset = filter?.offset !== undefined || filter?.page !== undefined;
+    const offset =
+      filter?.offset !== undefined
+        ? Math.max(0, filter.offset)
+        : filter?.page !== undefined
+          ? Math.max(0, (filter.page - 1) * limit)
+          : 0;
+    const cursor = !useOffset && filter?.cursor !== undefined ? decodeEmpCursor(filter.cursor) : null;
+    const [rows, total] = await this.uow.run(async ({ employees }) => {
+      const base = {
         ...(filter?.status !== undefined ? { status: filter.status } : {}),
-        ...(cursor !== null ? { cursor } : {}),
-        limit: limit + 1,
-      }),
-    );
+        ...(filter?.q !== undefined ? { q: filter.q } : {}),
+      };
+      return Promise.all([
+        employees.list(companyId, {
+          ...base,
+          ...(useOffset ? { offset, limit } : { ...(cursor !== null ? { cursor } : {}), limit: limit + 1 }),
+        }),
+        typeof employees.count === 'function' ? employees.count(companyId, base) : Promise.resolve(0),
+      ]);
+    });
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
+    const enriched = page.map(enrichEmployee);
     return {
-      employees: page.map(enrichEmployee),
-      nextCursor: rows.length > limit && last !== undefined ? encodeEmpCursor(last) : null,
+      employees: enriched,
+      items: enriched,
+      nextCursor: !useOffset && rows.length > limit && last !== undefined ? encodeEmpCursor(last) : null,
+      pagination: { total: total || enriched.length, limit, offset },
     };
   }
 

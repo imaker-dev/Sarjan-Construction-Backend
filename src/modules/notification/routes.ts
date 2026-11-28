@@ -88,6 +88,34 @@ export function notificationRoutes(deps: NotificationRoutesDeps) {
       },
     );
 
+    app.post(
+      '/notifications/read-all',
+      {
+        schema: {
+          response: {
+            200: Type.Object({
+              updatedCount: Type.Integer(),
+              readAt: Type.String({ format: 'date-time' }),
+            }),
+          },
+        },
+      },
+      async (request) => {
+        await app.authenticate(request);
+        await app.tenantCompanyGuard(request);
+        const companyId = request.headers['x-company-id'];
+        if (typeof companyId !== 'string' || companyId.length === 0) {
+          throw new UnauthorizedError('COMPANY_REQUIRED', 'x-company-id header required');
+        }
+        const principal = request.principal as { actorId: string };
+        const result = await deps.service.markAllRead(
+          { actorId: principal.actorId, actorType: 'USER' },
+          companyId,
+        );
+        return { updatedCount: result.updatedCount, readAt: result.readAt.toISOString() };
+      },
+    );
+
     app.post('/notifications/:id/read', async (request) => {
       await app.authenticate(request);
       await app.tenantCompanyGuard(request);

@@ -938,8 +938,10 @@ export const ListDailyReportsQuery = Type.Object({
   fromDate: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
   toDate: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
   status: Type.Optional(DailyReportStatusEnum),
+  q: Type.Optional(Type.String({ maxLength: 100 })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 })),
   offset: Type.Optional(Type.Integer({ minimum: 0, default: 0 })),
+  page: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
 export const CalculateDailyReportBody = Type.Object({

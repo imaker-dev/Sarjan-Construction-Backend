@@ -3,6 +3,7 @@ import { Type } from '@sinclair/typebox';
 import { UnauthorizedError } from '../../common/errors/app-error.js';
 import type { ScopeTarget } from '../access-control/service.js';
 import { scopedOrAnyScope } from '../../common/auth/route-guards.js';
+import { paginateArray, type OffsetQuery } from '../../common/http/pagination.js';
 import type { ActorContext } from '../organization/types.js';
 import {
   LEAVE_APPLY,
@@ -490,11 +491,17 @@ export function leaveRoutes(service: LeaveService) {
         ...scopedOrAnyScope(app, LEAVE_READ, companyIdOf, queryScope),
       },
       async (req) => {
-        return service.listRequests(
-          actorOf(req),
-          companyIdOf(req),
-          req.query as ListLeaveRequestsFilter,
-        );
+        const q = req.query as ListLeaveRequestsFilter & OffsetQuery;
+        const rows = await service.listRequests(actorOf(req), companyIdOf(req), q);
+        return paginateArray(rows, q, (r, term) => {
+          const emp = (r as { employee?: { displayName?: string; employeeCode?: string } }).employee;
+          return (
+            r.leaveType.toLowerCase().includes(term) ||
+            r.reason.toLowerCase().includes(term) ||
+            (emp?.displayName?.toLowerCase().includes(term) ?? false) ||
+            (emp?.employeeCode?.toLowerCase().includes(term) ?? false)
+          );
+        });
       },
     );
 

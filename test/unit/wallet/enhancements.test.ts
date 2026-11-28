@@ -305,6 +305,7 @@ describe('Wallet enhancements', () => {
             },
           },
         ],
+        count: async () => 1,
       },
     };
     const service = new WalletService(
@@ -317,6 +318,7 @@ describe('Wallet enhancements', () => {
     expect(res.items[0]?.seq).toBe('5');
     expect(res.items[0]?.voucherId).toBe('voucher-1');
     expect(res.items[0]?.voucherNo).toBe('1');
+    expect(res.pagination).toEqual({ total: 1, limit: 50, offset: 0 });
     expect(res.items[0]?.expense).toEqual({
       id: 'exp-1',
       voucherId: 'voucher-1',

@@ -86,8 +86,11 @@ const AssignmentParams = Type.Object({
 });
 const ListQuery = Type.Object({
   status: Type.Optional(Type.String()),
+  q: Type.Optional(Type.String({ maxLength: 100 })),
   cursor: Type.Optional(Type.String()),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
+  page: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 const EmployeeStatusSchema = Type.Union([
   Type.Literal('ACTIVE'),
@@ -400,8 +403,11 @@ export function employeeRoutes(
           companyIdOf(req),
           req.query as {
             status?: string;
+            q?: string;
             cursor?: string;
             limit?: number;
+            offset?: number;
+            page?: number;
           },
         ),
     );

@@ -26,6 +26,9 @@ export const WALLET_FUNDING_OPERATION_KEY = 'WALLET-FUNDING-REQUEST';
 export interface Page {
   cursor?: string;
   limit?: number;
+  offset?: number;
+  page?: number;
+  q?: string;
 }
 
 export interface FundingRequestCreateInput {

@@ -24,8 +24,15 @@ export interface EmployeeRowRepository {
   findByCode(companyId: string, code: string): Promise<EmployeeWithPrincipal | null>;
   list(
     companyId: string,
-    filter: { status?: string; cursor?: { createdAt: Date; id: string }; limit: number },
+    filter: {
+      status?: string;
+      q?: string;
+      cursor?: { createdAt: Date; id: string };
+      offset?: number;
+      limit: number;
+    },
   ): Promise<EmployeeWithPrincipal[]>;
+  count(companyId: string, filter: { status?: string; q?: string }): Promise<number>;
   /**
    * Employees holding at least one CURRENT membership in the requested
    * department scope. Keyset-paginated on (createdAt, id); membership rows
@@ -421,12 +428,22 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
           },
         },
       }),
-    list: (companyId, filter) =>
-      tx.employee.findMany({
+    list: (companyId, filter) => {
+      const q = filter.q?.trim();
+      return tx.employee.findMany({
         where: {
           companyId,
           ...(filter.status !== undefined ? { status: filter.status as never } : {}),
-          ...(filter.cursor !== undefined
+          ...(q !== undefined && q !== ''
+            ? {
+                OR: [
+                  { employeeCode: { contains: q, mode: 'insensitive' as const } },
+                  { displayName: { contains: q, mode: 'insensitive' as const } },
+                  { designation: { contains: q, mode: 'insensitive' as const } },
+                ],
+              }
+            : {}),
+          ...(filter.offset === undefined && filter.cursor !== undefined
             ? {
                 OR: [
                   { createdAt: { lt: filter.cursor.createdAt } },
@@ -450,8 +467,28 @@ export function makeEmployeeRepos(tx: Tx): EmployeeRepos {
           },
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        ...(filter.offset !== undefined ? { skip: filter.offset } : {}),
         take: filter.limit,
-      }),
+      });
+    },
+    count: (companyId, filter) => {
+      const q = filter.q?.trim();
+      return tx.employee.count({
+        where: {
+          companyId,
+          ...(filter.status !== undefined ? { status: filter.status as never } : {}),
+          ...(q !== undefined && q !== ''
+            ? {
+                OR: [
+                  { employeeCode: { contains: q, mode: 'insensitive' as const } },
+                  { displayName: { contains: q, mode: 'insensitive' as const } },
+                  { designation: { contains: q, mode: 'insensitive' as const } },
+                ],
+              }
+            : {}),
+        },
+      });
+    },
     listScopedTeam: (companyId, scope, filter, now) =>
       tx.employee.findMany({
         where: {

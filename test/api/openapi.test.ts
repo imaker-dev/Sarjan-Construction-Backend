@@ -317,6 +317,7 @@ describe('openapi document', () => {
       'GET /api/v1/notifications',
       'POST /api/v1/notifications/ticket',
       'POST /api/v1/notifications/{id}/read',
+      'POST /api/v1/notifications/read-all',
       'GET /api/v1/notifications/unread-count',
       'POST /api/v1/platform/companies',
       'GET /api/v1/platform/companies',
