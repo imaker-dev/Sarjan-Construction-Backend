@@ -28,6 +28,11 @@ import { lockWallet, allocVoucherNo, principalsByRoleCovering } from './reposito
 import type { WalletRepos, WalletUnitOfWork } from './repository.js';
 import { ensureWalletFundingWorkflow } from './provisioning.js';
 import { inrToWords } from './voucher-words.js';
+import {
+  renderCashVoucherPdf,
+  renderFundingReceiptPdf,
+  type CashVoucherPdfData,
+} from './voucher-pdf.js';
 import { InsufficientWalletBalanceError, WalletLimitError, WalletStateError } from './errors.js';
 import {
   FINANCE_WALLET_MANAGE,
@@ -46,6 +51,8 @@ import type {
   FundingRequestCreateInput,
   FundingRequestUpdateInput,
   Page,
+  ReduceApprovedAmountInput,
+  CancelTransferInput,
   ResolveDisputeInput,
   ReversalRequestInput,
   ReverseExecuteInput,
@@ -55,6 +62,20 @@ import type {
 const Decimal = Prisma.Decimal;
 const ZERO = new Decimal(0);
 const MAX_LIMIT = 100;
+
+/** Convert Prisma `seq: bigint` to string so Fastify JSON serialization succeeds. */
+function serializeLedgerEntry<T extends { seq: bigint }>(
+  entry: T,
+): Omit<T, 'seq'> & { seq: string } {
+  return { ...entry, seq: entry.seq.toString() };
+}
+
+/** Convert Prisma `voucherNo: bigint` to string so Fastify JSON serialization succeeds. */
+function serializeVoucher<T extends { voucherNo: bigint }>(
+  voucher: T,
+): Omit<T, 'voucherNo'> & { voucherNo: string } {
+  return { ...voucher, voucherNo: voucher.voucherNo.toString() };
+}
 
 export interface WalletAuthorizer extends Authorizer {
   hasPermission(principalId: string, permissionKey: string, target: ScopeTarget): Promise<boolean>;
@@ -407,9 +428,40 @@ export class WalletService {
       },
       orderBy: { seq: 'desc' },
       take: limit + 1,
+      include: {
+        expense: {
+          select: {
+            id: true,
+            payee: true,
+            description: true,
+            cashVoucher: { select: { id: true, voucherNo: true } },
+          },
+        },
+      },
     });
-    const items = rows.slice(0, limit);
-    const nextCursor = rows.length > limit ? items[items.length - 1]?.seq.toString() : undefined;
+    const items = rows.slice(0, limit).map((row) => {
+      const { expense, ...entry } = row;
+      const voucherId = expense?.cashVoucher?.id ?? null;
+      const voucherNo =
+        expense?.cashVoucher !== null && expense?.cashVoucher !== undefined
+          ? expense.cashVoucher.voucherNo.toString()
+          : null;
+      return {
+        ...serializeLedgerEntry(entry),
+        voucherId,
+        voucherNo,
+        expense:
+          expense !== null
+            ? {
+                id: expense.id,
+                voucherId,
+                payee: expense.payee,
+                description: expense.description,
+              }
+            : null,
+      };
+    });
+    const nextCursor = rows.length > limit ? items[items.length - 1]?.seq : undefined;
     return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
   }
 
@@ -447,7 +499,14 @@ export class WalletService {
     range: { from?: string; to?: string },
   ) {
     return this.uow.run(async (repos) => {
-      await this.assertSite(repos, actor, companyId, siteId, OPS.REPORT_VIEW, SITE_WALLET_VIEW);
+      await this.assertSite(
+        repos,
+        actor,
+        companyId,
+        siteId,
+        OPS.SITE_REPORT_VIEW,
+        SITE_WALLET_VIEW,
+      );
       const wallet = await this.walletForSite(repos, companyId, siteId);
       const postedRange = {
         ...(range.from !== undefined ? { gte: new Date(range.from) } : {}),
@@ -473,6 +532,282 @@ export class WalletService {
         currency: wallet.currency,
         byType: ledger.map((g) => ({ type: g.type, count: g._count, total: g._sum.amount })),
         postedExpenses: expenseCount,
+      };
+    });
+  }
+
+  /**
+   * Batched detailed report builder for Finance — zero N+1 queries across all
+   * requested wallets.
+   */
+  private async buildDetailedWalletReports(
+    repos: WalletRepos,
+    companyId: string,
+    wallets: (SiteWallet & {
+      site: {
+        id: string;
+        code: string;
+        name: string;
+        projectId: string;
+        project: { id: string; code: string; name: string };
+      };
+    })[],
+    range: { from?: string; to?: string },
+  ) {
+    if (wallets.length === 0) return [];
+    const walletIds = wallets.map((w) => w.id);
+    const postedRange =
+      range.from !== undefined || range.to !== undefined
+        ? {
+            postedAt: {
+              ...(range.from !== undefined ? { gte: new Date(range.from) } : {}),
+              ...(range.to !== undefined ? { lte: new Date(range.to) } : {}),
+            },
+          }
+        : {};
+    const expenseDateRange =
+      range.from !== undefined || range.to !== undefined
+        ? {
+            expenseDate: {
+              ...(range.from !== undefined ? { gte: new Date(range.from) } : {}),
+              ...(range.to !== undefined ? { lte: new Date(range.to) } : {}),
+            },
+          }
+        : {};
+
+    const [ledgerGroups, fundingGroups, transferGroups, expenseGroups, totalVouchers, signedVouchers] =
+      await Promise.all([
+        repos.tx.walletLedgerEntry.groupBy({
+          by: ['walletId', 'type'],
+          where: { companyId, walletId: { in: walletIds }, ...postedRange },
+          _sum: { amount: true },
+          _count: true,
+        }),
+        repos.tx.walletFundingRequest.groupBy({
+          by: ['walletId', 'status'],
+          where: { companyId, walletId: { in: walletIds } },
+          _sum: { draftAmount: true, approvedAmount: true, confirmedAmount: true },
+          _count: true,
+        }),
+        repos.tx.walletTransfer.groupBy({
+          by: ['walletId', 'status'],
+          where: { companyId, walletId: { in: walletIds } },
+          _sum: { amount: true, confirmedAmount: true, discrepancyAmount: true },
+          _count: true,
+        }),
+        repos.tx.walletExpense.groupBy({
+          by: ['walletId', 'status'],
+          where: { companyId, walletId: { in: walletIds }, ...expenseDateRange },
+          _sum: { amount: true },
+          _count: true,
+        }),
+        repos.tx.walletCashVoucher.groupBy({
+          by: ['walletId'],
+          where: { companyId, walletId: { in: walletIds } },
+          _count: true,
+        }),
+        repos.tx.walletCashVoucher.groupBy({
+          by: ['walletId'],
+          where: { companyId, walletId: { in: walletIds }, signedDocumentId: { not: null } },
+          _count: true,
+        }),
+      ]);
+
+    const voucherTotalByWallet = new Map(totalVouchers.map((v) => [v.walletId, v._count]));
+    const voucherSignedByWallet = new Map(signedVouchers.map((v) => [v.walletId, v._count]));
+
+    return wallets.map((w) => {
+      const wLedger = ledgerGroups.filter((g) => g.walletId === w.id);
+      const wFunding = fundingGroups.filter((g) => g.walletId === w.id);
+      const wTransfers = transferGroups.filter((g) => g.walletId === w.id);
+      const wExpenses = expenseGroups.filter((g) => g.walletId === w.id);
+
+      const posted = wExpenses.find((e) => e.status === 'POSTED');
+      const reversed = wExpenses.find((e) => e.status === 'REVERSED');
+      const totalV = voucherTotalByWallet.get(w.id) ?? 0;
+      const signedV = voucherSignedByWallet.get(w.id) ?? 0;
+
+      let totalRequested = ZERO;
+      let totalApproved = ZERO;
+      let totalConfirmed = ZERO;
+      for (const f of wFunding) {
+        totalRequested = totalRequested.add(f._sum.draftAmount ?? ZERO);
+        totalApproved = totalApproved.add(f._sum.approvedAmount ?? ZERO);
+        totalConfirmed = totalConfirmed.add(f._sum.confirmedAmount ?? ZERO);
+      }
+
+      let totalTransferred = ZERO;
+      let totalDisputed = ZERO;
+      for (const t of wTransfers) {
+        totalTransferred = totalTransferred.add(t._sum.amount ?? ZERO);
+        totalDisputed = totalDisputed.add(t._sum.discrepancyAmount ?? ZERO);
+      }
+
+      return {
+        walletId: w.id,
+        status: w.status,
+        currency: w.currency,
+        balance: w.balance,
+        site: { id: w.site.id, code: w.site.code, name: w.site.name },
+        project: w.site.project,
+        ledgerSummary: {
+          byType: wLedger.map((g) => ({
+            type: g.type,
+            count: g._count,
+            total: g._sum.amount ?? ZERO,
+          })),
+        },
+        fundingSummary: {
+          totalRequested,
+          totalApproved,
+          totalConfirmed,
+          byStatus: wFunding.map((f) => ({
+            status: f.status,
+            count: f._count,
+            requestedAmount: f._sum.draftAmount ?? ZERO,
+            approvedAmount: f._sum.approvedAmount ?? ZERO,
+            confirmedAmount: f._sum.confirmedAmount ?? ZERO,
+          })),
+        },
+        transferSummary: {
+          totalTransferred,
+          totalDisputed,
+          byStatus: wTransfers.map((t) => ({
+            status: t.status,
+            count: t._count,
+            amount: t._sum.amount ?? ZERO,
+            confirmedAmount: t._sum.confirmedAmount ?? ZERO,
+            discrepancyAmount: t._sum.discrepancyAmount ?? ZERO,
+          })),
+        },
+        expenseSummary: {
+          postedCount: posted?._count ?? 0,
+          postedTotal: posted?._sum.amount ?? ZERO,
+          reversedCount: reversed?._count ?? 0,
+          reversedTotal: reversed?._sum.amount ?? ZERO,
+        },
+        voucherSummary: {
+          total: totalV,
+          signed: signedV,
+          unsigned: Math.max(0, totalV - signedV),
+        },
+      };
+    });
+  }
+
+  /** Finance detailed report across all sites (paginated, filterable by project/site/date). */
+  async financeWalletsReport(
+    actor: ActorContext,
+    companyId: string,
+    filter: Page & { projectId?: string; siteId?: string; from?: string; to?: string },
+  ) {
+    return this.uow.run(async (repos) => {
+      await this.assertFinance(
+        repos,
+        actor,
+        companyId,
+        FINANCE_WALLET_READ,
+        OPS.FINANCE_REPORT_VIEW,
+      );
+      const limit = Math.min(filter.limit ?? 50, MAX_LIMIT);
+      let siteIds: string[] | undefined;
+      if (filter.projectId !== undefined) {
+        const sites = await repos.tx.site.findMany({
+          where: { companyId, projectId: filter.projectId },
+          select: { id: true },
+        });
+        siteIds = sites.map((s) => s.id);
+        if (filter.siteId !== undefined && !siteIds.includes(filter.siteId)) {
+          return { items: [] };
+        }
+      }
+      const rows = await repos.tx.siteWallet.findMany({
+        where: {
+          companyId,
+          ...(filter.siteId !== undefined ? { siteId: filter.siteId } : {}),
+          ...(siteIds !== undefined ? { siteId: { in: siteIds } } : {}),
+          ...(filter.cursor !== undefined ? { id: { gt: filter.cursor } } : {}),
+        },
+        orderBy: { id: 'asc' },
+        take: limit + 1,
+        include: {
+          site: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              projectId: true,
+              project: { select: { id: true, code: true, name: true } },
+            },
+          },
+        },
+      });
+      const slice = rows.slice(0, limit);
+      const nextCursor = rows.length > limit ? slice[slice.length - 1]?.id : undefined;
+      const items = await this.buildDetailedWalletReports(repos, companyId, slice, filter);
+      return { items, ...(nextCursor !== undefined ? { nextCursor } : {}) };
+    });
+  }
+
+  /** Finance detailed report for a single site wallet, including account-head breakdown. */
+  async financeWalletReport(
+    actor: ActorContext,
+    companyId: string,
+    walletId: string,
+    range: { from?: string; to?: string },
+  ) {
+    return this.uow.run(async (repos) => {
+      await this.assertFinance(
+        repos,
+        actor,
+        companyId,
+        FINANCE_WALLET_READ,
+        OPS.FINANCE_REPORT_VIEW,
+      );
+      const wallet = await repos.tx.siteWallet.findFirst({
+        where: { id: walletId, companyId },
+        include: {
+          site: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              projectId: true,
+              project: { select: { id: true, code: true, name: true } },
+            },
+          },
+        },
+      });
+      if (wallet === null) throw new OrgEntityNotFoundError('SITE_WALLET');
+      const [report] = await this.buildDetailedWalletReports(repos, companyId, [wallet], range);
+      const headLines = await repos.tx.walletCashVoucherLine.groupBy({
+        by: ['accountHeadId', 'accountCode', 'accountHeadName'],
+        where: {
+          companyId,
+          voucher: {
+            walletId: wallet.id,
+            ...(range.from !== undefined || range.to !== undefined
+              ? {
+                  date: {
+                    ...(range.from !== undefined ? { gte: new Date(range.from) } : {}),
+                    ...(range.to !== undefined ? { lte: new Date(range.to) } : {}),
+                  },
+                }
+              : {}),
+          },
+        },
+        _sum: { amount: true },
+        _count: true,
+      });
+      return {
+        ...report,
+        accountHeadBreakdown: headLines.map((h) => ({
+          accountHeadId: h.accountHeadId,
+          accountCode: h.accountCode,
+          accountHeadName: h.accountHeadName,
+          count: h._count,
+          total: h._sum.amount ?? ZERO,
+        })),
       };
     });
   }
@@ -1076,12 +1411,22 @@ export class WalletService {
         const fresh = await repos.tx.walletTransfer.findFirstOrThrow({
           where: { id: transferId, companyId },
         });
-        return { transfer: fresh, ledgerEntry: priorEntry, replayed: true };
+        return {
+          transfer: fresh,
+          ledgerEntry: serializeLedgerEntry(priorEntry),
+          pdfUrl: `/api/v1/sites/${siteId}/wallet/transfers/${transferId}/pdf`,
+          replayed: true,
+        };
       }
       // Zero-receipt replays leave no ledger row — the disputed transfer
       // state is the replay marker instead.
       if (received.eq(ZERO) && transfer.status === 'DISPUTED') {
-        return { transfer, ledgerEntry: null, replayed: true };
+        return {
+          transfer,
+          ledgerEntry: null,
+          pdfUrl: `/api/v1/sites/${siteId}/wallet/transfers/${transferId}/pdf`,
+          replayed: true,
+        };
       }
       if (transfer.status !== 'RECORDED') {
         throw new InvalidStatusTransitionError('WALLET_TRANSFER', transfer.status, 'confirm');
@@ -1170,11 +1515,18 @@ export class WalletService {
         summary: {
           siteId,
           requestId: request.id,
+          transferId: transfer.id,
+          receivedAmount: received.toFixed(2),
           status: updatedTransfer.status,
           requestStatus: newStatus,
         },
       });
-      return { transfer: updatedTransfer, ledgerEntry, replayed: false };
+      return {
+        transfer: updatedTransfer,
+        ledgerEntry: ledgerEntry !== null ? serializeLedgerEntry(ledgerEntry) : null,
+        pdfUrl: `/api/v1/sites/${siteId}/wallet/transfers/${transfer.id}/pdf`,
+        replayed: false,
+      };
     });
   }
 
@@ -1311,6 +1663,155 @@ export class WalletService {
     });
   }
 
+  /** Finance reduces the approved amount on an APPROVED / PARTIALLY_FUNDED request. */
+  async reduceApprovedAmount(
+    actor: ActorContext,
+    companyId: string,
+    requestId: string,
+    input: ReduceApprovedAmountInput,
+  ) {
+    const newAmount = money(input.approvedAmount, 'approvedAmount');
+    return this.uow.run(async (repos) => {
+      await this.assertFinance(repos, actor, companyId, FINANCE_WALLET_MANAGE, OPS.FUNDING_REVIEW);
+      const request = await repos.tx.walletFundingRequest.findFirst({
+        where: { id: requestId, companyId },
+      });
+      if (request === null) throw new OrgEntityNotFoundError('WALLET_FUNDING_REQUEST');
+      if (request.version !== input.expectedVersion) {
+        throw new VersionConflictError('WALLET_FUNDING_REQUEST');
+      }
+      if (request.status !== 'APPROVED' && request.status !== 'PARTIALLY_FUNDED') {
+        throw new InvalidStatusTransitionError(
+          'WALLET_FUNDING_REQUEST',
+          request.status,
+          'reduce approved amount',
+        );
+      }
+      if (request.approvedAmount === null) {
+        throw new WalletStateError('request is not approved');
+      }
+      const prevApproved = new Decimal(request.approvedAmount);
+      if (newAmount.gte(prevApproved)) {
+        throw new OrgValidationError(
+          'approvedAmount',
+          'must be strictly less than the current approvedAmount',
+        );
+      }
+      if (newAmount.lt(request.confirmedAmount)) {
+        throw new WalletLimitError('cannot reduce approvedAmount below already confirmedAmount');
+      }
+      const inFlightAgg = await repos.tx.walletTransfer.aggregate({
+        where: { companyId, requestId, status: { in: ['RECORDED', 'CONFIRMED', 'DISPUTED'] } },
+        _sum: { amount: true },
+      });
+      const inFlight = new Decimal(inFlightAgg._sum.amount ?? 0);
+      if (newAmount.lt(inFlight)) {
+        throw new WalletLimitError(
+          `cannot reduce approvedAmount below recorded transfers (${inFlight.toFixed(2)} INR)`,
+        );
+      }
+      const nextStatus = new Decimal(request.confirmedAmount).gte(newAmount)
+        ? 'FUNDED'
+        : request.status;
+      const chain = await this.siteChain(repos, companyId, request.siteId);
+      const updated = await repos.tx.walletFundingRequest.update({
+        where: { id: request.id, companyId },
+        data: {
+          approvedAmount: newAmount,
+          status: nextStatus,
+          version: { increment: 1 },
+        },
+      });
+      await repos.audit.record(
+        auditEntry(actor, {
+          action: 'WALLET_FUNDING_REDUCED',
+          entityType: 'WALLET_FUNDING_REQUEST',
+          entityId: request.id,
+          companyId,
+          statusBefore: request.status,
+          statusAfter: nextStatus,
+          changedFields: {
+            approvedAmount: { before: prevApproved.toFixed(2), after: newAmount.toFixed(2) },
+            reason: { before: null, after: input.reason },
+          },
+        }),
+      );
+      await repos.outbox.record({
+        companyId,
+        eventType: 'WALLET_FUNDING_REDUCED',
+        aggregateType: 'WALLET_FUNDING_REQUEST',
+        aggregateId: request.id,
+        eventKey: randomUUID(),
+        recipientPrincipalIds: await this.siteRecipients(repos, companyId, chain, [
+          request.requestedByPrincipalId,
+        ]),
+        summary: {
+          siteId: request.siteId,
+          status: nextStatus,
+          approvedAmount: newAmount.toFixed(2),
+        },
+      });
+      return updated;
+    });
+  }
+
+  /** Finance cancels an unconfirmed (RECORDED) transfer so a smaller/corrected one can be sent. */
+  async cancelTransfer(
+    actor: ActorContext,
+    companyId: string,
+    transferId: string,
+    input: CancelTransferInput,
+  ) {
+    return this.uow.run(async (repos) => {
+      await this.assertFinance(repos, actor, companyId, FINANCE_WALLET_MANAGE, OPS.CREDIT_PROCESS);
+      const transfer = await repos.tx.walletTransfer.findFirst({
+        where: { id: transferId, companyId },
+      });
+      if (transfer === null) throw new OrgEntityNotFoundError('WALLET_TRANSFER');
+      if (transfer.version !== input.expectedVersion) {
+        throw new VersionConflictError('WALLET_TRANSFER');
+      }
+      if (transfer.status !== 'RECORDED') {
+        throw new InvalidStatusTransitionError('WALLET_TRANSFER', transfer.status, 'cancel');
+      }
+      const request = await repos.tx.walletFundingRequest.findFirstOrThrow({
+        where: { id: transfer.requestId, companyId },
+      });
+      const chain = await this.siteChain(repos, companyId, transfer.siteId);
+      const updated = await repos.tx.walletTransfer.update({
+        where: { id: transfer.id, companyId },
+        data: {
+          status: 'CLOSED',
+          disputeResolution: `CANCELLED: ${input.reason}`,
+          version: { increment: 1 },
+        },
+      });
+      await repos.audit.record(
+        auditEntry(actor, {
+          action: 'WALLET_TRANSFER_CANCELLED',
+          entityType: 'WALLET_TRANSFER',
+          entityId: transfer.id,
+          companyId,
+          statusBefore: transfer.status,
+          statusAfter: 'CLOSED',
+          changedFields: { reason: { before: null, after: input.reason } },
+        }),
+      );
+      await repos.outbox.record({
+        companyId,
+        eventType: 'WALLET_TRANSFER_CANCELLED',
+        aggregateType: 'WALLET_TRANSFER',
+        aggregateId: transfer.id,
+        eventKey: randomUUID(),
+        recipientPrincipalIds: await this.siteRecipients(repos, companyId, chain, [
+          request.requestedByPrincipalId,
+        ]),
+        summary: { siteId: transfer.siteId, requestId: transfer.requestId, status: 'CLOSED' },
+      });
+      return updated;
+    });
+  }
+
   // ----------------------------------------------------------- expenses
 
   private async validateExpenseDocuments(
@@ -1389,7 +1890,17 @@ export class WalletService {
         if (!new Decimal(replay.amount).eq(amount)) {
           throw new IdempotencyConflictError(input.idempotencyKey);
         }
-        return { expense: replay, voucher: replay.cashVoucher, replayed: true };
+        const serializedVoucher =
+          replay.cashVoucher !== null ? serializeVoucher(replay.cashVoucher) : null;
+        return {
+          expense: { ...replay, cashVoucher: serializedVoucher },
+          voucher: serializedVoucher,
+          pdfUrl:
+            serializedVoucher !== null
+              ? `/api/v1/sites/${siteId}/wallet/vouchers/${serializedVoucher.id}/pdf`
+              : null,
+          replayed: true,
+        };
       }
       const heads = await repos.tx.walletAccountHead.findMany({
         where: { companyId, id: { in: input.accountLines.map((l) => l.accountHeadId) } },
@@ -1528,7 +2039,13 @@ export class WalletService {
         aggregateId: expense.id,
         eventKey: randomUUID(),
         recipientPrincipalIds: await this.siteRecipients(repos, companyId, chain, [actor.actorId]),
-        summary: { siteId, walletId: wallet.id, status: 'POSTED' },
+        summary: {
+          siteId,
+          walletId: wallet.id,
+          expenseId: expense.id,
+          amount: amount.toFixed(2),
+          status: 'POSTED',
+        },
       });
       if (voucher !== null) {
         await repos.outbox.record({
@@ -1540,10 +2057,23 @@ export class WalletService {
           recipientPrincipalIds: await this.siteRecipients(repos, companyId, chain, [
             actor.actorId,
           ]),
-          summary: { siteId, voucherNo: voucher.voucherNo.toString() },
+          summary: {
+            siteId,
+            voucherId: voucher.id,
+            voucherNo: voucher.voucherNo.toString(),
+          },
         });
       }
-      return { expense, ledgerEntry, voucher, replayed: false };
+      return {
+        expense,
+        ledgerEntry: serializeLedgerEntry(ledgerEntry),
+        voucher: voucher !== null ? serializeVoucher(voucher) : null,
+        pdfUrl:
+          voucher !== null
+            ? `/api/v1/sites/${siteId}/wallet/vouchers/${voucher.id}/pdf`
+            : null,
+        replayed: false,
+      };
     });
   }
 
@@ -1595,7 +2125,11 @@ export class WalletService {
         },
       });
       if (expense === null) throw new OrgEntityNotFoundError('WALLET_EXPENSE');
-      return expense;
+      return {
+        ...expense,
+        cashVoucher:
+          expense.cashVoucher !== null ? serializeVoucher(expense.cashVoucher) : null,
+      };
     });
   }
 
@@ -1620,7 +2154,176 @@ export class WalletService {
       await this.assertSite(repos, actor, companyId, siteId, OPS.LEDGER_VIEW, SITE_WALLET_VIEW);
       const voucher = await this.voucherForSite(repos, companyId, siteId, voucherId);
       const total = voucher.lines.reduce((a, l) => a.add(new Decimal(l.amount)), ZERO);
-      return { voucher, total, amountInWords: inrToWords(total) };
+      return { voucher: serializeVoucher(voucher), total, amountInWords: inrToWords(total) };
+    });
+  }
+
+  private async buildVoucherPdfData(
+    repos: WalletRepos,
+    companyId: string,
+    siteId: string,
+    voucher: Awaited<ReturnType<WalletService['voucherForSite']>>,
+  ): Promise<CashVoucherPdfData> {
+    const [company, site, preparer, checker] = await Promise.all([
+      repos.tx.company.findFirstOrThrow({ where: { id: companyId } }),
+      repos.tx.site.findFirstOrThrow({ where: { id: siteId, companyId } }),
+      repos.tx.employee.findFirst({ where: { id: voucher.preparedByEmployeeId, companyId } }),
+      voucher.checkedByEmployeeId !== null
+        ? repos.tx.employee.findFirst({ where: { id: voucher.checkedByEmployeeId, companyId } })
+        : Promise.resolve(null),
+    ]);
+    const total = voucher.lines.reduce((a, l) => a.add(new Decimal(l.amount)), ZERO);
+    const addr = [
+      company.regAddressLine1,
+      company.regAddressLine2,
+      company.regLocality,
+      [company.regCity, company.regDistrict].filter(Boolean).join(', '),
+      [company.regStateUt, company.regPin].filter(Boolean).join(' - '),
+      company.regCountry,
+    ]
+      .filter((p) => p !== null && p !== '')
+      .join(', ');
+    return {
+      companyName: company.legalName ?? company.tradeName ?? company.name,
+      companyAddress: addr,
+      voucherRef: `CV-${voucher.voucherNo.toString().padStart(6, '0')}`,
+      date: voucher.date.toISOString().slice(0, 10),
+      siteName: site.name,
+      siteCode: site.code,
+      paidTo: voucher.paidTo ?? '',
+      totalAmount: total.toFixed(2),
+      amountInWords: inrToWords(total),
+      narration: voucher.narration ?? '',
+      preparedBy: preparer?.displayName ?? '',
+      checkedBy: checker?.displayName ?? '',
+      lines: voucher.lines.map((l) => ({
+        accountCode: l.accountCode,
+        accountHeadName: l.accountHeadName,
+        amount: new Decimal(l.amount).toFixed(2),
+      })),
+    };
+  }
+
+  /** Site-scoped Sarjan Cash Voucher PDF matching the printed voucher layout. */
+  async printVoucherPdf(
+    actor: ActorContext,
+    companyId: string,
+    siteId: string,
+    voucherId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    return this.uow.run(async (repos) => {
+      await this.assertSite(repos, actor, companyId, siteId, OPS.LEDGER_VIEW, SITE_WALLET_VIEW);
+      const voucher = await this.voucherForSite(repos, companyId, siteId, voucherId);
+      const data = await this.buildVoucherPdfData(repos, companyId, siteId, voucher);
+      const buffer = await renderCashVoucherPdf(data);
+      return { buffer, fileName: `${data.voucherRef}.pdf` };
+    });
+  }
+
+  /** Finance-scoped Sarjan Cash Voucher PDF for any site wallet. */
+  async printFinanceVoucherPdf(
+    actor: ActorContext,
+    companyId: string,
+    walletId: string,
+    voucherId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    return this.uow.run(async (repos) => {
+      await this.assertFinance(repos, actor, companyId, FINANCE_WALLET_READ, OPS.LEDGER_VIEW);
+      const voucher = await repos.tx.walletCashVoucher.findFirst({
+        where: { id: voucherId, companyId, walletId },
+        include: { lines: { orderBy: { lineNo: 'asc' } } },
+      });
+      if (voucher === null) throw new OrgEntityNotFoundError('WALLET_CASH_VOUCHER');
+      const data = await this.buildVoucherPdfData(repos, companyId, voucher.siteId, voucher);
+      const buffer = await renderCashVoucherPdf(data);
+      return { buffer, fileName: `${data.voucherRef}.pdf` };
+    });
+  }
+
+  private async buildTransferPdfBuffer(
+    repos: WalletRepos,
+    companyId: string,
+    transfer: WalletTransfer,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    const [company, site, request, recorder, confirmer] = await Promise.all([
+      repos.tx.company.findFirstOrThrow({ where: { id: companyId } }),
+      repos.tx.site.findFirstOrThrow({ where: { id: transfer.siteId, companyId } }),
+      repos.tx.walletFundingRequest.findFirstOrThrow({
+        where: { id: transfer.requestId, companyId },
+      }),
+      repos.tx.employee.findFirst({
+        where: { companyId, principalId: transfer.recordedByPrincipalId },
+        select: { displayName: true },
+      }),
+      transfer.confirmedByPrincipalId !== null
+        ? repos.tx.employee.findFirst({
+            where: { companyId, principalId: transfer.confirmedByPrincipalId },
+            select: { displayName: true },
+          })
+        : Promise.resolve(null),
+    ]);
+    const addr = [
+      company.regAddressLine1,
+      company.regAddressLine2,
+      company.regLocality,
+      [company.regCity, company.regDistrict].filter(Boolean).join(', '),
+      [company.regStateUt, company.regPin].filter(Boolean).join(' - '),
+      company.regCountry,
+    ]
+      .filter((p) => p !== null && p !== '')
+      .join(', ');
+    const confirmedAmt = new Decimal(transfer.confirmedAmount);
+    const effectiveAmt = confirmedAmt.gt(ZERO) ? confirmedAmt : new Decimal(transfer.amount);
+    const receiptRef = `FR-${transfer.id.slice(0, 8).toUpperCase()}`;
+    const buffer = await renderFundingReceiptPdf({
+      companyName: company.legalName ?? company.tradeName ?? company.name,
+      companyAddress: addr,
+      receiptRef,
+      date: (transfer.confirmedAt ?? transfer.transferredAt).toISOString().slice(0, 10),
+      siteName: site.name,
+      siteCode: site.code,
+      transferReference: transfer.reference,
+      purpose: request.draftPurpose ?? '',
+      transferredAmount: new Decimal(transfer.amount).toFixed(2),
+      confirmedAmount: confirmedAmt.toFixed(2),
+      amountInWords: inrToWords(effectiveAmt),
+      status: transfer.status,
+      recordedBy: recorder?.displayName ?? '',
+      confirmedBy: confirmer?.displayName ?? '',
+    });
+    return { buffer, fileName: `${receiptRef}.pdf` };
+  }
+
+  /** Site-scoped funding receipt PDF for a transfer. */
+  async printTransferReceiptPdf(
+    actor: ActorContext,
+    companyId: string,
+    siteId: string,
+    transferId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    return this.uow.run(async (repos) => {
+      await this.assertSite(repos, actor, companyId, siteId, OPS.LEDGER_VIEW, SITE_WALLET_VIEW);
+      const transfer = await repos.tx.walletTransfer.findFirst({
+        where: { id: transferId, companyId, siteId },
+      });
+      if (transfer === null) throw new OrgEntityNotFoundError('WALLET_TRANSFER');
+      return this.buildTransferPdfBuffer(repos, companyId, transfer);
+    });
+  }
+
+  /** Finance-scoped funding receipt PDF for a transfer. */
+  async printFinanceTransferReceiptPdf(
+    actor: ActorContext,
+    companyId: string,
+    transferId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    return this.uow.run(async (repos) => {
+      await this.assertFinance(repos, actor, companyId, FINANCE_WALLET_READ, OPS.LEDGER_VIEW);
+      const transfer = await repos.tx.walletTransfer.findFirst({
+        where: { id: transferId, companyId },
+      });
+      if (transfer === null) throw new OrgEntityNotFoundError('WALLET_TRANSFER');
+      return this.buildTransferPdfBuffer(repos, companyId, transfer);
     });
   }
 
@@ -1746,7 +2449,7 @@ table.lines td.r, table.lines th.r { text-align: right; }
         recipientPrincipalIds: await this.siteRecipients(repos, companyId, chain),
         summary: { siteId, voucherNo: voucher.voucherNo.toString() },
       });
-      return updated;
+      return serializeVoucher(updated);
     });
   }
 
@@ -1943,7 +2646,7 @@ table.lines td.r, table.lines th.r { text-align: right; }
     const prior = await repos.tx.walletLedgerEntry.findFirst({
       where: { companyId, walletId: original.walletId, idempotencyKey: input.idempotencyKey },
     });
-    if (prior !== null) return { entry: prior, replayed: true };
+    if (prior !== null) return { entry: serializeLedgerEntry(prior), replayed: true };
     if (original.type === 'REVERSAL_DEBIT' || original.type === 'REVERSAL_CREDIT') {
       throw new WalletStateError('reversal entries cannot be reversed');
     }
@@ -2053,7 +2756,7 @@ table.lines td.r, table.lines th.r { text-align: right; }
       recipientPrincipalIds: await this.siteRecipients(repos, companyId, chain),
       summary: { siteId: site.siteId, type: reversalType },
     });
-    return { entry, replayed: false };
+    return { entry: serializeLedgerEntry(entry), replayed: false };
   }
 
   // --------------------------------------------------------- account heads

@@ -11,7 +11,8 @@ export const OPS = {
   FUNDING_REVIEW: 'PETTY_CASH_REQUEST_REVIEW',
   EXPENSE_SUBMIT: 'PETTY_CASH_EXPENSE_SUBMIT',
   EXPENSE_REVIEW: 'PETTY_CASH_EXPENSE_REVIEW',
-  REPORT_VIEW: 'PETTY_CASH_REPORT_VIEW',
+  SITE_REPORT_VIEW: 'PROJECT_WALLET_REPORT_VIEW',
+  FINANCE_REPORT_VIEW: 'FINANCE_WALLET_REPORT_VIEW',
   LEDGER_VIEW: 'PROJECT_WALLET_LEDGER_VIEW',
   RECEIPT_CONFIRM: 'PROJECT_WALLET_RECEIPT_CONFIRM',
   CREDIT_PROCESS: 'PROJECT_WALLET_CREDIT_PROCESS',
@@ -67,6 +68,17 @@ export interface ResolveDisputeInput {
 export interface CloseShortInput {
   reason: string;
   idempotencyKey: string;
+}
+
+export interface ReduceApprovedAmountInput {
+  approvedAmount: string;
+  reason: string;
+  expectedVersion: number;
+}
+
+export interface CancelTransferInput {
+  reason: string;
+  expectedVersion: number;
 }
 
 export interface ExpenseLineInput {

@@ -60,6 +60,7 @@ const TransferParams = Type.Object({ siteId: Uuid, transferId: Uuid });
 const FinanceTransferParams = Type.Object({ transferId: Uuid });
 const ExpenseParams = Type.Object({ siteId: Uuid, expenseId: Uuid });
 const VoucherParams = Type.Object({ siteId: Uuid, voucherId: Uuid });
+const FinanceVoucherParams = Type.Object({ walletId: Uuid, voucherId: Uuid });
 const EntryParams = Type.Object({ siteId: Uuid, entryId: Uuid });
 const FinanceEntryParams = Type.Object({ entryId: Uuid });
 const AccountHeadParams = Type.Object({ accountHeadId: Uuid });
@@ -123,6 +124,23 @@ const ResolveDisputeBody = Type.Object(
 
 const CloseShortBody = Type.Object(
   { reason: Type.String({ minLength: 1, maxLength: 500 }), idempotencyKey: IdemKey },
+  { additionalProperties: false },
+);
+
+const ReduceApprovedAmountBody = Type.Object(
+  {
+    approvedAmount: Money,
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+    expectedVersion: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+const CancelTransferBody = Type.Object(
+  {
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+    expectedVersion: Type.Integer({ minimum: 0 }),
+  },
   { additionalProperties: false },
 );
 
@@ -397,6 +415,63 @@ export function walletRoutes(service: WalletService) {
           actorOf(request),
           companyIdOf(request),
           (request.params as { siteId: string }).siteId,
+          request.query as { from?: string; to?: string },
+        ),
+    );
+
+    app.get(
+      '/finance/wallets/reports',
+      {
+        ...finRead,
+        schema: {
+          ...WalletTag,
+          querystring: Type.Object(
+            {
+              projectId: Type.Optional(Uuid),
+              siteId: Type.Optional(Uuid),
+              from: Type.Optional(IsoDateTime),
+              to: Type.Optional(IsoDateTime),
+              ...PageQuery,
+            },
+            { additionalProperties: false },
+          ),
+          summary: 'Finance detailed report across all site wallets',
+        },
+      },
+      async (request) =>
+        service.financeWalletsReport(
+          actorOf(request),
+          companyIdOf(request),
+          request.query as {
+            projectId?: string;
+            siteId?: string;
+            from?: string;
+            to?: string;
+            cursor?: string;
+            limit?: number;
+          },
+        ),
+    );
+
+    app.get(
+      '/finance/wallets/:walletId/reports',
+      {
+        ...finRead,
+        schema: {
+          ...WalletTag,
+          params: WalletParams,
+          querystring: Type.Object(
+            { from: Type.Optional(IsoDateTime), to: Type.Optional(IsoDateTime) },
+            { additionalProperties: false },
+          ),
+          summary: 'Finance detailed report for a single site wallet (includes account-head breakdown)',
+        },
+      },
+      async (request) =>
+        service.financeWalletReport(
+          actorOf(request),
+          companyIdOf(request),
+          (request.params as { walletId: string }).walletId,
           request.query as { from?: string; to?: string },
         ),
     );
@@ -778,6 +853,50 @@ export function walletRoutes(service: WalletService) {
         ),
     );
 
+    app.post(
+      '/finance/wallet-funding-requests/:requestId/reduce-amount',
+      {
+        ...finManage,
+        schema: {
+          ...WalletTag,
+          params: FinanceRequestParams,
+          body: ReduceApprovedAmountBody,
+          summary: 'Finance reduces approvedAmount on an APPROVED or PARTIALLY_FUNDED request',
+          description:
+            'Must be strictly less than current approvedAmount and >= max(confirmedAmount, recorded transfers).',
+        },
+      },
+      async (request) =>
+        service.reduceApprovedAmount(
+          actorOf(request),
+          companyIdOf(request),
+          (request.params as { requestId: string }).requestId,
+          request.body as { approvedAmount: string; reason: string; expectedVersion: number },
+        ),
+    );
+
+    app.post(
+      '/finance/wallet-transfers/:transferId/cancel',
+      {
+        ...finManage,
+        schema: {
+          ...WalletTag,
+          params: FinanceTransferParams,
+          body: CancelTransferBody,
+          summary: 'Finance cancels an unconfirmed (RECORDED) transfer',
+          description:
+            'Only RECORDED transfers can be cancelled; frees the amount from in-flight transfers.',
+        },
+      },
+      async (request) =>
+        service.cancelTransfer(
+          actorOf(request),
+          companyIdOf(request),
+          (request.params as { transferId: string }).transferId,
+          request.body as { reason: string; expectedVersion: number },
+        ),
+    );
+
     // ------------------------------------------------------------ account heads
 
     app.get(
@@ -994,6 +1113,105 @@ export function walletRoutes(service: WalletService) {
           p.voucherId,
         );
         return reply.type('text/html; charset=utf-8').send(html);
+      },
+    );
+
+    app.get(
+      '/sites/:siteId/wallet/vouchers/:voucherId/pdf',
+      {
+        ...siteView,
+        schema: {
+          ...WalletTag,
+          params: VoucherParams,
+          summary: 'Download Sarjan cash voucher as PDF (application/pdf)',
+        },
+      },
+      async (request, reply) => {
+        const p = request.params as { siteId: string; voucherId: string };
+        const { buffer, fileName } = await service.printVoucherPdf(
+          actorOf(request),
+          companyIdOf(request),
+          p.siteId,
+          p.voucherId,
+        );
+        return reply
+          .header('Content-Disposition', `attachment; filename="${fileName}"`)
+          .type('application/pdf')
+          .send(buffer);
+      },
+    );
+
+    app.get(
+      '/finance/wallets/:walletId/vouchers/:voucherId/pdf',
+      {
+        ...finRead,
+        schema: {
+          ...WalletTag,
+          params: FinanceVoucherParams,
+          summary: 'Finance downloads a site cash voucher as PDF (application/pdf)',
+        },
+      },
+      async (request, reply) => {
+        const p = request.params as { walletId: string; voucherId: string };
+        const { buffer, fileName } = await service.printFinanceVoucherPdf(
+          actorOf(request),
+          companyIdOf(request),
+          p.walletId,
+          p.voucherId,
+        );
+        return reply
+          .header('Content-Disposition', `attachment; filename="${fileName}"`)
+          .type('application/pdf')
+          .send(buffer);
+      },
+    );
+
+    app.get(
+      '/sites/:siteId/wallet/transfers/:transferId/pdf',
+      {
+        ...siteView,
+        schema: {
+          ...WalletTag,
+          params: TransferParams,
+          summary: 'Download funding receipt voucher as PDF (application/pdf)',
+        },
+      },
+      async (request, reply) => {
+        const p = request.params as { siteId: string; transferId: string };
+        const { buffer, fileName } = await service.printTransferReceiptPdf(
+          actorOf(request),
+          companyIdOf(request),
+          p.siteId,
+          p.transferId,
+        );
+        return reply
+          .header('Content-Disposition', `attachment; filename="${fileName}"`)
+          .type('application/pdf')
+          .send(buffer);
+      },
+    );
+
+    app.get(
+      '/finance/wallet-transfers/:transferId/pdf',
+      {
+        ...finRead,
+        schema: {
+          ...WalletTag,
+          params: FinanceTransferParams,
+          summary: 'Finance downloads a funding receipt voucher as PDF (application/pdf)',
+        },
+      },
+      async (request, reply) => {
+        const p = request.params as { transferId: string };
+        const { buffer, fileName } = await service.printFinanceTransferReceiptPdf(
+          actorOf(request),
+          companyIdOf(request),
+          p.transferId,
+        );
+        return reply
+          .header('Content-Disposition', `attachment; filename="${fileName}"`)
+          .type('application/pdf')
+          .send(buffer);
       },
     );
 
