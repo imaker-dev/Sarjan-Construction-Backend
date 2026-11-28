@@ -1454,7 +1454,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     appBaseUrl: app.config.APP_BASE_URL,
   });
   const notificationGateway = new NotificationGateway({
-    subscriber: app.redis.duplicate(),
+    subscriber: app.redis.duplicate({ enableOfflineQueue: true }),
     revalidate: (sub, sid) => notificationService.revalidate(sub, sid),
   });
   app.addHook('onClose', async () => {
@@ -1466,8 +1466,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     notificationRoutes({
       service: notificationService,
       gateway: notificationGateway,
-      verifyToken: (token) =>
-        app.tokenService.verifyAccessToken(token) as unknown as Record<string, unknown>,
+      verifyToken: (token) => app.jwt.verify<Record<string, unknown>>(token, { algorithms: ['HS256'] } as never),
     }),
     { prefix: '/api/v1' },
   );

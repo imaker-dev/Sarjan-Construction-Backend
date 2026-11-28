@@ -12,8 +12,12 @@ export class RedisTicketStore implements TicketStore {
   }
 
   async consume(jti: string): Promise<boolean> {
-    // GETDEL is atomic — only the first consumer sees the value.
-    const value = await this.redis.getdel(`${TICKET_PREFIX}${jti}`);
+    // Atomic get + del via Lua script — compatible with Redis 5.0+ (where GETDEL is absent).
+    const value = await this.redis.eval(
+      "local v = redis.call('GET', KEYS[1]); if v then redis.call('DEL', KEYS[1]); end; return v",
+      1,
+      `${TICKET_PREFIX}${jti}`,
+    );
     return value !== null;
   }
 }

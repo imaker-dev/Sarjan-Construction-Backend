@@ -56,7 +56,14 @@ export class NotificationGateway {
     const count = (this.subscribed.get(key) ?? 0) + 1;
     this.subscribed.set(key, count);
     if (count === 1) {
-      void this.deps.subscriber.subscribe(channelFor(binding.companyId, binding.principalId));
+      const ch = channelFor(binding.companyId, binding.principalId);
+      const sub = this.deps.subscriber as Redis & { status?: string; connect?: () => Promise<void> };
+      const doSub = () => this.deps.subscriber.subscribe(ch).catch(() => undefined);
+      if (sub.status === 'wait' && typeof sub.connect === 'function') {
+        void sub.connect().then(doSub).catch(() => undefined);
+      } else {
+        void doSub();
+      }
     }
 
     let alive = true;
@@ -89,7 +96,9 @@ export class NotificationGateway {
       if (remaining <= 0) {
         this.sockets.delete(key);
         this.subscribed.delete(key);
-        void this.deps.subscriber.unsubscribe(channelFor(binding.companyId, binding.principalId));
+        void Promise.resolve(
+          this.deps.subscriber.unsubscribe(channelFor(binding.companyId, binding.principalId)),
+        ).catch(() => undefined);
       }
     };
 

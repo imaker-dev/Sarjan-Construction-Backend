@@ -1292,11 +1292,19 @@ export class AttendanceService {
     return this.uow.run(async (repos) => {
       const s = await repos.sessions.findById(companyId, sessionId);
       if (!s) throw new AttendanceEntityNotFoundError('AttendanceSession', sessionId);
-      await this.authorizer.assertPermission(
-        actor.actorId,
-        ATTENDANCE_READ,
-        sessionLocationTarget(companyId, s),
-      );
+      const callerEmp =
+        (repos.employees as typeof repos.employees | undefined) !== undefined
+          ? await repos.employees.findByPrincipal(companyId, actor.actorId)
+          : null;
+      if (callerEmp?.id === s.employeeId) {
+        await this.assertAnyScope(actor.actorId, ATTENDANCE_READ, companyId);
+      } else {
+        await this.authorizer.assertPermission(
+          actor.actorId,
+          ATTENDANCE_READ,
+          sessionLocationTarget(companyId, s),
+        );
+      }
 
       const reposAny = repos as Partial<AttendanceRepos>;
       let dailySummary: DailyActivitySummary | undefined;

@@ -68,12 +68,17 @@ export class RoleNotificationDispatcher {
     scope?: ScopeFilter,
   ): Promise<ResolvedRecipient[]> {
     if (roleKeys.length === 0) return [];
+    const now = new Date();
 
     const assignments = await this.prisma.roleAssignment.findMany({
       where: {
         companyId,
         role: { key: { in: roleKeys } },
         revokedAt: null,
+        OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }],
+        AND: [{ OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] }],
+        principal: { status: 'ACTIVE' },
+        ...(scope?.scopeType === 'COMPANY' ? { scopeType: 'COMPANY' } : {}),
         ...(scope?.scopeType === 'HEAD_OFFICE' && scope.scopeId
           ? { headOfficeId: scope.scopeId }
           : {}),

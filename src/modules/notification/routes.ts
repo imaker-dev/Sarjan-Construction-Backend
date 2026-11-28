@@ -150,7 +150,15 @@ async function authenticateSocket(
   if (!header?.startsWith('Bearer ')) {
     throw new UnauthorizedError('TOKEN_MISSING', 'Bearer token or ticket protocol required');
   }
-  const claims = deps.verifyToken(header.slice('Bearer '.length)) as { sub: string; sid: string };
+  const claims = deps.verifyToken(header.slice('Bearer '.length)) as {
+    sub: string;
+    sid: string;
+    type?: string;
+    typ?: string;
+  };
+  if (claims.typ === TICKET_TYPE || (claims.type !== undefined && claims.type !== 'access')) {
+    throw new UnauthorizedError('INVALID_TOKEN', 'Access token required');
+  }
   const companyId = request.headers['x-company-id'];
   if (typeof companyId !== 'string' || companyId.length === 0) {
     throw new UnauthorizedError('COMPANY_REQUIRED', 'x-company-id header required');

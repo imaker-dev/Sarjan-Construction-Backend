@@ -467,7 +467,7 @@ export function attendanceRoutes(service: AttendanceService) {
 
     app.get(
       '/attendance/sessions/:id',
-      { schema: { params: SessionParams }, ...perm(ATTENDANCE_READ, atSession) },
+      { schema: { params: SessionParams }, ...anyScopePerm(ATTENDANCE_READ) },
       async (req) => {
         const { id } = req.params as { id: string };
         return service.getSession(actorOf(req), companyIdOf(req), id);

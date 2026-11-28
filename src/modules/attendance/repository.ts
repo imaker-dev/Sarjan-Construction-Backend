@@ -185,6 +185,14 @@ export interface AttendanceRepos {
       }[];
       sessions: AttendanceSessionWithDetails[];
       leaves: unknown[];
+      holidays: {
+        id: string;
+        date: string;
+        name: string;
+        calendarId: string;
+        calendar: { id: string; code: string; name: string };
+        category: { id: string; code: string; name: string };
+      }[];
     }>;
     getDailySummary(
       companyId: string,
@@ -1057,6 +1065,32 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           }),
         );
 
+        const rawHolidays = await tx.holiday.findMany({
+          where: {
+            companyId,
+            status: 'ACTIVE',
+            date: { gte: fromDate, lte: toDate },
+            calendar: { status: 'ACTIVE' },
+          },
+          select: {
+            id: true,
+            date: true,
+            name: true,
+            calendarId: true,
+            calendar: { select: { id: true, code: true, name: true } },
+            category: { select: { id: true, code: true, name: true } },
+          },
+          orderBy: [{ date: 'asc' }, { name: 'asc' }],
+        });
+        const holidays = rawHolidays.map((h) => ({
+          id: h.id,
+          date: h.date.toISOString().slice(0, 10),
+          name: h.name,
+          calendarId: h.calendarId,
+          calendar: h.calendar,
+          category: h.category,
+        }));
+
         return {
           ...(filter.siteId ? { siteId: filter.siteId } : {}),
           ...(filter.headOfficeId ? { headOfficeId: filter.headOfficeId } : {}),
@@ -1074,6 +1108,7 @@ export function makeAttendanceRepos(tx: Tx): AttendanceRepos {
           workerSummaries,
           sessions,
           leaves,
+          holidays,
         };
       },
       getDailySummary: async (companyId, siteIdOrFilter, bDate) => {

@@ -31,18 +31,29 @@ export class NotificationWorker {
       async (job) => {
         if (job.name === SWEEP_JOB) {
           const result = await this.service.sweep();
-          this.log('notification relay tick', { job: job.name, ...result });
+          if (Object.values(result).some((v) => typeof v === 'number' && v > 0)) {
+            this.log('notification relay tick', { job: job.name, ...result });
+          }
           return;
         }
         const batch = await this.service.processBatch();
         const emails = await this.service.processEmailBatch();
-        this.log('notification relay tick', {
-          job: job.name,
-          ...batch,
-          emailClaimed: emails.claimed,
-          emailSent: emails.sent,
-          emailFailed: emails.failed,
-        });
+        if (
+          batch.claimed > 0 ||
+          batch.delivered > 0 ||
+          batch.published > 0 ||
+          emails.claimed > 0 ||
+          emails.sent > 0 ||
+          emails.failed > 0
+        ) {
+          this.log('notification relay tick', {
+            job: job.name,
+            ...batch,
+            emailClaimed: emails.claimed,
+            emailSent: emails.sent,
+            emailFailed: emails.failed,
+          });
+        }
       },
       { connection: this.connection, concurrency: 1 },
     );
